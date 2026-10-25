@@ -1032,6 +1032,8 @@ export interface CaptureSessionManager {
    * a candidate counter past it, since each steps a counter and one that near the top would have it
    * issue what this document's own reader refuses (ADR 0070). A capture's own counters stay below
    * it, because a pick names only a candidate a capture issued; only an edited document holds one.
+   * `NotFound` when the project has no session document, and the store's own status when reading
+   * it failed: a failure is not absence (ADR 0078).
    * `Unsupported` too, before the camera opens and with the document kept, for a stored spec no
    * plan could be laid from, and for cells, stored or replanned, that `Begin` would have refused.
    */
@@ -1288,6 +1290,10 @@ export interface ProjectManager {
    * SessionId in a summary, and nothing here hands back what is in the document — `SetSelection`
    * reads its candidate counter and nothing else (ADR 0070). It is what lets a page offer a resume
    * rather than discover one by attempting it (ADR 0036).
+   * Only a document that is not there is "no session". A read that failed any other way fails the
+   * listing with the store's status, because a summary saying there is none is what keeps a
+   * capture from being offered back, and the page's other press empties the tier holding its
+   * frames (ADR 0078).
    */
   list(): Promise<Result<ProjectSummary[]>>;
   create(title: string): Promise<Result<ProjectId>>;

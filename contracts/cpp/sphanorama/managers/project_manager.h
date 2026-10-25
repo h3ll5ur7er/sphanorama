@@ -19,6 +19,11 @@ class IProjectManager {
   // SessionId in a summary, and nothing here hands back what is in the document — `SetSelection`
   // reads its candidate counter and nothing else (ADR 0070). It is what lets a page offer a resume
   // rather than discover one by attempting it (ADR 0036).
+  //
+  // Only a document that is not there is "no session". A read that failed any other way fails the
+  // listing with the store's status, because a summary saying there is none is what keeps a
+  // capture from being offered back, and the page's other press empties the tier holding its
+  // frames (ADR 0078).
   virtual Result<std::vector<ProjectSummary>> List() = 0;
   virtual Result<ProjectId> Create(std::string_view title) = 0;
   virtual Status Delete(ProjectId project) = 0;

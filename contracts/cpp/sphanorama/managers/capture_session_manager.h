@@ -72,6 +72,9 @@ class ICaptureSessionManager {
   // issue what this document's own reader refuses (ADR 0070). A capture's own counters stay below
   // it, because a pick names only a candidate a capture issued; only an edited document holds one.
   //
+  // `NotFound` when the project has no session document, and the store's own status when reading
+  // it failed: a failure is not absence (ADR 0078).
+  //
   // `Unsupported` too, before the camera opens and with the document kept, for a stored spec no
   // plan could be laid from, and for cells, stored or replanned, that `Begin` would have refused.
   virtual Result<SessionId> Resume(ProjectId project) = 0;

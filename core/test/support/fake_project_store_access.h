@@ -19,14 +19,19 @@ class FakeProjectStoreAccess final : public IProjectStoreAccess {
   Status DeleteProject(ProjectId project) override;
 
   int WriteCount() const { return write_count_; }
-  // Reads of this key fail with `StorageQuotaExceeded`: no store here fails a read with anything
-  // but `NotFound` otherwise, and a caller must not read any other failure as absence.
-  void RefuseReadsOf(std::string key) { unreadable_ = std::move(key); }
+  // Reads of this key fail with `code`: no store here fails a read with anything but `NotFound`
+  // otherwise, and a caller must not read any other failure as absence. Chosen by the test, so a
+  // caller that answers a fixed code of its own instead of the store's can be told apart.
+  void RefuseReadsOf(std::string key, StatusCode code = StatusCode::StorageQuotaExceeded) {
+    unreadable_ = std::move(key);
+    unreadable_code_ = code;
+  }
 
  private:
   std::map<uint64_t, std::map<std::string, std::string, std::less<>>> projects_;
   int write_count_ = 0;
   std::string unreadable_;
+  StatusCode unreadable_code_ = StatusCode::StorageQuotaExceeded;
 };
 
 struct FakeProjectStoreAccessFactory {

@@ -65,6 +65,27 @@ describe('the core\'s motion layout', () => {
   });
 });
 
+describe('the document store\'s load', () => {
+  it('reaches the page as the worker said it, and as none from a worker that said nothing',
+     async () => {
+    // The core cannot say this: its store runs from memory when the database would not open, so
+    // the listing is empty and nothing fails (ADR 0078).
+    for (const [storageError, expected] of [
+      ['VersionError', 'VersionError'], [null, null], [undefined, null],
+    ] as const) {
+      const w = fakeWorker();
+      const connecting = connectCore(w.worker, 'https://example.test/core.js', unclaimed);
+      await Promise.resolve();
+      w.reply({
+        kind: 'booted', seq: w.seqOf('boot'), methods: [], spill: true, resident: true,
+        ...(storageError === undefined ? {} : { storageError }),
+      });
+      const { remote } = await connecting;
+      expect(remote.storageError()).toBe(expected);
+    }
+  });
+});
+
 describe('connecting', () => {
   it('passes the core URL across, because only the page knows the base path', async () => {
     const w = fakeWorker();

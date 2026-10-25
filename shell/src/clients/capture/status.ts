@@ -86,7 +86,8 @@ export function describeGuidanceFailure(status: Status): string {
   return status.detail ? `${status.code} — ${status.detail}` : status.code;
 }
 
-export function formatCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean): string {
+export function formatCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean,
+                                   saving: boolean): string {
   const parts: string[] = [];
   parts.push(capabilities.threads
     ? `${capabilities.hardwareConcurrency} threads`
@@ -97,7 +98,22 @@ export function formatCapabilities(capabilities: RuntimeCapabilities, canSpill: 
   // will refuse partway through a sphere (ADR 0020); saying so beforehand is the difference
   // between a known limit and an inexplicable failure. Naming the ordinary case would be noise.
   if (!canSpill) parts.push('no spill tier');
+  // Here as well as on the stage line, because the stage line is rewritten by the capture it warns
+  // about: one begun on a store that would not load runs to the end looking kept (ADR 0078).
+  if (!saving) parts.push('not saving projects');
   return parts.join(' · ');
+}
+
+/**
+ * The panel toggle's label: the press it offers, and, folded, whether anything is being saved.
+ *
+ * The panel folds away when a capture starts and the capabilities row goes with it, so the toggle
+ * is the one control left on screen through the capture a store that would not load is not
+ * keeping (ADR 0078).
+ */
+export function panelToggleLabel(open: boolean, saving: boolean): string {
+  if (open) return 'hide';
+  return saving ? 'details' : 'details · not saving';
 }
 
 // The shape the page confirmed and pushed to the core, not a third copy of it. `ICameraAccess`

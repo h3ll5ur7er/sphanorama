@@ -9,7 +9,7 @@ import type { RuntimeCapabilities, SphanoramaCore } from './bridge/core';
 import { connectCore, type RemoteCore } from './bridge/remote-core';
 import { type LockManagerLike, tierAccess, type TierAccess } from './bridge/tier-claim';
 import type {
-  CapturePlan, CoverageState, NodeId, ProjectId, ProjectSummary, Quat,
+  CapturePlan, CoverageState, NodeId, ProjectId, ProjectSummary, Quat, Result,
 } from '../../contracts/ts/contracts';
 import { createCameraAccess } from './access/camera';
 import { createMotionSensorAccess } from './access/motion';
@@ -20,13 +20,13 @@ import { canvasDrawTarget, createFrameGrabber, GRAB_MAX_EDGE } from './access/pr
 import { toImuSample } from './access/orientation';
 import {
   CORE_FROM_ANOTHER_UPDATE, describeFailure, describeGuidanceFailure, describeLocks,
-  formatCapabilities,
+  formatCapabilities, panelToggleLabel,
 } from './clients/capture/status';
 import {
   describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
   RETICLE_MAX_RADIUS,
 } from './clients/capture/guidance';
-import { describeResumeRefusal, resumableProject } from './clients/capture/resume';
+import { describeResumeRefusal, startOffer } from './clients/capture/resume';
 import { describeAttitude } from './clients/capture/attitude';
 import { planOverlay } from './clients/capture/overlay';
 import { createOverlayPainter } from './clients/capture/painter';
@@ -59,10 +59,13 @@ const targetArrow = el<HTMLElement>('target-arrow');
  */
 const panel = el<HTMLElement>('panel');
 const panelToggle = el<HTMLButtonElement>('panel-toggle');
+// Whether this page's documents are being kept, known from the boot (ADR 0078). Until then the page
+// has not said otherwise, and the folded label is the plain one; the boot redraws it.
+let saving = true;
 function openPanel(open: boolean) {
   panel.dataset.open = String(open);
   panelToggle.setAttribute('aria-expanded', String(open));
-  panelToggle.textContent = open ? 'hide' : 'details';
+  panelToggle.textContent = panelToggleLabel(open, saving);
 }
 openPanel(true);
 panelToggle.addEventListener('click', () => openPanel(panel.dataset.open !== 'true'));
@@ -307,8 +310,9 @@ async function startCore(tier: TierAccess) {
                      tier);
 }
 
-function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean) {
-  coreCaps.textContent = formatCapabilities(capabilities, canSpill);
+function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean,
+                            saving: boolean) {
+  coreCaps.textContent = formatCapabilities(capabilities, canSpill, saving);
 }
 
 /**
@@ -1586,12 +1590,16 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
  * whether there is a capture to come back to, and asking twice for one answer would be a second
  * round trip for a question already answered (ADR 0036).
  */
-async function reportFacade(core: SphanoramaCore): Promise<ProjectSummary[]> {
+async function reportFacade(core: SphanoramaCore,
+                            storageError: string | null): Promise<Result<ProjectSummary[]>> {
   const listed = await core.project.list();
-  facadeOut.textContent = listed.ok
-    ? `${core.methods().length} methods · ${listed.value.length} projects`
-    : `call failed: ${listed.status.code}`;
-  return listed.ok ? listed.value : [];
+  // An empty listing from a store that would not load is not a count of nothing (ADR 0078).
+  facadeOut.textContent = !listed.ok
+    ? `call failed: ${listed.status.code}`
+    : storageError !== null
+      ? `${core.methods().length} methods · projects not loaded`
+      : `${core.methods().length} methods · ${listed.value.length} projects`;
+  return listed;
 }
 
 async function main() {
@@ -1641,7 +1649,11 @@ async function main() {
     renderCapabilities(await core.capabilities({
       hardwareConcurrency: navigator.hardwareConcurrency ?? 1,
       crossOriginIsolated: self.crossOriginIsolated,
-    }), remote.canSpill());
+    }), remote.canSpill(), remote.storageError() === null);
+    saving = remote.storageError() === null;
+    // Redrawn, since the toggle answers a press from the start and a panel folded during the boot
+    // was labelled before this was known.
+    openPanel(panel.dataset.open === 'true');
     // Exposed for the end-to-end suite to drive the boundary directly. The client itself never
     // reads these; it holds `core` and `remote` in scope.
     Object.assign(window as unknown as Record<string, unknown>, {
@@ -1659,11 +1671,10 @@ async function main() {
     // Asked before anything is offered, and answered without touching the camera: whether a
     // project has a session to return to is a fact about the project, and finding it out by
     // *trying* would start the very capture the user has not chosen yet (ADR 0036).
-    const resume = resumableProject(await reportFacade(core));
+    const storageError = remote.storageError();
+    const { resume, message } = startOffer(await reportFacade(core, storageError), storageError);
     resumeButton.hidden = resume === null;
-    stage.textContent = resume === null
-      ? 'core ready — enable the camera to continue'
-      : 'core ready — resume the last capture, or enable the camera to start a new one';
+    stage.textContent = message;
     // Known from the boot, so neither offer is made to a core that cannot read this page's motion.
     // Its own refusal would come at `Begin`, after `enable` has asked for and opened a camera
     // (ADR 0074). Withdrawn rather than disabled, as for a device with no sensors: no press changes

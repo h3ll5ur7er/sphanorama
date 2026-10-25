@@ -4,7 +4,8 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ProjectId, ProjectSummary } from '../../../../contracts/ts/contracts';
-import { describeResumeRefusal, resumableProject } from './resume';
+import { describeResumeRefusal, resumableProject, startOffer } from './resume';
+import { describeFailure } from './status';
 
 function project(id: number, hasSession: boolean, title = `sphere ${id}`): ProjectSummary {
   return {
@@ -137,5 +138,51 @@ describe('describeResumeRefusal', () => {
     expect(describeResumeRefusal({
       code: 'Unsupported', component: 'CameraAccess', detail: 'insecure origin',
     }).offerAgain).toBe(false);
+  });
+});
+
+describe('startOffer', () => {
+  it('offers the newest capture with a session, and says both ways on', () => {
+    const offer = startOffer({ ok: true, value: [project(1, true), project(3, true)] }, null);
+    expect(offer.resume).toBe(3);
+    expect(offer.message).toBe(
+      'core ready — resume the last capture, or enable the camera to start a new one',
+    );
+  });
+
+  it('offers a new capture alone when nothing was captured into', () => {
+    const offer = startOffer({ ok: true, value: [project(1, false)] }, null);
+    expect(offer.resume).toBeNull();
+    expect(offer.message).toBe('core ready — enable the camera to continue');
+  });
+
+  it('does not read a listing that failed as one with nothing to resume', () => {
+    // A new capture empties the spill tier, so if a capture is waiting in it the press that the
+    // old line invited would erase it. The listing could not say, so the line says that instead
+    // of "continue" (ADR 0078).
+    const status = {
+      code: 'StorageQuotaExceeded', component: 'ProjectManager', detail: 'full',
+    } as const;
+    const offer = startOffer({ ok: false, status }, null);
+    expect(offer.resume).toBeNull();
+    expect(offer.message).toContain('could not tell whether a capture is waiting');
+    // Named the way every other failure on the page is, not as a raw code.
+    expect(offer.message).toContain(describeFailure(status));
+    expect(offer.message).not.toContain('StorageQuotaExceeded');
+    expect(offer.message).toContain('reload');
+    expect(offer.message).not.toContain('enable the camera to continue');
+  });
+
+  it('does not read a store that could not be loaded as one with nothing in it', () => {
+    // The worker's document store starts empty when its database will not open, so the listing
+    // succeeds with nothing in it while a capture may be waiting on disk (ADR 0078).
+    const offer = startOffer({ ok: true, value: [] }, 'VersionError: the database is newer');
+    expect(offer.resume).toBeNull();
+    expect(offer.message).toContain('could not tell whether a capture is waiting');
+    // And what a new capture would be, as well as what it would cost: nothing is written down.
+    expect(offer.message).toContain('would not be saved');
+    expect(offer.message).toContain('VersionError: the database is newer');
+    expect(offer.message).toContain('reload');
+    expect(offer.message).not.toContain('enable the camera to continue');
   });
 });

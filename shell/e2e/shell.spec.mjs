@@ -249,6 +249,99 @@ test('loads the core and reports its capabilities', async ({ page }) => {
     // core moved off the main thread — so a browser that stopped supporting it must fail here
     // rather than at the moment a capture runs out of memory.
     await expect(page.locator('#core-caps')).not.toContainText('no spill tier');
+    // And it is saving, which is said only when it is not (ADR 0078).
+    await expect(page.locator('#core-caps')).not.toContainText('not saving');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a document store that will not open is not read as having nothing', async ({ page }) => {
+  // The worker's document host starts empty when its database will not open, so the core lists
+  // nothing and fails nothing. A capture may still be on disk, and a new capture's `Begin` empties
+  // the tier holding its frames, so the line must not invite that press as "continue" (ADR 0078).
+  //
+  // Opened at a newer version than the build asks for, from the page before any of its scripts
+  // run: open requests on one database are served in order, so the worker's comes after this one
+  // and fails with a VersionError, which is what an older build meets after a newer one ran. What
+  // this pins is the warning: with the open refused every write fails too, so it cannot show the
+  // host writing nothing, which the host's own test pins.
+  await page.addInitScript(() => {
+    const request = indexedDB.open('sphanorama', 999);
+    request.onsuccess = () => request.result.close();
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('the saved projects did not load',
+                                                       { timeout: 15000 });
+    await expect(page.locator('#stage')).toContainText('a new capture would clear one');
+    await expect(page.locator('#stage')).toContainText('VersionError');
+    await expect(page.locator('#stage')).not.toContainText('enable the camera to continue');
+    // Said where it stays up for the life of the page, since the stage line is rewritten by the
+    // capture it warns about; and the diagnostic row does not count an unread store as empty.
+    await expect(page.locator('#core-caps')).toContainText('not saving');
+    await expect(page.locator('#facade')).toContainText('projects not loaded');
+    await expect(page.locator('#facade')).not.toContainText('0 projects');
+
+    // And still on screen once a capture is running, which is when it matters: the panel folds
+    // away when one starts and takes the capabilities row with it.
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+    await expect(page.locator('#core-caps')).toBeHidden();
+    await expect(page.locator('#panel-toggle')).toBeVisible();
+    await expect(page.locator('#panel-toggle')).toContainText('not saving');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a panel folded before the store is known says so once it is', async ({ page }) => {
+  // The toggle answers a press from the moment the page's script runs, and the boot that learns
+  // whether the store loaded comes later, so a panel folded during "starting…" was labelled before
+  // anything was known. The label is redrawn once it is (ADR 0078).
+  await page.addInitScript(() => {
+    const request = indexedDB.open('sphanorama', 999);
+    request.onsuccess = () => request.result.close();
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('panel-toggle')?.click();
+    });
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('the saved projects did not load',
+                                                       { timeout: 15000 });
+    await expect(page.locator('#panel-toggle')).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('#panel-toggle')).toContainText('not saving');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a listing that failed is not read as one with nothing waiting', async ({ page }) => {
+  // No store in this build fails a session read, so the listing is made to fail at the page's
+  // own handle on the core, which the page assigns before it lists. What this pins is the page
+  // handing the failure to the line rather than an empty listing (ADR 0078).
+  await page.addInitScript(() => {
+    let held;
+    Object.defineProperty(window, 'sphanoramaCore', {
+      configurable: true,
+      get: () => held,
+      set: (core) => {
+        core.project.list = async () => ({
+          ok: false, status: { code: 'Internal', component: 'ProjectManager', detail: 'refused' },
+        });
+        held = core;
+      },
+    });
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage'))
+      .toContainText('could not tell whether a capture is waiting', { timeout: 15000 });
+    await expect(page.locator('#stage')).toContainText('a new capture would clear one');
   } finally {
     await server.close();
   }

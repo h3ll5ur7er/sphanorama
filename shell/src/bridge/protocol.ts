@@ -83,6 +83,8 @@ export type FromWorker =
     kind: 'booted'; seq: number; methods: string[]; spill: boolean; resident: boolean;
     /** Absent from a worker from before it was sent, which is a page from before it too. */
     motionSampleLayout?: number | null;
+    /** Why the document store would not load, if it would not (ADR 0078). Absent as above. */
+    storageError?: string | null;
   }
   | { kind: 'result'; seq: number; bytes: Uint8Array }
   | { kind: 'capabilities'; seq: number; value: RuntimeCapabilities }

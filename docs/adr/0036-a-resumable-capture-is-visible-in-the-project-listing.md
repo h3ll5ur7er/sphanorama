@@ -1,5 +1,8 @@
 # ADR 0036 — A resumable capture is visible in the project listing
 
+**Status:** accepted; amended by [0078](0078-a-failed-read-is-not-an-absent-session.md), which reads
+only `NotFound` as no session
+
 ## Context
 
 ADR 0029 built the core half of resume and ADR 0030 the tier under it; ADR 0034 stopped a new

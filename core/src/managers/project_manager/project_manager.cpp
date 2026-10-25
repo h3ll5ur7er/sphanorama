@@ -31,7 +31,18 @@ Result<std::vector<ProjectSummary>> ProjectManager::List() {
     // that tab is the one holding the phone. Only whether it exists: a listing answering "is there
     // something to come back to" needs nothing more (ADR 0036), and `SetSelection` reads the one
     // field it needs itself.
-    summary.hasSession = store_.ReadDocument(id, kSessionDocumentKey).ok();
+    //
+    // `NotFound` and nothing else is "no session", because a summary saying there is none is what
+    // keeps a capture from being offered back, and the page's next press is a new capture that
+    // empties the tier its frames are in. A read that failed has not said there is none; the
+    // listing fails with it instead (ADR 0078).
+    auto session = store_.ReadDocument(id, kSessionDocumentKey);
+    if (!session.ok() && session.status.code != StatusCode::NotFound) {
+      return Err<std::vector<ProjectSummary>>(
+          session.status.code, kComponent,
+          "cannot tell whether a project has a session to resume: " + session.status.detail);
+    }
+    summary.hasSession = session.ok();
     summaries.push_back(std::move(summary));
   }
   return Ok(std::move(summaries));

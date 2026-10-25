@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { err, ok } from '../../access/result';
 import {
   CORE_FROM_ANOTHER_UPDATE, describeFailure, describeGuidanceFailure, describeLocks,
-  formatCapabilities,
+  formatCapabilities, panelToggleLabel,
 } from './status';
 
 describe('describeFailure', () => {
@@ -51,22 +51,31 @@ describe('formatCapabilities', () => {
     // diagnosed from a screenshot instead of a debugging session.
     const text = formatCapabilities({
       simd: true, threads: false, sharedMemory: false, hardwareConcurrency: 0,
-    }, true);
+    }, true, true);
     expect(text).toMatch(/single-threaded/i);
   });
 
   it('reports the thread count when there is one', () => {
     const text = formatCapabilities({
       simd: true, threads: true, sharedMemory: true, hardwareConcurrency: 8,
-    }, true);
+    }, true, true);
     expect(text).toMatch(/8/);
   });
 
   it('calls out missing SIMD, which is a build mistake rather than a device limit', () => {
     const text = formatCapabilities({
       simd: false, threads: false, sharedMemory: false, hardwareConcurrency: 0,
-    }, true);
+    }, true, true);
     expect(text).toMatch(/no simd/i);
+  });
+
+  it('says for the life of the page that nothing is being saved, and stays quiet otherwise', () => {
+    // A store that would not load keeps the app running from memory (ADR 0078). The stage line says
+    // so once, and the next stage write replaces it, so a capture started anyway would run to the
+    // end looking kept. This line is not rewritten during a capture.
+    const caps = { simd: true, threads: false, sharedMemory: false, hardwareConcurrency: 0 };
+    expect(formatCapabilities(caps, true, false)).toMatch(/not saving/i);
+    expect(formatCapabilities(caps, true, true)).not.toMatch(/sav/i);
   });
 
   it('says when there is nowhere to spill, and stays quiet when there is', () => {
@@ -76,8 +85,8 @@ describe('formatCapabilities', () => {
     const capabilities = {
       simd: true, threads: false, sharedMemory: false, hardwareConcurrency: 0,
     };
-    expect(formatCapabilities(capabilities, false)).toMatch(/no spill/i);
-    expect(formatCapabilities(capabilities, true)).not.toMatch(/spill/i);
+    expect(formatCapabilities(capabilities, false, true)).toMatch(/no spill/i);
+    expect(formatCapabilities(capabilities, true, true)).not.toMatch(/spill/i);
   });
 });
 
@@ -259,5 +268,17 @@ describe('a tick that failed', () => {
   it('says just the code when there was nothing else to say', () => {
     const line = describeGuidanceFailure({ code: 'Internal', component: 'X', detail: '' });
     expect(line).toBe('Internal');
+  });
+});
+
+describe('panelToggleLabel', () => {
+  it('names the press it offers, and says on the folded panel that nothing is being saved', () => {
+    // The panel folds away when a capture starts, and the capabilities row folds with it, so the
+    // one control left on screen is where a capture on a store that would not load is told that
+    // it is not being kept (ADR 0078).
+    expect(panelToggleLabel(true, true)).toBe('hide');
+    expect(panelToggleLabel(true, false)).toBe('hide');
+    expect(panelToggleLabel(false, true)).toBe('details');
+    expect(panelToggleLabel(false, false)).toBe('details · not saving');
   });
 });

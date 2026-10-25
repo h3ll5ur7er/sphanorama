@@ -7,10 +7,10 @@
  * from `ProjectManager::List`, which reports it as a fact about the project and hands back no
  * session (ADR 0036).
  *
- * Both functions here are decisions rather than rendering, which is why they are testable
+ * The functions here are decisions rather than rendering, which is why they are testable
  * separately from the page that calls them.
  */
-import type { ProjectId, ProjectSummary } from '../../../../contracts/ts/contracts';
+import type { ProjectId, ProjectSummary, Result } from '../../../../contracts/ts/contracts';
 import type { Status } from '../../access/result';
 import { describeFailure } from './status';
 
@@ -108,4 +108,48 @@ export function describeResumeRefusal(status: Status): ResumeRefusal {
   return { message: `Could not resume that capture — ${describeFailure(status)} · ${next}`,
            offerAgain: !stuck,
            offerFresh: !deviceCannotCapture };
+}
+
+/**
+ * What the page offers once the core is up: the capture to resume, if any, and the line saying
+ * which presses are on offer.
+ *
+ * A listing that failed is not one with nothing in it. A new capture empties the spill tier
+ * (ADR 0034), so a line inviting one after a listing that could not say whether a capture is
+ * waiting invites the press that would erase it. The new capture stays on offer, since a store
+ * that keeps failing must not lock the user out of capturing anything, and the line says what it
+ * would cost (ADR 0078).
+ */
+export function startOffer(listed: Result<ProjectSummary[]>, storageError: string | null): {
+  resume: ProjectId | null;
+  message: string;
+} {
+  // A store that would not load lists nothing and fails nothing: the worker's host starts empty and
+  // keeps the app running, so an empty listing is all the core can report. Said as a failed
+  // listing is, since a capture may be waiting on disk all the same.
+  if (storageError !== null) {
+    return {
+      resume: null,
+      message:
+        'core ready, but it could not tell whether a capture is waiting: the saved projects did ' +
+        `not load (${storageError}) — reload to try again; a new capture would clear one ` +
+        'that is, and would not be saved',
+    };
+  }
+  if (!listed.ok) {
+    return {
+      resume: null,
+      message:
+        'core ready, but it could not tell whether a capture is waiting: ' +
+        `${describeFailure(listed.status)} — reload to try again; a new capture would clear one ` +
+        'that is',
+    };
+  }
+  const resume = resumableProject(listed.value);
+  return {
+    resume,
+    message: resume === null
+      ? 'core ready — enable the camera to continue'
+      : 'core ready — resume the last capture, or enable the camera to start a new one',
+  };
 }
