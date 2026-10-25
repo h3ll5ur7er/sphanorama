@@ -61,6 +61,12 @@ export interface RemoteCore extends CoreRuntime {
   flush(): Promise<string | null>;
   /** Fires when `ICameraAccess::Close` reached the host: only the page can stop a MediaStream. */
   onCloseCamera(handler: () => void): void;
+  /**
+   * Fires each time the worker's document store starts failing to save, or recovers, or the
+   * worker dies, which never recovers; and at once if it is failing when registered. Replaces any
+   * earlier handler, as the other pushes do.
+   */
+  onPersistChange(handler: (failing: string | null) => void): void;
   /** Fires when the core wants the locks back: only the page can apply constraints to a track. */
   onReleaseLocks(handler: () => void): void;
   /**
@@ -87,6 +93,10 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
   const pending = new Map<number, { resolve: (m: FromWorker) => void; reject: (e: Error) => void }>();
   let closeCamera: () => void = () => {};
   let releaseLocks: () => void = () => {};
+  let persistChange: (failing: string | null) => void = () => {};
+  // The latest pushed, so a handler registered after a push still hears it: the host announces
+  // only changes, so a push nobody heard is never sent again.
+  let persisting: string | null = null;
   let seq = 0;
   // Set once the worker has failed, and never cleared: a worker that could not load its script is
   // not going to load it later, and a call made after that has to fail immediately rather than
@@ -112,6 +122,9 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
     // And a worker that is gone holds no files, so the page lets go of the right to them: otherwise
     // a broken tab left open keeps every other page off a free pair (ADR 0063).
     tier.settle(false);
+    // The documents it had not persisted went with it, and no push will say so.
+    persisting = reason;
+    persistChange(reason);
   };
 
   worker.addEventListener('error', (event: unknown) => {
@@ -130,6 +143,13 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
     }
     if (message.kind === 'releaseLocks') {
       releaseLocks();
+      return;
+    }
+    if (message.kind === 'persisting') {
+      // The death said it is not saving, and what a dead worker last sent cannot take that back.
+      if (dead) return;
+      persisting = message.failing;
+      persistChange(message.failing);
       return;
     }
     const waiting = pending.get(message.seq);
@@ -213,10 +233,17 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
     setLocks: (held) => worker.postMessage({ kind: 'locks', held }),
     async flush(): Promise<string | null> {
       const answer = await ask({ kind: 'flush' });
-      return answer.kind === 'flushed' ? answer.persistError : null;
+      if (answer.kind !== 'flushed') {
+        throw new Error('the worker answered a flush with something else');
+      }
+      return answer.failing;
     },
     onCloseCamera(handler: () => void) {
       closeCamera = handler;
+    },
+    onPersistChange(handler: (failing: string | null) => void) {
+      persistChange = handler;
+      if (persisting !== null) handler(persisting);
     },
     onReleaseLocks(handler: () => void) {
       releaseLocks = handler;

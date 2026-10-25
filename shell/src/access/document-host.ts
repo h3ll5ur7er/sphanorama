@@ -19,6 +19,11 @@ export interface DocumentStore {
   loadAll(): Promise<Record<string, string>>;
   put(key: string, value: string): Promise<void>;
   remove(prefix: string): Promise<void>;
+  /**
+   * Hears the store lose its database after loading it, as a clear of the site's data does. A
+   * persist would find out too, but none may come for as long as nothing is written (ADR 0079).
+   */
+  onLost?(listener: (reason: string) => void): void;
 }
 
 export interface DocumentHost {
@@ -26,15 +31,22 @@ export interface DocumentHost {
   read(project: number, key: string): string | undefined;
   write(project: number, key: string, value: string): void;
   remove(project: number): boolean;
-  /** Awaits everything pending. The client calls this at session end and before unload. */
+  /** Awaits everything pending. The client calls this when the page is hidden or unloaded. */
   flush(): Promise<void>;
-  /** Why the last persist failed, if it did. Durability problems are reportable, not silent. */
-  lastPersistError(): string | null;
   /**
    * Why the store would not load, if it would not: the host then holds nothing it was given and
    * persists nothing, so an empty listing says nothing about what is on disk (ADR 0078).
    */
   loadError(): string | null;
+  /**
+   * Why persisting is failing now, or null when the last persist went through. It clears on
+   * recovery: it answers "is this being kept", which the page says for the life of the page
+   * (ADR 0079). A store that lost its database never recovers, so
+   * that loss is kept whatever persists after it. Null after a failed load, which persists nothing.
+   */
+  persistFailing(): string | null;
+  /** Called with `persistFailing()` each time it changes. */
+  onPersistChange(listener: (failing: string | null) => void): void;
 }
 
 const DEFAULT_FLUSH_DELAY_MS = 250;
@@ -50,21 +62,44 @@ export async function createDocumentHost(
   const resident = new Map<string, string>();
   const pending = new Map<string, string>();
   const removed = new Set<number>();
-  let persistError: string | null = null;
   let loadError: string | null = null;
+  let failing: string | null = null;
+  // Kept for good once heard: the database the documents were in is gone, so a persist that goes
+  // through after it, even one with nothing in it, says nothing about them (ADR 0079).
+  let lost: string | null = null;
+  const listeners: Array<(failing: string | null) => void> = [];
+  function setFailing(now: string | null): void {
+    if (now === failing) return;
+    failing = now;
+    // A listener is the page's business and durability is this host's: one that throws is
+    // reported and does not unwind the persist that told it.
+    for (const listener of listeners) {
+      try {
+        listener(now);
+      } catch (cause) {
+        console.warn('sphanorama: a persist listener threw —', String(cause));
+      }
+    }
+  }
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let inFlight: Promise<void> | null = null;
+  let inFlight: Promise<boolean> | null = null;
 
   try {
     for (const [key, value] of Object.entries(await store.loadAll())) resident.set(key, value);
   } catch (cause) {
     // Private browsing, blocked storage, a corrupt database: the app runs, it just does not
     // remember anything. Refusing to start would be a worse trade.
-    persistError = String(cause);
     loadError = String(cause);
   }
+  if (loadError === null) {
+    store.onLost?.((reason) => {
+      lost = reason;
+      setFailing(reason);
+    });
+  }
 
-  async function persist(): Promise<void> {
+  /** Whether it went through, which after a loss is not what `failing` says. */
+  async function persist(): Promise<boolean> {
     const writes = [...pending];
     const removals = [...removed];
     pending.clear();
@@ -72,14 +107,22 @@ export async function createDocumentHost(
     try {
       for (const project of removals) await store.remove(`${project}/`);
       for (const [key, value] of writes) await store.put(key, value);
+      setFailing(lost);
+      return true;
     } catch (cause) {
-      persistError = String(cause);
       // Put the work back, or a single transient quota error means the resident state can never
       // become durable again — the caller has no way to know which documents to rewrite. A newer
       // value already queued for the same key wins: this is a retry of what failed, not a
-      // rollback of what happened since.
+      // rollback of what happened since. So does a removal since: a document no longer resident
+      // was removed after it was written, and putting it back wrote a deleted project's title
+      // over the removal on the next persist.
       for (const project of removals) removed.add(project);
-      for (const [key, value] of writes) if (!pending.has(key)) pending.set(key, value);
+      for (const [key, value] of writes) {
+        if (!pending.has(key) && resident.has(key)) pending.set(key, value);
+      }
+      // A loss stays the reason: what follows from it says less about why than it does.
+      setFailing(lost ?? String(cause));
+      return false;
     }
   }
 
@@ -88,8 +131,8 @@ export async function createDocumentHost(
    * older one landing after a newer one restores stale data; a `flush()` that awaited only the
    * handle it happened to see would also return before the other had committed.
    */
-  function enqueue(): Promise<void> {
-    inFlight = (inFlight ?? Promise.resolve()).then(persist, persist);
+  function enqueue(): Promise<boolean> {
+    inFlight = (inFlight ?? Promise.resolve(true)).then(persist, persist);
     return inFlight;
   }
 
@@ -152,20 +195,25 @@ export async function createDocumentHost(
       // guarantee that is not one.
       await inFlight;
       while (pending.size > 0 || removed.size > 0) {
-        const before = pending.size + removed.size;
-        await enqueue();
         // A failed persist requeues what it could not write. Retrying it forever here would
-        // hang the page on a full disk; the caller reads lastPersistError() and decides.
-        if (pending.size + removed.size >= before) break;
+        // hang the page on a full disk; the caller reads persistFailing() and decides. Work left
+        // after one that went through arrived while it ran, and is drained: the queue's size
+        // cannot tell the two apart, and a flush that stopped on it was answered "durable".
+        // Nor can `failing`, which a loss holds whether or not the persist went through.
+        if (!(await enqueue())) break;
       }
-    },
-
-    lastPersistError(): string | null {
-      return persistError;
     },
 
     loadError(): string | null {
       return loadError;
+    },
+
+    persistFailing(): string | null {
+      return failing;
+    },
+
+    onPersistChange(listener: (failing: string | null) => void): void {
+      listeners.push(listener);
     },
   };
 }

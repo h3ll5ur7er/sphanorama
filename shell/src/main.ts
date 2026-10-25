@@ -59,8 +59,8 @@ const targetArrow = el<HTMLElement>('target-arrow');
  */
 const panel = el<HTMLElement>('panel');
 const panelToggle = el<HTMLButtonElement>('panel-toggle');
-// Whether this page's documents are being kept, known from the boot (ADR 0078). Until then the page
-// has not said otherwise, and the folded label is the plain one; the boot redraws it.
+// Whether this page's documents are being kept, from the boot and each persist since (ADR 0079).
+// Until the boot the page has not said otherwise, and the folded label is the plain one.
 let saving = true;
 function openPanel(open: boolean) {
   panel.dataset.open = String(open);
@@ -310,9 +310,26 @@ async function startCore(tier: TierAccess) {
                      tier);
 }
 
-function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean,
-                            saving: boolean) {
+// What the capabilities row was last drawn from, so a change in whether the store is saving can
+// redraw it without asking the core again.
+let shownCapabilities: { capabilities: RuntimeCapabilities; canSpill: boolean } | null = null;
+function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean) {
+  shownCapabilities = { capabilities, canSpill };
   coreCaps.textContent = formatCapabilities(capabilities, canSpill, saving);
+}
+
+/**
+ * Says whether this page's documents are being kept, on both places that say it: the capabilities
+ * row, and the panel toggle that stays on screen when the row folds away. The boot's failed
+ * load, a persist that is failing now, a database lost under the page and a worker that died all
+ * mean not kept (ADR 0078, ADR 0079).
+ */
+function showSaving(now: boolean) {
+  saving = now;
+  if (shownCapabilities !== null) {
+    renderCapabilities(shownCapabilities.capabilities, shownCapabilities.canSpill);
+  }
+  openPanel(panel.dataset.open === 'true');
 }
 
 /**
@@ -1649,11 +1666,14 @@ async function main() {
     renderCapabilities(await core.capabilities({
       hardwareConcurrency: navigator.hardwareConcurrency ?? 1,
       crossOriginIsolated: self.crossOriginIsolated,
-    }), remote.canSpill(), remote.storageError() === null);
-    saving = remote.storageError() === null;
+    }), remote.canSpill());
     // Redrawn, since the toggle answers a press from the start and a panel folded during the boot
-    // was labelled before this was known.
-    openPanel(panel.dataset.open === 'true');
+    // was labelled before this was known. Then kept current: a store that loads and later fills
+    // stops saving in the middle of a capture, and says so until a persist goes through again.
+    // One whose site data is cleared says so from the clear for the rest of the page (ADR 0079).
+    const loaded = remote.storageError() === null;
+    showSaving(loaded);
+    remote.onPersistChange((failing) => showSaving(loaded && failing === null));
     // Exposed for the end-to-end suite to drive the boundary directly. The client itself never
     // reads these; it holds `core` and `remote` in scope.
     Object.assign(window as unknown as Record<string, unknown>, {
@@ -1798,6 +1818,9 @@ async function main() {
     // Three things can fail now rather than one — the worker starts, the module loads inside it,
     // the document store opens — so the detail is what says which, and it is worth showing.
     stage.textContent = 'The core failed to load.';
+    // The row is the failure's now: a persist push from a worker still alive must not redraw the
+    // capabilities over the only text that says what failed.
+    shownCapabilities = null;
     coreCaps.textContent = String(cause);
     enableButton.disabled = true;
   }

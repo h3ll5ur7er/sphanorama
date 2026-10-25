@@ -202,13 +202,58 @@ describe('what the worker asks back', () => {
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
+  it('hands on each change in whether the store is saving, failure and recovery both', async () => {
+    // Pushed rather than asked: a store that fills mid-session fails a persist nobody flushed, and
+    // the page says it for as long as it lasts (ADR 0079).
+    const w = fakeWorker();
+    const { remote } = await w.boot();
+    const heard: Array<string | null> = [];
+    remote.onPersistChange((failing) => heard.push(failing));
+
+    w.reply({ kind: 'persisting', failing: 'QuotaExceededError' });
+    w.reply({ kind: 'persisting', failing: null });
+    expect(heard).toEqual(['QuotaExceededError', null]);
+  });
+
+  it('hands a change that came before anyone listened to whoever listens next', async () => {
+    // A push can land before the page registers, a database lost during the boot for one, and
+    // the host announces only changes, so it is kept and replayed: a late handler hears the
+    // store's state rather than a silence that reads as "saving".
+    const w = fakeWorker();
+    const { remote } = await w.boot();
+    w.reply({ kind: 'persisting', failing: 'QuotaExceededError' });
+    const heard: Array<string | null> = [];
+    remote.onPersistChange((failing) => heard.push(failing));
+    expect(heard).toEqual(['QuotaExceededError']);
+  });
+
+  it('hands a late listener the latest state, so a recovery it missed is not a failure', async () => {
+    const w = fakeWorker();
+    const { remote } = await w.boot();
+    w.reply({ kind: 'persisting', failing: 'QuotaExceededError' });
+    w.reply({ kind: 'persisting', failing: null });
+    const heard: Array<string | null> = [];
+    remote.onPersistChange((failing) => heard.push(failing));
+    expect(heard).toEqual([]);
+  });
+
+  it('refuses a flush answered with something else, rather than reading it committed', async () => {
+    // A null reply means everything committed, so a mis-paired answer must not be one.
+    const w = fakeWorker();
+    const { remote } = await w.boot();
+    const flushing = remote.flush();
+    const seq = (w.sent.find((e) => e.message.kind === 'flush')!.message as { seq: number }).seq;
+    w.reply({ kind: 'capabilities', seq, value: {} as never });
+    await expect(flushing).rejects.toThrow(/something else/);
+  });
+
   it('carries a persist failure back from the flush that found it', async () => {
     const w = fakeWorker();
     const { remote } = await w.boot();
     const flushing = remote.flush();
     const seq = (w.sent.find((e) => e.message.kind === 'flush')!.message as { seq: number }).seq;
 
-    w.reply({ kind: 'flushed', seq, persistError: 'quota exceeded' });
+    w.reply({ kind: 'flushed', seq, failing: 'quota exceeded' });
     await expect(flushing).resolves.toBe('quota exceeded');
   });
 });
@@ -242,6 +287,50 @@ describe('a worker that stops answering', () => {
     w.raise('error', { message: 'boom' });
 
     expect(w.wasTerminated()).toBe(true);
+  });
+
+  it('says the store is not saving, since a worker that died took its unsaved writes', async () => {
+    // The host's persists ran in the worker, and so did the documents it had not persisted yet:
+    // a page that kept saying "saving" after the death would be saying it of nothing (ADR 0079).
+    const w = fakeWorker();
+    const core = await w.boot();
+    const heard: Array<string | null> = [];
+    core.remote.onPersistChange((failing) => heard.push(failing));
+    w.raise('error', { message: 'boom' });
+    expect(heard).toHaveLength(1);
+    expect(heard[0]).toMatch(/boom/);
+  });
+
+  it('does not let a push that arrives after the death say it is saving again', async () => {
+    const w = fakeWorker();
+    const core = await w.boot();
+    const heard: Array<string | null> = [];
+    core.remote.onPersistChange((failing) => heard.push(failing));
+    w.raise('error', { message: 'boom' });
+    w.reply({ kind: 'persisting', failing: null });
+    expect(heard).toHaveLength(1);
+    expect(heard[0]).toMatch(/boom/);
+  });
+
+  it('does not let that push reach a handler that registers after it either', async () => {
+    const w = fakeWorker();
+    const core = await w.boot();
+    w.raise('error', { message: 'boom' });
+    w.reply({ kind: 'persisting', failing: null });
+    const heard: Array<string | null> = [];
+    core.remote.onPersistChange((failing) => heard.push(failing));
+    expect(heard).toHaveLength(1);
+    expect(heard[0]).toMatch(/boom/);
+  });
+
+  it('says so to a handler that registers after the death, too', async () => {
+    const w = fakeWorker();
+    const core = await w.boot();
+    w.raise('error', { message: 'boom' });
+    const heard: Array<string | null> = [];
+    core.remote.onPersistChange((failing) => heard.push(failing));
+    expect(heard).toHaveLength(1);
+    expect(heard[0]).toMatch(/boom/);
   });
 
   it('treats an undeserialisable message as the same kind of death', async () => {
@@ -339,7 +428,7 @@ describe('a boot that fails', () => {
     const connecting = connectCore(w.worker, 'https://example.test/core.js', unclaimed);
     await Promise.resolve();
 
-    w.reply({ kind: 'flushed', seq: w.seqOf('boot'), persistError: null });
+    w.reply({ kind: 'flushed', seq: w.seqOf('boot'), failing: null });
 
     await expect(connecting).rejects.toThrow(/something else/);
     expect(w.wasTerminated()).toBe(true);

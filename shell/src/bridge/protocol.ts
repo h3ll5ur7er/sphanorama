@@ -47,7 +47,7 @@ export type ToWorker =
       hardwareConcurrency: number;
       crossOriginIsolated: boolean;
     }
-  /** Awaits the document host's pending writes. The client calls it at session end and on unload. */
+  /** Awaits the document host's pending writes. The client calls it when hidden and on unload. */
   | { kind: 'flush'; seq: number }
   | { kind: 'camera'; opened: CameraOpening | null }
   // The camera the page is holding has changed, rather than been opened or lost (ADR 0045). A
@@ -88,7 +88,11 @@ export type FromWorker =
   }
   | { kind: 'result'; seq: number; bytes: Uint8Array }
   | { kind: 'capabilities'; seq: number; value: RuntimeCapabilities }
-  | { kind: 'flushed'; seq: number; persistError: string | null }
+  /**
+   * Whether the documents are kept as of the flush: why the store would not load, or why a
+   * persist is failing now, and null once everything committed (ADR 0079).
+   */
+  | { kind: 'flushed'; seq: number; failing: string | null }
   /**
    * Anything that threw where a reply was expected. Startup is three failures now — the worker
    * boots, the module loads inside it, the store opens — so the detail travels rather than being
@@ -98,4 +102,10 @@ export type FromWorker =
   /** `ICameraAccess::Close` reached the host. Only the page can stop a MediaStream. */
   | { kind: 'closeCamera' }
   /** The core wants the camera's locks back. Only the page can apply constraints to a track. */
-  | { kind: 'releaseLocks' };
+  | { kind: 'releaseLocks' }
+  /**
+   * Whether the document store is saving changed: why it is failing, or null once a persist goes
+   * through again, which after a lost database none does. Pushed, since the persist that fails is
+   * one nobody asked for (ADR 0079).
+   */
+  | { kind: 'persisting'; failing: string | null };

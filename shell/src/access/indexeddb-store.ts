@@ -52,9 +52,19 @@ function committed(transaction: IDBTransaction): Promise<void> {
 export function createIndexedDbStore(): DocumentStore {
   // Opened lazily and kept: the host hydrates once at startup and writes through afterwards.
   let database: Promise<IDBDatabase> | null = null;
-  const connection = () => (database ??= open());
+  let lost: (reason: string) => void = () => {};
+  // Kept closed once closed: what the clear took is gone, and a reconnect that wrote the writes
+  // since would be a disk that says "saving" without the rest (ADR 0079).
+  const connection = () => (database ??= open().then((db) => {
+    db.onclose = () => lost('the database was closed under the page, as a clear of site data does');
+    return db;
+  }));
 
   return {
+    onLost(listener: (reason: string) => void): void {
+      lost = listener;
+    },
+
     async loadAll(): Promise<Record<string, string>> {
       const db = await connection();
       const transaction = db.transaction(STORE, 'readonly');

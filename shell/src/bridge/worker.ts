@@ -43,6 +43,7 @@ async function boot(seq: number, coreUrl: string, access: ResidentAccess): Promi
   // that is still loading would answer "no such project" to a session it should resume.
   const stores = await openStores(access);
   ({ spill, documents } = stores);
+  stores.documents.onPersistChange((failing) => scope.postMessage({ kind: 'persisting', failing }));
 
   // Imported at runtime rather than bundled: the module is an artifact of the C++ build, and the
   // two builds (ADR 0011) are selected by which one the deploy copied in. The page resolved the
@@ -90,7 +91,9 @@ scope.onmessage = (event: MessageEvent<ToWorker>) => {
           scope.postMessage({
             kind: 'flushed',
             seq: message.seq,
-            persistError: documents?.lastPersistError() ?? null,
+            // What is true now, not the last failure ever: a flush that commits everything after a
+            // recovery is durable, and one after a failed load never is (ADR 0079).
+            failing: documents ? documents.loadError() ?? documents.persistFailing() : null,
           });
           return;
         }

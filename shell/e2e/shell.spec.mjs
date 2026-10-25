@@ -256,22 +256,32 @@ test('loads the core and reports its capabilities', async ({ page }) => {
   }
 });
 
+/**
+ * Leaves the origin a database newer than the build asks for, committed before the app loads, so
+ * the worker's open fails with a VersionError. From a page of the same origin outside the app,
+ * so nothing of it is running yet: an init script's open and the worker's are on different
+ * threads, and nothing made the page's reach the database first.
+ */
+async function commitNewerDatabase(page, server) {
+  await page.goto(new URL('/not-the-app', server.appUrl).href);
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open('sphanorama', 999);
+    request.onsuccess = () => { request.result.close(); resolve(undefined); };
+    request.onerror = () => reject(request.error);
+  }));
+}
+
 test('a document store that will not open is not read as having nothing', async ({ page }) => {
   // The worker's document host starts empty when its database will not open, so the core lists
   // nothing and fails nothing. A capture may still be on disk, and a new capture's `Begin` empties
   // the tier holding its frames, so the line must not invite that press as "continue" (ADR 0078).
   //
-  // Opened at a newer version than the build asks for, from the page before any of its scripts
-  // run: open requests on one database are served in order, so the worker's comes after this one
-  // and fails with a VersionError, which is what an older build meets after a newer one ran. What
-  // this pins is the warning: with the open refused every write fails too, so it cannot show the
-  // host writing nothing, which the host's own test pins.
-  await page.addInitScript(() => {
-    const request = indexedDB.open('sphanorama', 999);
-    request.onsuccess = () => request.result.close();
-  });
+  // A newer build's database, which is what an older build meets after a newer one ran. What this
+  // pins is the warning: with the open refused every write fails too, so it cannot show the host
+  // writing nothing, which the host's own test pins.
   const server = await serve();
   try {
+    await commitNewerDatabase(page, server);
     await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('the saved projects did not load',
                                                        { timeout: 15000 });
@@ -283,6 +293,8 @@ test('a document store that will not open is not read as having nothing', async 
     await expect(page.locator('#core-caps')).toContainText('not saving');
     await expect(page.locator('#facade')).toContainText('projects not loaded');
     await expect(page.locator('#facade')).not.toContainText('0 projects');
+    // A flush has persisted nothing, and says so rather than answering durable.
+    expect(await page.evaluate(() => window.sphanoramaHost.flush())).toContain('VersionError');
 
     // And still on screen once a capture is running, which is when it matters: the panel folds
     // away when one starts and takes the capabilities row with it.
@@ -296,19 +308,143 @@ test('a document store that will not open is not read as having nothing', async 
   }
 });
 
+test('a store that stops saving mid-session says so, and stops once it saves', async ({ page }) => {
+  // The store loads, and then its writes are refused: a full disk, which Chromium can be made to
+  // have by shrinking the origin's quota. The boot said nothing because nothing had failed yet, so
+  // the page has to hear it from the persist that failed, and hear the next one go through
+  // (ADR 0079).
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#core-caps')).toContainText('SIMD');
+    await expect(page.locator('#core-caps')).not.toContainText('not saving');
+
+    const origin = new URL(server.appUrl).origin;
+    const cdp = await page.context().newCDPSession(page);
+    // Folded first, so the toggle that stays on screen is held to it as well as the row.
+    await page.locator('#panel-toggle').click();
+    await expect(page.locator('#panel-toggle')).toHaveText('details');
+
+    await cdp.send('Storage.overrideQuotaForOrigin', { origin, quotaSize: 1 });
+    await page.evaluate(() => window.sphanoramaCore.project.create('refused'));
+    await expect(page.locator('#core-caps')).toContainText('not saving', { timeout: 15000 });
+    await expect(page.locator('#panel-toggle')).toHaveText('details · not saving');
+    // And a flush's reply says the same, rather than answering durable.
+    expect(await page.evaluate(() => window.sphanoramaHost.flush())).not.toBeNull();
+
+    await cdp.send('Storage.overrideQuotaForOrigin', { origin });
+    await page.evaluate(() => window.sphanoramaCore.project.create('kept'));
+    await expect(page.locator('#core-caps')).not.toContainText('not saving', { timeout: 15000 });
+    await expect(page.locator('#panel-toggle')).toHaveText('details');
+    expect(await page.evaluate(() => window.sphanoramaHost.flush())).toBeNull();
+  } finally {
+    await server.close();
+  }
+});
+
+test('a store whose site data is cleared mid-session says so for the rest of the page',
+     async ({ page }) => {
+  // A clear closes the database under the host, and what was on disk before it is gone. Nothing
+  // reconnects: the documents the host still holds could be put back, but a clear is as often the
+  // user deleting them, and saying "saving" of the writes since would be saying it of a disk that
+  // no longer has the rest (ADR 0079).
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#core-caps')).not.toContainText('not saving');
+    // A write made while a flush runs is drained by it and leaves its debounce timer behind, whose
+    // persist has nothing in it and goes through, usually after the clear, which nothing here
+    // forces; the host's own test pins that order. Either way it must not say "saving".
+    expect(await page.evaluate(async () => {
+      await window.sphanoramaCore.project.create('before');
+      const flushing = window.sphanoramaHost.flush();
+      await window.sphanoramaCore.project.create('during');
+      return flushing;
+    })).toBeNull();
+
+    const origin = new URL(server.appUrl).origin;
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Storage.clearDataForOrigin', { origin, storageTypes: 'indexeddb' });
+    // Said at the clear, not at the next write, which a capture under review may never make.
+    await expect(page.locator('#core-caps')).toContainText('not saving', { timeout: 15000 });
+    // And still said once that timer has run: the host's 250 ms, waited out more than twice over.
+    await page.waitForTimeout(600);
+    await expect(page.locator('#core-caps')).toContainText('not saving');
+    expect(await page.evaluate(() => window.sphanoramaHost.flush())).not.toBeNull();
+    await page.evaluate(() => window.sphanoramaCore.project.create('after'));
+    await page.evaluate(() => window.sphanoramaCore.project.create('and after that'));
+    expect(await page.evaluate(() => window.sphanoramaHost.flush())).not.toBeNull();
+    await expect(page.locator('#core-caps')).toContainText('not saving');
+    // And nothing reconnected behind the indicator: the disk holds none of the writes since. A
+    // reconnect on the next use is caught here; one behind a backoff longer than the second this
+    // test runs for after the clear is not, which no test bounding time can rule out.
+    expect(await page.evaluate(() => new Promise((resolve, reject) => {
+      const request = indexedDB.open('sphanorama');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains('documents')) {
+          db.close();
+          resolve([]);
+          return;
+        }
+        const read = db.transaction('documents', 'readonly').objectStore('documents').getAll();
+        read.onsuccess = () => { db.close(); resolve(read.result); };
+        read.onerror = () => { db.close(); reject(read.error); };
+      };
+    }))).toEqual([]);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a boot that fails after the store is heard keeps its failure on screen', async ({ page }) => {
+  // The capabilities row says what failed, and the worker is still alive to push: a lost database
+  // after it must relabel the toggle and leave the failure where it is (ADR 0079). The listing is
+  // renamed on its way to the worker, so the core answers it as a method it does not have.
+  await page.addInitScript(() => {
+    const post = Worker.prototype.postMessage;
+    let renamed = false;
+    Worker.prototype.postMessage = function (message, transfer) {
+      if (!renamed && message?.kind === 'call' && message.method === 'ProjectManager.list') {
+        renamed = true;
+        message = { ...message, method: 'ProjectManager.noSuchMethod' };
+      }
+      return transfer === undefined ? post.call(this, message) : post.call(this, message, transfer);
+    };
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toHaveText('The core failed to load.', { timeout: 15000 });
+    await expect(page.locator('#core-caps')).toContainText('no method');
+    // Folded, so the push is seen arriving on the toggle: open, it reads "hide" either way.
+    await page.locator('#panel-toggle').click();
+    await expect(page.locator('#panel-toggle')).toHaveText('details');
+    const origin = new URL(server.appUrl).origin;
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Storage.clearDataForOrigin', { origin, storageTypes: 'indexeddb' });
+    await expect(page.locator('#panel-toggle')).toContainText('not saving', { timeout: 15000 });
+    await expect(page.locator('#core-caps')).toContainText('no method');
+  } finally {
+    await server.close();
+  }
+});
+
 test('a panel folded before the store is known says so once it is', async ({ page }) => {
   // The toggle answers a press from the moment the page's script runs, and the boot that learns
   // whether the store loaded comes later, so a panel folded during "starting…" was labelled before
   // anything was known. The label is redrawn once it is (ADR 0078).
   await page.addInitScript(() => {
-    const request = indexedDB.open('sphanorama', 999);
-    request.onsuccess = () => request.result.close();
     document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('panel-toggle')?.click();
     });
   });
   const server = await serve();
   try {
+    await commitNewerDatabase(page, server);
     await page.goto(server.appUrl);
     await expect(page.locator('#stage')).toContainText('the saved projects did not load',
                                                        { timeout: 15000 });

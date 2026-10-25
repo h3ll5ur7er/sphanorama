@@ -175,7 +175,7 @@ describe('persistence', () => {
     host.write(6, 'title', 'attic');
     await host.flush();
     expect(host.read(6, 'title')).toBe('attic');
-    expect(host.lastPersistError()).toMatch(/quota/i);
+    expect(host.persistFailing()).toMatch(/quota/i);
   });
 
   it('coalesces repeated writes to the same document', async () => {
@@ -211,6 +211,262 @@ describe('persistence', () => {
   });
 });
 
+describe('whether it is saving now', () => {
+  it('says when persisting starts failing and when it recovers, and only then', async () => {
+    // "Is this being kept now", not "did anything ever fail": the page shows it for the life of
+    // the page, so a store that fills mid-session is said, and so is its recovery (ADR 0079).
+    const store = fakeStore();
+    const host = await createDocumentHost(store, { flushDelayMs: 0 });
+    const heard: Array<string | null> = [];
+    host.onPersistChange((failing) => heard.push(failing));
+    expect(host.persistFailing()).toBeNull();
+
+    host.write(1, 'title', 'kept');
+    await host.flush();
+    expect(heard).toEqual([]);
+
+    store.failNextWrite();
+    host.write(1, 'title', 'refused');
+    await host.flush();
+    expect(heard).toHaveLength(1);
+    expect(heard[0]).toContain('quota exceeded');
+    expect(host.persistFailing()).toContain('quota exceeded');
+
+    // And failing again is not news: a sustained outage is one change, not a flicker of
+    // "saving" between each refused persist.
+    store.failNextWrite();
+    host.write(1, 'title', 'refused again');
+    await host.flush();
+    expect(heard).toHaveLength(1);
+    expect(host.persistFailing()).toContain('quota exceeded');
+
+    host.write(1, 'title', 'kept again');
+    await host.flush();
+    expect(heard).toHaveLength(2);
+    expect(heard[1]).toBeNull();
+    expect(host.persistFailing()).toBeNull();
+  });
+
+  it('is not failing for a store that would not load, since it never tries', async () => {
+    // A failed load is the boot's to say, through `loadError`; nothing is attempted after it, so
+    // there is no persist to fail and nothing to hear.
+    let lose: (reason: string) => void = () => {};
+    const host = await createDocumentHost({
+      loadAll: async () => { throw new Error('no storage'); },
+      // Refusing too, so that a host which did try would be heard failing.
+      put: async () => { throw new Error('no storage'); },
+      remove: async () => { throw new Error('no storage'); },
+      // And losing its database after, which a store whose open succeeded and whose read then
+      // failed can still do: the load is what was said, and nothing more is heard.
+      onLost: (listener) => { lose = listener; },
+    }, { flushDelayMs: 0 });
+    const heard: Array<string | null> = [];
+    host.onPersistChange((failing) => heard.push(failing));
+    host.write(1, 'title', 'x');
+    await host.flush();
+    lose('the database was closed');
+    expect(heard).toEqual([]);
+    expect(host.persistFailing()).toBeNull();
+  });
+});
+
+describe('a store that loses its database', () => {
+  it('says it is not saving at once, without waiting for a write to find out', async () => {
+    // A clear of the site's data closes the database under the page, and what was on disk goes
+    // with it. Nothing may be written for a while after, a capture being reviewed writes nothing,
+    // so the persist that would have found out is not coming (ADR 0079).
+    let lose: (reason: string) => void = () => {};
+    const host = await createDocumentHost({
+      loadAll: async () => ({ '1/title': 'kept' }),
+      // Succeeding, as a persist with nothing in it does and a debounce timer outliving the write
+      // it was set for runs one: what it says of the disk is nothing, since the disk is gone.
+      put: async () => {},
+      remove: async () => {},
+      onLost: (listener) => { lose = listener; },
+    }, { flushDelayMs: 0 });
+    const heard: Array<string | null> = [];
+    host.onPersistChange((failing) => heard.push(failing));
+    lose('the database was closed');
+    expect(heard).toEqual(['the database was closed']);
+    expect(host.persistFailing()).toBe('the database was closed');
+    // And it stays lost: a persist that goes through after it was put somewhere that is not
+    // where the documents were, or nowhere at all, and does not say "saving" again.
+    host.write(1, 'title', 'after');
+    await host.flush();
+    expect(host.persistFailing()).toBe('the database was closed');
+    expect(heard).toEqual(['the database was closed']);
+  });
+
+  it('keeps saying so through a persist with nothing in it', async () => {
+    // A write made while a flush runs is drained by it and leaves its debounce timer behind. That
+    // timer's persist has nothing in it and goes through, after the loss.
+    let lose: (reason: string) => void = () => {};
+    let host: Awaited<ReturnType<typeof createDocumentHost>> | null = null;
+    let writeDuring = true;
+    host = await createDocumentHost({
+      loadAll: async () => ({}),
+      put: async () => {
+        if (writeDuring) {
+          writeDuring = false;
+          host!.write(1, 'session', 'written during the flush');
+        }
+      },
+      remove: async () => {},
+      onLost: (listener) => { lose = listener; },
+    }, { flushDelayMs: 5 });
+    host.write(1, 'title', 'first');
+    await host.flush();
+    lose('the database was closed');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(host.persistFailing()).toBe('the database was closed');
+  });
+
+  it('gives the loss as the reason, not the failures it causes', async () => {
+    // Every persist after a loss fails against the closed database, with an error that says less
+    // than the loss did about why.
+    let lose: (reason: string) => void = () => {};
+    let closed = false;
+    const host = await createDocumentHost({
+      loadAll: async () => ({}),
+      put: async () => { if (closed) throw new Error('InvalidStateError'); },
+      remove: async () => {},
+      onLost: (listener) => { lose = listener; },
+    }, { flushDelayMs: 0 });
+    const heard: Array<string | null> = [];
+    host.onPersistChange((failing) => heard.push(failing));
+    closed = true;
+    lose('the database was closed');
+    host.write(1, 'title', 'refused');
+    await host.flush();
+    expect(host.persistFailing()).toBe('the database was closed');
+    expect(heard).toEqual(['the database was closed']);
+  });
+
+  it('still drains a flush whose persists go through', async () => {
+    // The flush stops at a persist that failed, which is not what a loss is: work queued during a
+    // persist that went through is still taken.
+    const rows = new Map<string, string>();
+    let lose: (reason: string) => void = () => {};
+    let host: Awaited<ReturnType<typeof createDocumentHost>> | null = null;
+    let writeDuring = true;
+    host = await createDocumentHost({
+      loadAll: async () => ({}),
+      put: async (key, value) => {
+        if (writeDuring) {
+          writeDuring = false;
+          host!.write(1, 'late', 'written during the persist');
+        }
+        rows.set(key, value);
+      },
+      remove: async () => {},
+      onLost: (listener) => { lose = listener; },
+    }, { flushDelayMs: 0 });
+    lose('the database was closed');
+    host.write(1, 'title', 'first');
+    await host.flush();
+    expect(rows.get('1/late')).toBe('written during the persist');
+  });
+});
+
+describe('a flush', () => {
+  it('drains writes that arrive during a persist that went through', async () => {
+    // The core keeps running while a persist awaits the store, so a flush can find as much queued
+    // after a persist as it carried. Only a failed persist is a reason to stop, since a flush
+    // that returned with work queued is answered "durable" (ADR 0079).
+    // After a failure it recovered from, too: the stop is on whether this persist went through,
+    // which neither a failure before it nor `persistFailing()` after a loss can say.
+    const rows = new Map<string, string>();
+    let host: Awaited<ReturnType<typeof createDocumentHost>> | null = null;
+    let failNext = true;
+    let writeDuring = false;
+    host = await createDocumentHost({
+      loadAll: async () => ({}),
+      put: async (key, value) => {
+        if (failNext) {
+          failNext = false;
+          throw new Error('quota exceeded');
+        }
+        if (writeDuring) {
+          writeDuring = false;
+          host!.write(1, 'session', 'written while the title persisted');
+        }
+        rows.set(key, value);
+      },
+      remove: async () => {},
+    }, { flushDelayMs: 0 });
+    host.write(1, 'title', 'refused');
+    await host.flush();
+    expect(host.persistFailing()).not.toBeNull();
+    writeDuring = true;
+    host.write(1, 'title', 'first');
+    await host.flush();
+    expect(rows.get('1/session')).toBe('written while the title persisted');
+    expect(host.persistFailing()).toBeNull();
+  });
+});
+
+describe('a listener that throws', () => {
+  it('does not cost the writes that failed, nor the persists after it', async () => {
+    // Listeners are the page's business; durability is the host's. One that throws must not turn
+    // a failed persist into a lost one.
+    const store = fakeStore();
+    const host = await createDocumentHost(store, { flushDelayMs: 0 });
+    host.onPersistChange(() => { throw new Error('listener broke'); });
+    // Nor cost the listeners after it the news.
+    const heard: Array<string | null> = [];
+    host.onPersistChange((failing) => heard.push(failing));
+    store.failNextWrite();
+    host.write(1, 'title', 'kept in the end');
+    await host.flush();
+    host.write(2, 'title', 'next');
+    await host.flush();
+    expect(store.rows.get('1/title')).toBe('kept in the end');
+    expect(store.rows.get('2/title')).toBe('next');
+    expect(heard).toHaveLength(2);
+    expect(heard[1]).toBeNull();
+  });
+});
+
+describe('a project removed while its persist is failing', () => {
+  it('is not written back by the retry', async () => {
+    // The retry puts back what failed unless something newer is queued for the key, and a removal
+    // is the other thing that can happen since: put back, the next persist removed the project and
+    // then wrote its title again, so a deleted project came back on disk with nothing but a title.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered: () => void = () => {};
+    const parkedInPut = new Promise<void>((resolve) => { entered = resolve; });
+    let parkNext = true;
+    const rows = new Map<string, string>();
+    const store: DocumentStore = {
+      loadAll: async () => ({}),
+      put: async (key, value) => {
+        if (parkNext) {
+          parkNext = false;
+          entered();
+          await gate;
+          throw new Error('quota exceeded');
+        }
+        rows.set(key, value);
+      },
+      remove: async (prefix) => {
+        for (const key of [...rows.keys()]) if (key.startsWith(prefix)) rows.delete(key);
+      },
+    };
+    const host = await createDocumentHost(store, { flushDelayMs: 0 });
+    host.write(1, 'title', 'doomed');
+    const parked = host.flush();
+    await parkedInPut;
+    host.remove(1);
+    release();
+    await parked;
+    await host.flush();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(host.projectIds()).toEqual([]);
+    expect([...rows.keys()]).toEqual([]);
+  });
+});
+
 describe('durability under failure and concurrency', () => {
   it('keeps failed writes pending so a later flush can retry them', async () => {
     // Pending work was cleared before the write was attempted and never put back, so one
@@ -230,7 +486,7 @@ describe('durability under failure and concurrency', () => {
     const host = await createDocumentHost(store, { flushDelayMs: 0 });
     host.write(1, 'title', 'kitchen');
     await host.flush();
-    expect(host.lastPersistError()).toContain('Quota');
+    expect(host.persistFailing()).toContain('Quota');
     expect(written.size).toBe(0);
 
     failing = false;

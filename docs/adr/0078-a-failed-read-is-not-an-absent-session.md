@@ -1,6 +1,8 @@
 # 0078 — A failed read is not an absent session
 
-**Status:** accepted; amends [0036](0036-a-resumable-capture-is-visible-in-the-project-listing.md)
+**Status:** accepted; amends [0036](0036-a-resumable-capture-is-visible-in-the-project-listing.md);
+amended by [0079](0079-the-page-says-whether-it-is-saving-now.md), which says whether it is
+saving now
 
 ## Context
 
