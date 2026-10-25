@@ -120,7 +120,7 @@ export function describeResumeRefusal(status: Status): ResumeRefusal {
  * that keeps failing must not lock the user out of capturing anything, and the line says what it
  * would cost (ADR 0078).
  */
-export function startOffer(listed: Result<ProjectSummary[]>, storageError: string | null = null): {
+export function startOffer(listed: Result<ProjectSummary[]>, storageError: string | null): {
   resume: ProjectId | null;
   message: string;
 } {

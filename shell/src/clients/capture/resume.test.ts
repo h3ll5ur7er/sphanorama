@@ -143,7 +143,7 @@ describe('describeResumeRefusal', () => {
 
 describe('startOffer', () => {
   it('offers the newest capture with a session, and says both ways on', () => {
-    const offer = startOffer({ ok: true, value: [project(1, true), project(3, true)] });
+    const offer = startOffer({ ok: true, value: [project(1, true), project(3, true)] }, null);
     expect(offer.resume).toBe(3);
     expect(offer.message).toBe(
       'core ready — resume the last capture, or enable the camera to start a new one',
@@ -151,7 +151,7 @@ describe('startOffer', () => {
   });
 
   it('offers a new capture alone when nothing was captured into', () => {
-    const offer = startOffer({ ok: true, value: [project(1, false)] });
+    const offer = startOffer({ ok: true, value: [project(1, false)] }, null);
     expect(offer.resume).toBeNull();
     expect(offer.message).toBe('core ready — enable the camera to continue');
   });
@@ -163,7 +163,7 @@ describe('startOffer', () => {
     const status = {
       code: 'StorageQuotaExceeded', component: 'ProjectManager', detail: 'full',
     } as const;
-    const offer = startOffer({ ok: false, status });
+    const offer = startOffer({ ok: false, status }, null);
     expect(offer.resume).toBeNull();
     expect(offer.message).toContain('could not tell whether a capture is waiting');
     // Named the way every other failure on the page is, not as a raw code.
