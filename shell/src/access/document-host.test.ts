@@ -300,6 +300,76 @@ describe('a store that loses its database', () => {
     expect(host.persistFailing()).toBe('the database was closed');
     expect(heard).toEqual(['the database was closed']);
   });
+
+  it('keeps saying so through a persist with nothing in it', async () => {
+    // A write made while a flush runs is drained by it and leaves its debounce timer behind. That
+    // timer's persist has nothing in it and goes through, after the loss.
+    let lose: (reason: string) => void = () => {};
+    let host: Awaited<ReturnType<typeof createDocumentHost>> | null = null;
+    let writeDuring = true;
+    host = await createDocumentHost({
+      loadAll: async () => ({}),
+      put: async () => {
+        if (writeDuring) {
+          writeDuring = false;
+          host!.write(1, 'session', 'written during the flush');
+        }
+      },
+      remove: async () => {},
+      onLost: (listener) => { lose = listener; },
+    }, { flushDelayMs: 5 });
+    host.write(1, 'title', 'first');
+    await host.flush();
+    lose('the database was closed');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(host.persistFailing()).toBe('the database was closed');
+  });
+
+  it('gives the loss as the reason, not the failures it causes', async () => {
+    // Every persist after a loss fails against the closed database, with an error that says less
+    // than the loss did about why.
+    let lose: (reason: string) => void = () => {};
+    let closed = false;
+    const host = await createDocumentHost({
+      loadAll: async () => ({}),
+      put: async () => { if (closed) throw new Error('InvalidStateError'); },
+      remove: async () => {},
+      onLost: (listener) => { lose = listener; },
+    }, { flushDelayMs: 0 });
+    const heard: Array<string | null> = [];
+    host.onPersistChange((failing) => heard.push(failing));
+    closed = true;
+    lose('the database was closed');
+    host.write(1, 'title', 'refused');
+    await host.flush();
+    expect(host.persistFailing()).toBe('the database was closed');
+    expect(heard).toEqual(['the database was closed']);
+  });
+
+  it('still drains a flush whose persists go through', async () => {
+    // The flush stops at a persist that failed, which is not what a loss is: work queued during a
+    // persist that went through is still taken.
+    const rows = new Map<string, string>();
+    let lose: (reason: string) => void = () => {};
+    let host: Awaited<ReturnType<typeof createDocumentHost>> | null = null;
+    let writeDuring = true;
+    host = await createDocumentHost({
+      loadAll: async () => ({}),
+      put: async (key, value) => {
+        if (writeDuring) {
+          writeDuring = false;
+          host!.write(1, 'late', 'written during the persist');
+        }
+        rows.set(key, value);
+      },
+      remove: async () => {},
+      onLost: (listener) => { lose = listener; },
+    }, { flushDelayMs: 0 });
+    lose('the database was closed');
+    host.write(1, 'title', 'first');
+    await host.flush();
+    expect(rows.get('1/late')).toBe('written during the persist');
+  });
 });
 
 describe('a flush', () => {

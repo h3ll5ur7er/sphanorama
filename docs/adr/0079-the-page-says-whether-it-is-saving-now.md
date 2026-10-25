@@ -19,8 +19,9 @@ answers "did anything ever fail to save" and not "is this being kept now".
 
 - **The host tracks whether persisting is failing now.** `persistFailing()` is set when a persist
   fails and cleared when one goes through, and `onPersistChange` hears each change. A store that
-  loses its database (`DocumentStore.onLost`) sets it for good: a persist that goes through after
-  the loss, even one with nothing in it, says nothing about documents whose database is gone.
+  loses its database (`DocumentStore.onLost`) sets it for good, and the loss stays its reason: a
+  persist that goes through after the loss, even one with nothing in it, says nothing about
+  documents whose database is gone, and one that fails against it says less about why.
   `lastPersistError()` keeps its meaning, the history. After a failed load nothing is persisted,
   so nothing fails, and the load is the boot's to say as before.
 - **The worker pushes each change** as a `persisting` message, and `RemoteCore.onPersistChange`

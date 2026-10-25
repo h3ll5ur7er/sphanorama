@@ -85,7 +85,7 @@ export async function createDocumentHost(
     }
   }
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let inFlight: Promise<void> | null = null;
+  let inFlight: Promise<boolean> | null = null;
 
   try {
     for (const [key, value] of Object.entries(await store.loadAll())) resident.set(key, value);
@@ -103,7 +103,8 @@ export async function createDocumentHost(
     });
   }
 
-  async function persist(): Promise<void> {
+  /** Whether it went through, which after a loss is not what `failing` says. */
+  async function persist(): Promise<boolean> {
     const writes = [...pending];
     const removals = [...removed];
     pending.clear();
@@ -112,6 +113,7 @@ export async function createDocumentHost(
       for (const project of removals) await store.remove(`${project}/`);
       for (const [key, value] of writes) await store.put(key, value);
       setFailing(lost);
+      return true;
     } catch (cause) {
       persistError = String(cause);
       // Put the work back, or a single transient quota error means the resident state can never
@@ -124,7 +126,9 @@ export async function createDocumentHost(
       for (const [key, value] of writes) {
         if (!pending.has(key) && resident.has(key)) pending.set(key, value);
       }
-      setFailing(persistError);
+      // A loss stays the reason: what follows from it says less about why than it does.
+      setFailing(lost ?? persistError);
+      return false;
     }
   }
 
@@ -133,8 +137,8 @@ export async function createDocumentHost(
    * older one landing after a newer one restores stale data; a `flush()` that awaited only the
    * handle it happened to see would also return before the other had committed.
    */
-  function enqueue(): Promise<void> {
-    inFlight = (inFlight ?? Promise.resolve()).then(persist, persist);
+  function enqueue(): Promise<boolean> {
+    inFlight = (inFlight ?? Promise.resolve(true)).then(persist, persist);
     return inFlight;
   }
 
@@ -197,12 +201,12 @@ export async function createDocumentHost(
       // guarantee that is not one.
       await inFlight;
       while (pending.size > 0 || removed.size > 0) {
-        await enqueue();
         // A failed persist requeues what it could not write. Retrying it forever here would
         // hang the page on a full disk; the caller reads persistFailing() and decides. Work left
         // after one that went through arrived while it ran, and is drained: the queue's size
         // cannot tell the two apart, and a flush that stopped on it was answered "durable".
-        if (failing !== null) break;
+        // Nor can `failing`, which a loss holds whether or not the persist went through.
+        if (!(await enqueue())) break;
       }
     },
 
