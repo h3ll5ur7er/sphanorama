@@ -310,9 +310,25 @@ async function startCore(tier: TierAccess) {
                      tier);
 }
 
-function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean,
-                            saving: boolean) {
+// What the capabilities row was last drawn from, so a change in whether the store is saving can
+// redraw it without asking the core again.
+let shownCapabilities: { capabilities: RuntimeCapabilities; canSpill: boolean } | null = null;
+function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean) {
+  shownCapabilities = { capabilities, canSpill };
   coreCaps.textContent = formatCapabilities(capabilities, canSpill, saving);
+}
+
+/**
+ * Says whether this page's documents are being kept, on both places that say it: the capabilities
+ * row, and the panel toggle that stays on screen when the row folds away. Both the boot's failed
+ * load and a persist that is failing now mean not kept (ADR 0078).
+ */
+function showSaving(now: boolean) {
+  saving = now;
+  if (shownCapabilities !== null) {
+    renderCapabilities(shownCapabilities.capabilities, shownCapabilities.canSpill);
+  }
+  openPanel(panel.dataset.open === 'true');
 }
 
 /**
@@ -1649,11 +1665,14 @@ async function main() {
     renderCapabilities(await core.capabilities({
       hardwareConcurrency: navigator.hardwareConcurrency ?? 1,
       crossOriginIsolated: self.crossOriginIsolated,
-    }), remote.canSpill(), remote.storageError() === null);
-    saving = remote.storageError() === null;
+    }), remote.canSpill());
     // Redrawn, since the toggle answers a press from the start and a panel folded during the boot
-    // was labelled before this was known.
-    openPanel(panel.dataset.open === 'true');
+    // was labelled before this was known. Then kept current: a store that loads and later fills,
+    // or has its site data cleared, stops saving in the middle of a capture, and says so until a
+    // persist goes through again.
+    const loaded = remote.storageError() === null;
+    showSaving(loaded);
+    remote.onPersistChange((failing) => showSaving(loaded && failing === null));
     // Exposed for the end-to-end suite to drive the boundary directly. The client itself never
     // reads these; it holds `core` and `remote` in scope.
     Object.assign(window as unknown as Record<string, unknown>, {

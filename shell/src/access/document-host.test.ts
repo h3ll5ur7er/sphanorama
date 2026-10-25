@@ -211,6 +211,54 @@ describe('persistence', () => {
   });
 });
 
+describe('whether it is saving now', () => {
+  it('says when persisting starts failing and when it recovers, and only then', async () => {
+    // `lastPersistError()` holds on to the last failure for good, which is the right answer to
+    // "did anything ever fail" and the wrong one to "is this being kept now". The page shows the
+    // second, for the life of the page, so a store that fills mid-session is said (ADR 0078).
+    const store = fakeStore();
+    const host = await createDocumentHost(store, { flushDelayMs: 0 });
+    const heard: Array<string | null> = [];
+    host.onPersistChange((failing) => heard.push(failing));
+    expect(host.persistFailing()).toBeNull();
+
+    host.write(1, 'title', 'kept');
+    await host.flush();
+    expect(heard).toEqual([]);
+
+    store.failNextWrite();
+    host.write(1, 'title', 'refused');
+    await host.flush();
+    expect(heard).toHaveLength(1);
+    expect(heard[0]).toContain('quota exceeded');
+    expect(host.persistFailing()).toContain('quota exceeded');
+
+    host.write(1, 'title', 'kept again');
+    await host.flush();
+    expect(heard).toHaveLength(2);
+    expect(heard[1]).toBeNull();
+    expect(host.persistFailing()).toBeNull();
+    // The history is not the state: the last failure is still reported as having happened.
+    expect(host.lastPersistError()).toContain('quota exceeded');
+  });
+
+  it('is not failing for a store that would not load, since it never tries', async () => {
+    // A failed load is the boot's to say, through `loadError`; nothing is attempted after it, so
+    // there is no persist to fail and nothing to hear.
+    const host = await createDocumentHost({
+      loadAll: async () => { throw new Error('no storage'); },
+      put: async () => {},
+      remove: async () => {},
+    }, { flushDelayMs: 0 });
+    const heard: Array<string | null> = [];
+    host.onPersistChange((failing) => heard.push(failing));
+    host.write(1, 'title', 'x');
+    await host.flush();
+    expect(heard).toEqual([]);
+    expect(host.persistFailing()).toBeNull();
+  });
+});
+
 describe('durability under failure and concurrency', () => {
   it('keeps failed writes pending so a later flush can retry them', async () => {
     // Pending work was cleared before the write was attempted and never put back, so one

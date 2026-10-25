@@ -43,6 +43,7 @@ async function boot(seq: number, coreUrl: string, access: ResidentAccess): Promi
   // that is still loading would answer "no such project" to a session it should resume.
   const stores = await openStores(access);
   ({ spill, documents } = stores);
+  stores.documents.onPersistChange((failing) => scope.postMessage({ kind: 'persisting', failing }));
 
   // Imported at runtime rather than bundled: the module is an artifact of the C++ build, and the
   // two builds (ADR 0011) are selected by which one the deploy copied in. The page resolved the

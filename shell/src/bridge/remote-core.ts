@@ -61,6 +61,8 @@ export interface RemoteCore extends CoreRuntime {
   flush(): Promise<string | null>;
   /** Fires when `ICameraAccess::Close` reached the host: only the page can stop a MediaStream. */
   onCloseCamera(handler: () => void): void;
+  /** Fires each time the worker's document store starts failing to save, or recovers. */
+  onPersistChange(handler: (failing: string | null) => void): void;
   /** Fires when the core wants the locks back: only the page can apply constraints to a track. */
   onReleaseLocks(handler: () => void): void;
   /**
@@ -87,6 +89,7 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
   const pending = new Map<number, { resolve: (m: FromWorker) => void; reject: (e: Error) => void }>();
   let closeCamera: () => void = () => {};
   let releaseLocks: () => void = () => {};
+  let persistChange: (failing: string | null) => void = () => {};
   let seq = 0;
   // Set once the worker has failed, and never cleared: a worker that could not load its script is
   // not going to load it later, and a call made after that has to fail immediately rather than
@@ -130,6 +133,10 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
     }
     if (message.kind === 'releaseLocks') {
       releaseLocks();
+      return;
+    }
+    if (message.kind === 'persisting') {
+      persistChange(message.failing);
       return;
     }
     const waiting = pending.get(message.seq);
@@ -217,6 +224,9 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
     },
     onCloseCamera(handler: () => void) {
       closeCamera = handler;
+    },
+    onPersistChange(handler: (failing: string | null) => void) {
+      persistChange = handler;
     },
     onReleaseLocks(handler: () => void) {
       releaseLocks = handler;

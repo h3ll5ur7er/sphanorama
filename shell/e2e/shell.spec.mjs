@@ -296,6 +296,32 @@ test('a document store that will not open is not read as having nothing', async 
   }
 });
 
+test('a store that stops saving mid-session says so, and stops once it saves', async ({ page }) => {
+  // The store loads, and then its writes are refused: a full disk, which Chromium can be made to
+  // have by shrinking the origin's quota. The boot said nothing because nothing had failed yet, so
+  // the page has to hear it from the persist that failed, and hear the next one go through
+  // (ADR 0078).
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#core-caps')).toContainText('SIMD');
+    await expect(page.locator('#core-caps')).not.toContainText('not saving');
+
+    const origin = new URL(server.appUrl).origin;
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Storage.overrideQuotaForOrigin', { origin, quotaSize: 1 });
+    await page.evaluate(() => window.sphanoramaCore.project.create('refused'));
+    await expect(page.locator('#core-caps')).toContainText('not saving', { timeout: 15000 });
+
+    await cdp.send('Storage.overrideQuotaForOrigin', { origin });
+    await page.evaluate(() => window.sphanoramaCore.project.create('kept'));
+    await expect(page.locator('#core-caps')).not.toContainText('not saving', { timeout: 15000 });
+  } finally {
+    await server.close();
+  }
+});
+
 test('a panel folded before the store is known says so once it is', async ({ page }) => {
   // The toggle answers a press from the moment the page's script runs, and the boot that learns
   // whether the store loaded comes later, so a panel folded during "starting…" was labelled before

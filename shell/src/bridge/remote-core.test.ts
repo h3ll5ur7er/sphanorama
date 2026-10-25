@@ -202,6 +202,19 @@ describe('what the worker asks back', () => {
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
+  it('hands on each change in whether the store is saving, failure and recovery both', async () => {
+    // Pushed rather than asked: a store that fills mid-session fails a persist nobody flushed, and
+    // the page says it for as long as it lasts (ADR 0078).
+    const w = fakeWorker();
+    const { remote } = await w.boot();
+    const heard: Array<string | null> = [];
+    remote.onPersistChange((failing) => heard.push(failing));
+
+    w.reply({ kind: 'persisting', failing: 'QuotaExceededError' });
+    w.reply({ kind: 'persisting', failing: null });
+    expect(heard).toEqual(['QuotaExceededError', null]);
+  });
+
   it('carries a persist failure back from the flush that found it', async () => {
     const w = fakeWorker();
     const { remote } = await w.boot();

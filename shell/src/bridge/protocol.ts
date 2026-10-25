@@ -98,4 +98,9 @@ export type FromWorker =
   /** `ICameraAccess::Close` reached the host. Only the page can stop a MediaStream. */
   | { kind: 'closeCamera' }
   /** The core wants the camera's locks back. Only the page can apply constraints to a track. */
-  | { kind: 'releaseLocks' };
+  | { kind: 'releaseLocks' }
+  /**
+   * Whether the document store is saving changed: why it is failing, or null once a persist goes
+   * through again. Pushed, since the persist that fails is one nobody asked for (ADR 0078).
+   */
+  | { kind: 'persisting'; failing: string | null };

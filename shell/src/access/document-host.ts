@@ -35,6 +35,14 @@ export interface DocumentHost {
    * persists nothing, so an empty listing says nothing about what is on disk (ADR 0078).
    */
   loadError(): string | null;
+  /**
+   * Why persisting is failing now, or null when the last persist went through. Unlike
+   * `lastPersistError()` it clears on recovery: it answers "is this being kept", which the page
+   * says for the life of the page (ADR 0078). Null after a failed load, which persists nothing.
+   */
+  persistFailing(): string | null;
+  /** Called with `persistFailing()` each time it changes. */
+  onPersistChange(listener: (failing: string | null) => void): void;
 }
 
 const DEFAULT_FLUSH_DELAY_MS = 250;
@@ -52,6 +60,13 @@ export async function createDocumentHost(
   const removed = new Set<number>();
   let persistError: string | null = null;
   let loadError: string | null = null;
+  let failing: string | null = null;
+  const listeners: Array<(failing: string | null) => void> = [];
+  function setFailing(now: string | null): void {
+    if (now === failing) return;
+    failing = now;
+    for (const listener of listeners) listener(now);
+  }
   let timer: ReturnType<typeof setTimeout> | null = null;
   let inFlight: Promise<void> | null = null;
 
@@ -72,8 +87,10 @@ export async function createDocumentHost(
     try {
       for (const project of removals) await store.remove(`${project}/`);
       for (const [key, value] of writes) await store.put(key, value);
+      setFailing(null);
     } catch (cause) {
       persistError = String(cause);
+      setFailing(persistError);
       // Put the work back, or a single transient quota error means the resident state can never
       // become durable again — the caller has no way to know which documents to rewrite. A newer
       // value already queued for the same key wins: this is a retry of what failed, not a
@@ -166,6 +183,14 @@ export async function createDocumentHost(
 
     loadError(): string | null {
       return loadError;
+    },
+
+    persistFailing(): string | null {
+      return failing;
+    },
+
+    onPersistChange(listener: (failing: string | null) => void): void {
+      listeners.push(listener);
     },
   };
 }
