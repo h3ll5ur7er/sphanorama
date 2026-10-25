@@ -33,7 +33,9 @@ other way, answering any failed read as `NotFound`, "no session to resume".
   document host keeps the app running from memory when its database will not open, so the core
   lists nothing and fails nothing. The fold is the store's, one layer below this rule. The host
   now persists nothing after a failed load, and the worker reports the load's error at boot. The
-  page then shows the failed-listing line (`DocumentHost.loadError`, `RemoteCore.storageError`).
+  page then shows the failed-listing line (`DocumentHost.loadError`, `RemoteCore.storageError`),
+  adding that a new capture would not be saved. The capabilities row keeps "not saving projects"
+  up for the life of the page, since the capture the stage line warns about rewrites that line.
 
 ## Consequences
 
@@ -42,10 +44,17 @@ other way, answering any failed read as `NotFound`, "no session to resume".
   store that can fail does not inherit a silent fold.
 - A failed load is reachable. Private browsing, blocked storage, a corrupt database, and an older
   build meeting a newer one's database (`VersionError`) all start the host empty. Before this, the
-  page then invited a new capture. Its `Begin` emptied the tier, `Create` reissued project 1, and
-  the host persisted the new capture's title and session over the old one's on disk. Now the disk
-  is left alone, and the line says a capture may be waiting. The tier is not, since a new capture
+  page then invited a new capture. Its `Begin` emptied the tier and `Create` reissued project 1.
+  Where the database opened and only its load failed, the host then persisted the new capture's
+  title and session over the old one's on disk. Where the open itself failed, as with
+  `VersionError`, every write failed too and the documents survived. Now the disk is left alone
+  either way, and the line says a capture may be waiting. The tier is not, since a new capture
   pressed anyway still empties it: that is the choice the line puts to the user.
+- A host that loaded is still a copy taken once. A tab that loaded before another tab captured,
+  or a page restored from the back/forward cache, reissues a project id the other has since
+  written and persists over it. That predates this decision and is not closed by it: it needs ids
+  that are never reissued, or a store that refuses to create over an existing project, and is open
+  on the roadmap.
 - One project's unreadable session fails the whole listing, the others' with it. Today the page
   lists once at load to find one capture to offer, so nothing is lost that it used.
 - A title that cannot be read still lists as an empty title. That costs a blank row and no frames.

@@ -69,6 +69,16 @@ describe('formatCapabilities', () => {
     expect(text).toMatch(/no simd/i);
   });
 
+  it('says for the life of the page that nothing is being saved, and stays quiet otherwise', () => {
+    // A store that would not load keeps the app running from memory (ADR 0078). The stage line says
+    // so once, and the next stage write replaces it, so a capture started anyway would run to the
+    // end looking kept. This line is not rewritten during a capture.
+    const caps = { simd: true, threads: false, sharedMemory: false, hardwareConcurrency: 0 };
+    expect(formatCapabilities(caps, true, false)).toMatch(/not saving/i);
+    expect(formatCapabilities(caps, true, true)).not.toMatch(/sav/i);
+    expect(formatCapabilities(caps, true)).not.toMatch(/sav/i);
+  });
+
   it('says when there is nowhere to spill, and stays quiet when there is', () => {
     // A capture with no spill tier is capped at what fits in RAM (ADR 0020). It will look like an
     // arbitrary refusal partway through a sphere unless the reason is on screen before it

@@ -132,7 +132,8 @@ export function startOffer(listed: Result<ProjectSummary[]>, storageError: strin
       resume: null,
       message:
         'core ready, but it could not tell whether a capture is waiting: the saved projects did ' +
-        `not load (${storageError}) — reload to try again; a new capture would clear one that is`,
+        `not load (${storageError}) — reload to try again; a new capture would clear one ` +
+        'that is, and would not be saved',
     };
   }
   if (!listed.ok) {

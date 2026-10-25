@@ -91,6 +91,9 @@ describe('hydration', () => {
     host.remove(1);
     host.write(2, 'title', 'other');
     await host.flush();
+    // And past the debounce, which is how almost every real write persists: a host that only
+    // `flush` refused would pass up to here and then write when its timer fired.
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(writes).toBe(0);
     expect(removals).toBe(0);
     expect(host.read(2, 'title')).toBe('other');

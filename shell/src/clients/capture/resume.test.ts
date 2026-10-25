@@ -179,6 +179,8 @@ describe('startOffer', () => {
     const offer = startOffer({ ok: true, value: [] }, 'VersionError: the database is newer');
     expect(offer.resume).toBeNull();
     expect(offer.message).toContain('could not tell whether a capture is waiting');
+    // And what a new capture would be, as well as what it would cost: nothing is written down.
+    expect(offer.message).toContain('would not be saved');
     expect(offer.message).toContain('VersionError: the database is newer');
     expect(offer.message).toContain('reload');
     expect(offer.message).not.toContain('enable the camera to continue');

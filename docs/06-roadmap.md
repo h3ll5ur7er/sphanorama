@@ -366,6 +366,12 @@ What is left, and what has landed since:
   call came in mid-capture", not "come back to it tomorrow" — so no `navigator.storage.persist()`,
   and the tier is cleared when a *new* session begins rather than at worker startup, which is what
   lets a reload find its frames still there.
+- **A second tab can write a project over the first's — open.** The document host loads
+  IndexedDB once, and `ProjectManager::Create` issues one past the highest id it holds. A tab that
+  loaded before another tab captured, or a page restored from the back/forward cache, issues the
+  other's id again and persists its title and session over the other capture's (ADR 0078 records
+  it). Ids that are never reissued, or a create that the store refuses over an existing project,
+  would close it.
 - **A capture whose phone was turned partway through — open.** `Begin` takes the field-of-view
   pair from the camera as the phone is held then, and the page names the wide angle onto whichever
   axis is long at that moment; the spec keeps that pair for the life of the capture, and since

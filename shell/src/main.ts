@@ -307,8 +307,9 @@ async function startCore(tier: TierAccess) {
                      tier);
 }
 
-function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean) {
-  coreCaps.textContent = formatCapabilities(capabilities, canSpill);
+function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean,
+                            saving: boolean) {
+  coreCaps.textContent = formatCapabilities(capabilities, canSpill, saving);
 }
 
 /**
@@ -1586,11 +1587,15 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
  * whether there is a capture to come back to, and asking twice for one answer would be a second
  * round trip for a question already answered (ADR 0036).
  */
-async function reportFacade(core: SphanoramaCore): Promise<Result<ProjectSummary[]>> {
+async function reportFacade(core: SphanoramaCore,
+                            storageError: string | null): Promise<Result<ProjectSummary[]>> {
   const listed = await core.project.list();
-  facadeOut.textContent = listed.ok
-    ? `${core.methods().length} methods · ${listed.value.length} projects`
-    : `call failed: ${listed.status.code}`;
+  // An empty listing from a store that would not load is not a count of nothing (ADR 0078).
+  facadeOut.textContent = !listed.ok
+    ? `call failed: ${listed.status.code}`
+    : storageError !== null
+      ? `${core.methods().length} methods · projects not loaded`
+      : `${core.methods().length} methods · ${listed.value.length} projects`;
   return listed;
 }
 
@@ -1641,7 +1646,7 @@ async function main() {
     renderCapabilities(await core.capabilities({
       hardwareConcurrency: navigator.hardwareConcurrency ?? 1,
       crossOriginIsolated: self.crossOriginIsolated,
-    }), remote.canSpill());
+    }), remote.canSpill(), remote.storageError() === null);
     // Exposed for the end-to-end suite to drive the boundary directly. The client itself never
     // reads these; it holds `core` and `remote` in scope.
     Object.assign(window as unknown as Record<string, unknown>, {
@@ -1659,7 +1664,8 @@ async function main() {
     // Asked before anything is offered, and answered without touching the camera: whether a
     // project has a session to return to is a fact about the project, and finding it out by
     // *trying* would start the very capture the user has not chosen yet (ADR 0036).
-    const { resume, message } = startOffer(await reportFacade(core), remote.storageError());
+    const storageError = remote.storageError();
+    const { resume, message } = startOffer(await reportFacade(core, storageError), storageError);
     resumeButton.hidden = resume === null;
     stage.textContent = message;
     // Known from the boot, so neither offer is made to a core that cannot read this page's motion.

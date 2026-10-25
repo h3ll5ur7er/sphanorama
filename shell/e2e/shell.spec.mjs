@@ -261,7 +261,9 @@ test('a document store that will not open is not read as having nothing', async 
   //
   // Opened at a newer version than the build asks for, from the page before any of its scripts
   // run: open requests on one database are served in order, so the worker's comes after this one
-  // and fails with a VersionError, which is what an older build meets after a newer one ran.
+  // and fails with a VersionError, which is what an older build meets after a newer one ran. What
+  // this pins is the warning: with the open refused every write fails too, so it cannot show the
+  // host writing nothing, which the host's own test pins.
   await page.addInitScript(() => {
     const request = indexedDB.open('sphanorama', 999);
     request.onsuccess = () => request.result.close();
@@ -272,7 +274,12 @@ test('a document store that will not open is not read as having nothing', async 
     await expect(page.locator('#stage')).toContainText('the saved projects did not load',
                                                        { timeout: 15000 });
     await expect(page.locator('#stage')).toContainText('a new capture would clear one');
+    await expect(page.locator('#stage')).toContainText('VersionError');
     await expect(page.locator('#stage')).not.toContainText('enable the camera to continue');
+    // Said where it stays up for the life of the page, since the stage line is rewritten by the
+    // capture it warns about; and the diagnostic row does not count an unread store as empty.
+    await expect(page.locator('#core-caps')).toContainText('not saving');
+    await expect(page.locator('#facade')).not.toContainText('0 projects');
   } finally {
     await server.close();
   }
