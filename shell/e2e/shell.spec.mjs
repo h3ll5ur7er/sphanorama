@@ -249,6 +249,8 @@ test('loads the core and reports its capabilities', async ({ page }) => {
     // core moved off the main thread — so a browser that stopped supporting it must fail here
     // rather than at the moment a capture runs out of memory.
     await expect(page.locator('#core-caps')).not.toContainText('no spill tier');
+    // And it is saving, which is said only when it is not (ADR 0078).
+    await expect(page.locator('#core-caps')).not.toContainText('not saving');
   } finally {
     await server.close();
   }
@@ -279,6 +281,7 @@ test('a document store that will not open is not read as having nothing', async 
     // Said where it stays up for the life of the page, since the stage line is rewritten by the
     // capture it warns about; and the diagnostic row does not count an unread store as empty.
     await expect(page.locator('#core-caps')).toContainText('not saving');
+    await expect(page.locator('#facade')).toContainText('projects not loaded');
     await expect(page.locator('#facade')).not.toContainText('0 projects');
 
     // And still on screen once a capture is running, which is when it matters: the panel folds
