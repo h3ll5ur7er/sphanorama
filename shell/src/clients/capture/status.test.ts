@@ -51,21 +51,21 @@ describe('formatCapabilities', () => {
     // diagnosed from a screenshot instead of a debugging session.
     const text = formatCapabilities({
       simd: true, threads: false, sharedMemory: false, hardwareConcurrency: 0,
-    }, true);
+    }, true, true);
     expect(text).toMatch(/single-threaded/i);
   });
 
   it('reports the thread count when there is one', () => {
     const text = formatCapabilities({
       simd: true, threads: true, sharedMemory: true, hardwareConcurrency: 8,
-    }, true);
+    }, true, true);
     expect(text).toMatch(/8/);
   });
 
   it('calls out missing SIMD, which is a build mistake rather than a device limit', () => {
     const text = formatCapabilities({
       simd: false, threads: false, sharedMemory: false, hardwareConcurrency: 0,
-    }, true);
+    }, true, true);
     expect(text).toMatch(/no simd/i);
   });
 
@@ -76,7 +76,6 @@ describe('formatCapabilities', () => {
     const caps = { simd: true, threads: false, sharedMemory: false, hardwareConcurrency: 0 };
     expect(formatCapabilities(caps, true, false)).toMatch(/not saving/i);
     expect(formatCapabilities(caps, true, true)).not.toMatch(/sav/i);
-    expect(formatCapabilities(caps, true)).not.toMatch(/sav/i);
   });
 
   it('says when there is nowhere to spill, and stays quiet when there is', () => {
@@ -86,8 +85,8 @@ describe('formatCapabilities', () => {
     const capabilities = {
       simd: true, threads: false, sharedMemory: false, hardwareConcurrency: 0,
     };
-    expect(formatCapabilities(capabilities, false)).toMatch(/no spill/i);
-    expect(formatCapabilities(capabilities, true)).not.toMatch(/spill/i);
+    expect(formatCapabilities(capabilities, false, true)).toMatch(/no spill/i);
+    expect(formatCapabilities(capabilities, true, true)).not.toMatch(/spill/i);
   });
 });
 

@@ -60,7 +60,7 @@ const targetArrow = el<HTMLElement>('target-arrow');
 const panel = el<HTMLElement>('panel');
 const panelToggle = el<HTMLButtonElement>('panel-toggle');
 // Whether this page's documents are being kept, known from the boot (ADR 0078). Until then the page
-// has not said otherwise, and the folded label is the plain one.
+// has not said otherwise, and the folded label is the plain one; the boot redraws it.
 let saving = true;
 function openPanel(open: boolean) {
   panel.dataset.open = String(open);
@@ -1651,6 +1651,9 @@ async function main() {
       crossOriginIsolated: self.crossOriginIsolated,
     }), remote.canSpill(), remote.storageError() === null);
     saving = remote.storageError() === null;
+    // Redrawn, since the toggle answers a press from the start and a panel folded during the boot
+    // was labelled before this was known.
+    openPanel(panel.dataset.open === 'true');
     // Exposed for the end-to-end suite to drive the boundary directly. The client itself never
     // reads these; it holds `core` and `remote` in scope.
     Object.assign(window as unknown as Record<string, unknown>, {

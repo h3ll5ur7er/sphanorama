@@ -296,6 +296,29 @@ test('a document store that will not open is not read as having nothing', async 
   }
 });
 
+test('a panel folded before the store is known says so once it is', async ({ page }) => {
+  // The toggle answers a press from the moment the page's script runs, and the boot that learns
+  // whether the store loaded comes later, so a panel folded during "starting…" was labelled before
+  // anything was known. The label is redrawn once it is (ADR 0078).
+  await page.addInitScript(() => {
+    const request = indexedDB.open('sphanorama', 999);
+    request.onsuccess = () => request.result.close();
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('panel-toggle')?.click();
+    });
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('the saved projects did not load',
+                                                       { timeout: 15000 });
+    await expect(page.locator('#panel-toggle')).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('#panel-toggle')).toContainText('not saving');
+  } finally {
+    await server.close();
+  }
+});
+
 test('a listing that failed is not read as one with nothing waiting', async ({ page }) => {
   // No store in this build fails a session read, so the listing is made to fail at the page's
   // own handle on the core, which the page assigns before it lists. What this pins is the page

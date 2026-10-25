@@ -87,7 +87,7 @@ export function describeGuidanceFailure(status: Status): string {
 }
 
 export function formatCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean,
-                                   saving = true): string {
+                                   saving: boolean): string {
   const parts: string[] = [];
   parts.push(capabilities.threads
     ? `${capabilities.hardwareConcurrency} threads`
