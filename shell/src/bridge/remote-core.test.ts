@@ -253,7 +253,7 @@ describe('what the worker asks back', () => {
     const flushing = remote.flush();
     const seq = (w.sent.find((e) => e.message.kind === 'flush')!.message as { seq: number }).seq;
 
-    w.reply({ kind: 'flushed', seq, persistError: 'quota exceeded' });
+    w.reply({ kind: 'flushed', seq, failing: 'quota exceeded' });
     await expect(flushing).resolves.toBe('quota exceeded');
   });
 });
@@ -428,7 +428,7 @@ describe('a boot that fails', () => {
     const connecting = connectCore(w.worker, 'https://example.test/core.js', unclaimed);
     await Promise.resolve();
 
-    w.reply({ kind: 'flushed', seq: w.seqOf('boot'), persistError: null });
+    w.reply({ kind: 'flushed', seq: w.seqOf('boot'), failing: null });
 
     await expect(connecting).rejects.toThrow(/something else/);
     expect(w.wasTerminated()).toBe(true);

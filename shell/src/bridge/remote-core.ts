@@ -236,7 +236,7 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
       if (answer.kind !== 'flushed') {
         throw new Error('the worker answered a flush with something else');
       }
-      return answer.persistError;
+      return answer.failing;
     },
     onCloseCamera(handler: () => void) {
       closeCamera = handler;

@@ -377,7 +377,9 @@ test('a store whose site data is cleared mid-session says so for the rest of the
     await page.evaluate(() => window.sphanoramaCore.project.create('and after that'));
     expect(await page.evaluate(() => window.sphanoramaHost.flush())).not.toBeNull();
     await expect(page.locator('#core-caps')).toContainText('not saving');
-    // And nothing reconnected behind the indicator: the disk holds none of the writes since.
+    // And nothing reconnected behind the indicator: the disk holds none of the writes since. A
+    // reconnect on the next use is caught here; one behind a backoff longer than the second this
+    // test runs for after the clear is not, which no test bounding time can rule out.
     expect(await page.evaluate(() => new Promise((resolve, reject) => {
       const request = indexedDB.open('sphanorama');
       request.onerror = () => reject(request.error);
@@ -393,6 +395,39 @@ test('a store whose site data is cleared mid-session says so for the rest of the
         read.onerror = () => { db.close(); reject(read.error); };
       };
     }))).toEqual([]);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a boot that fails after the store is heard keeps its failure on screen', async ({ page }) => {
+  // The capabilities row says what failed, and the worker is still alive to push: a lost database
+  // after it must relabel the toggle and leave the failure where it is (ADR 0079). The listing is
+  // renamed on its way to the worker, so the core answers it as a method it does not have.
+  await page.addInitScript(() => {
+    const post = Worker.prototype.postMessage;
+    let renamed = false;
+    Worker.prototype.postMessage = function (message, transfer) {
+      if (!renamed && message?.kind === 'call' && message.method === 'ProjectManager.list') {
+        renamed = true;
+        message = { ...message, method: 'ProjectManager.noSuchMethod' };
+      }
+      return transfer === undefined ? post.call(this, message) : post.call(this, message, transfer);
+    };
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toHaveText('The core failed to load.', { timeout: 15000 });
+    await expect(page.locator('#core-caps')).toContainText('no method');
+    // Folded, so the push is seen arriving on the toggle: open, it reads "hide" either way.
+    await page.locator('#panel-toggle').click();
+    await expect(page.locator('#panel-toggle')).toHaveText('details');
+    const origin = new URL(server.appUrl).origin;
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Storage.clearDataForOrigin', { origin, storageTypes: 'indexeddb' });
+    await expect(page.locator('#panel-toggle')).toContainText('not saving', { timeout: 15000 });
+    await expect(page.locator('#core-caps')).toContainText('no method');
   } finally {
     await server.close();
   }

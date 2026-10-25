@@ -92,7 +92,7 @@ export type FromWorker =
    * Whether the documents are kept as of the flush: why the store would not load, or why a
    * persist is failing now, and null once everything committed (ADR 0079).
    */
-  | { kind: 'flushed'; seq: number; persistError: string | null }
+  | { kind: 'flushed'; seq: number; failing: string | null }
   /**
    * Anything that threw where a reply was expected. Startup is three failures now — the worker
    * boots, the module loads inside it, the store opens — so the detail travels rather than being
