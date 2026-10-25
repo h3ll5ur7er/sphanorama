@@ -508,6 +508,23 @@ TEST(AverageRotations, AnchorsAHalfTurnApartLeaveTheWholePieceAmbiguous) {
       AverageRotations(edges, std::vector<Quat>{truth[0], truth[1], Quat{0, 0, 0, 0}}, 1e-6);
   ASSERT_TRUE(agreed.valid);
   EXPECT_TRUE(agreed.ambiguous.empty());
+
+  // **And nearly a half turn is judged by the same separation as a frame's own average.** Three
+  // hundredths of a degree short leaves the gauge's top two eigenvalues a relative 5.2e-4 apart, a
+  // tie by the solver's measure and not by the eigensolver's; a tenth short leaves 1.7e-3, which is
+  // not one by either.
+  const auto turned = [&](double degrees) {
+    return std::vector<Quat>{
+        truth[0],
+        Normalize(Multiply(FromAxisAngle(Vec3{1, 0, 0}, degrees / kDegPerRad), truth[1])),
+        Quat{0, 0, 0, 0}};
+  };
+  const AveragedRotations close = AverageRotations(edges, turned(179.97), 1e-6);
+  ASSERT_TRUE(close.valid);
+  EXPECT_EQ(close.ambiguous, (std::vector<int32_t>{0, 1, 2}));
+  const AveragedRotations clear = AverageRotations(edges, turned(179.9), 1e-6);
+  ASSERT_TRUE(clear.valid);
+  EXPECT_TRUE(clear.ambiguous.empty());
 }
 
 /**
@@ -1283,6 +1300,99 @@ TEST(AverageRotations, AFrameThatInheritsATieThroughAnEdgeIsNamed) {
   const AveragedRotations moved = AverageRotations(nudged, anchors, 1.0);
   ASSERT_TRUE(moved.valid);
   EXPECT_GT(SeparationDeg(moved.rotations[4], solved.rotations[4]), 1.0);
+}
+
+/**
+ * A neighbour joined to nothing else carries no evidence about the frame it hangs from.
+ *
+ * Found by a review of PR #97. A leaf's only edge runs to frame 1, so its prediction for frame 1 is
+ * frame 1's own place echoed back: averaged in, it outvotes the half-turn tie between frames 0 and
+ * 2 and frame 1 stays wherever the walk first put it, which the anchors' index order decides. So a
+ * neighbour whose side of the edge holds no anchor is not averaged into the frame it hangs from.
+ */
+TEST(AverageRotations, ALeafThatEchoesItsNeighbourDoesNotHideATie) {
+  const Quat agreeing = TrueEdge(AboutY(0.0), AboutY(0.0));
+  const Quat opposing = TrueEdge(AboutY(0.0), AboutY(180.0));
+  const std::vector<Quat> anchors{AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(0.0), Quat{0, 0, 0, 0}};
+  const auto withLeaf = [&](const Quat& fromZero, const Quat& fromTwo) {
+    return std::vector<RelativeRotation>{RelativeRotation{0, 1, fromZero, 1.0},
+                                         RelativeRotation{2, 1, fromTwo, 1.0},
+                                         RelativeRotation{3, 1, agreeing, 1.0}};
+  };
+  for (const double weight : {0.0, 1000.0}) {
+    const AveragedRotations solved =
+        AverageRotations(withLeaf(agreeing, opposing), anchors, weight);
+    ASSERT_TRUE(solved.valid);
+    EXPECT_EQ(solved.ambiguous, (std::vector<int32_t>{0, 1, 2, 3})) << "anchor weight " << weight;
+    const AveragedRotations swapped =
+        AverageRotations(withLeaf(opposing, agreeing), anchors, weight);
+    ASSERT_TRUE(swapped.valid);
+    EXPECT_EQ(swapped.ambiguous, (std::vector<int32_t>{0, 1, 2, 3})) << "anchor weight " << weight;
+  }
+
+  // Agreeing, the leaf still follows frame 1 to where the evidence puts it and nothing is named.
+  const AveragedRotations agreed = AverageRotations(withLeaf(agreeing, agreeing), anchors, 1000.0);
+  ASSERT_TRUE(agreed.valid);
+  EXPECT_TRUE(agreed.ambiguous.empty());
+  EXPECT_NEAR(SeparationDeg(agreed.rotations[3], AboutY(0.0)), 0.0, kSameRotationDeg);
+}
+
+/**
+ * A tie the sweep's own residuals split is still a tie.
+ *
+ * Found by a review of PR #97 and kept as found. Frame 4's three predictions are each a half turn
+ * from the others, so its top two eigenvalues are equal in the input. Frame 3 is averaged first and
+ * its priors pull it a tenth of a degree, which splits frame 4's tie by a relative 1e-6: a million
+ * times the eigensolver's threshold, and so read as unique on every sweep. Frame 2 is joined to
+ * nothing and has no anchor, so it is unplaced rather than named.
+ */
+TEST(AverageRotations, ATieTheSweepsOwnResidualsSplitIsStillNamed) {
+  const Quat halfX = FromAxisAngle(Vec3{1, 0, 0}, std::numbers::pi);
+  const Quat halfY = FromAxisAngle(Vec3{0, 1, 0}, std::numbers::pi);
+  const Quat halfZ = FromAxisAngle(Vec3{0, 0, 1}, std::numbers::pi);
+  const Quat halfDiagonal =
+      FromAxisAngle(Vec3{std::numbers::sqrt2 / 2, std::numbers::sqrt2 / 2, 0}, std::numbers::pi);
+  const std::vector<Quat> anchors{FromAxisAngle(Vec3{0, 0, 1}, std::numbers::pi / 2), halfX,
+                                  Quat{0, 0, 0, 0}, halfY, Quat{0, 0, 0, 0}, halfDiagonal};
+  const std::vector<RelativeRotation> edges{
+      RelativeRotation{4, 5, halfZ, 2.0}, RelativeRotation{4, 3, halfX, 1.0},
+      RelativeRotation{5, 3, halfZ, 2.0}, RelativeRotation{0, 3, halfZ, 3.0},
+      RelativeRotation{1, 4, halfX, 2.0}};
+
+  const AveragedRotations solved = AverageRotations(edges, anchors, 1000.0);
+  ASSERT_TRUE(solved.valid);
+  EXPECT_EQ(solved.unplaced, (std::vector<int32_t>{2}));
+  EXPECT_EQ(solved.ambiguous, (std::vector<int32_t>{0, 1, 3, 4, 5}));
+
+  // The premise: frame 4 sits where an arbitrary choice put it, so naming it is not a courtesy.
+  std::vector<RelativeRotation> nudged = edges;
+  nudged[0].rotation = Normalize(Multiply(FromAxisAngle(Vec3{1, 0, 0}, 1e-12), halfZ));
+  const AveragedRotations moved = AverageRotations(nudged, anchors, 1000.0);
+  ASSERT_TRUE(moved.valid);
+  EXPECT_GT(SeparationDeg(moved.rotations[4], solved.rotations[4]), 1.0);
+}
+
+/**
+ * A tie is called within the measured separation of a half turn, and no wider.
+ *
+ * Frame 1 has no anchor and is told 0 degrees by one neighbour and nearly a half turn by the other.
+ * Three hundredths of a degree short leaves a relative eigenvalue gap of 5.2e-4, under the solver's
+ * threshold, and a tenth leaves 1.7e-3, over it. The anchors are heavy so the neighbours stay put
+ * and the gap is the one the edges give.
+ */
+TEST(AverageRotations, ATieIsCalledWithinTheMeasuredSeparationOfAHalfTurnAndNoWider) {
+  const std::vector<Quat> anchors{AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(0.0)};
+  const auto told = [&](double degrees) {
+    return std::vector<RelativeRotation>{
+        RelativeRotation{0, 1, TrueEdge(AboutY(0.0), AboutY(0.0)), 1.0},
+        RelativeRotation{2, 1, TrueEdge(AboutY(0.0), AboutY(degrees)), 1.0}};
+  };
+  const AveragedRotations close = AverageRotations(told(179.97), anchors, 1000.0);
+  ASSERT_TRUE(close.valid);
+  EXPECT_EQ(close.ambiguous, (std::vector<int32_t>{0, 1, 2}));
+  const AveragedRotations clear = AverageRotations(told(179.9), anchors, 1000.0);
+  ASSERT_TRUE(clear.valid);
+  EXPECT_TRUE(clear.ambiguous.empty());
 }
 
 /**

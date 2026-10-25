@@ -34,6 +34,11 @@ struct QuaternionAverage {
   // the reachable case.
   bool isUnique = true;
 
+  // How far the answer is from a tie: the gap between the top two eigenvalues over the top one,
+  // from one for a single rotation down to zero for a half turn. A caller judging a tie by its own
+  // measure reads this; `isUnique` is the eigensolver's.
+  double separation = 0;
+
   bool valid = false;
 };
 

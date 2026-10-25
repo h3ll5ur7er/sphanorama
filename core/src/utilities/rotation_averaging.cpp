@@ -83,6 +83,20 @@ constexpr double kSettledDeg = 1e-5;
 // promised for exactly that.
 constexpr int kMaxSweeps = 1000;
 
+// The separation under which an average is a tie, for a frame's own and for a piece's gauge alike.
+//
+// **The eigensolver's own threshold sees only ties the arithmetic leaves exact, and the sweep does
+// not leave them exact.** A neighbour updated earlier in the same sweep tilts a frame's
+// predictions, so evidence that cancels in the input reaches the average a relative 1e-6 apart — a
+// million times `AverageQuaternions`' 1e-12. For two predictions at equal weight a relative gap of
+// 1e-3 is 0.057 degrees short of a half turn, which no registration that worked produces.
+//
+// Measured over 20,000 contradictory graphs, counting a frame a 1e-12 nudge moves more than a
+// thousandth of a degree and `ambiguous` leaves out: 289 graphs at 1e-12, 274 here, 243 with the
+// echo exclusion below. And over 3,000 graphs with consistent edges jittered half a degree and
+// priors three degrees out, it names none, as 1e-12 does.
+constexpr double kTieSeparation = 1e-3;
+
 // One end of one edge, from the point of view of a frame it touches.
 struct Incidence {
   int32_t edge = 0;
@@ -275,6 +289,78 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
     }
   }
 
+  // **A neighbour whose side of the edge holds no anchor is an echo**, and is not averaged into the
+  // frame it hangs from. Everything on that side is placed from this frame and nothing else, so
+  // what it predicts for this frame is this frame's own place handed back: averaged in, it outvotes
+  // evidence that cancels, and a tie is settled by wherever the walk first put the frame. Such an
+  // edge is a bridge, so a depth-first search over the believed edges finds every one, with the
+  // anchors on each side counted below it. `echoAtFrom[k]` means edge `k` is an echo seen from its
+  // `from` frame, and `echoAtTo[k]` from its `to`.
+  std::vector<char> echoAtFrom(edges.size(), 0);
+  std::vector<char> echoAtTo(edges.size(), 0);
+  {
+    std::vector<int32_t> entered(static_cast<size_t>(frames), -1);
+    std::vector<int32_t> low(static_cast<size_t>(frames), 0);
+    std::vector<int32_t> anchorsBelow(static_cast<size_t>(frames), 0);
+    std::vector<int32_t> parentEdge(static_cast<size_t>(frames), -1);
+    std::vector<int32_t> bridged;   // the child end of each bridge found in this component
+    struct Step {
+      int32_t frame;
+      size_t next;
+    };
+    std::vector<Step> stack;
+    int32_t clock = 0;
+    for (int32_t root = 0; root < frames; ++root) {
+      if (entered[static_cast<size_t>(root)] >= 0) continue;
+      bridged.clear();
+      const auto enter = [&](int32_t frame, int32_t viaEdge) {
+        entered[static_cast<size_t>(frame)] = low[static_cast<size_t>(frame)] = clock++;
+        anchorsBelow[static_cast<size_t>(frame)] = anchored[static_cast<size_t>(frame)];
+        parentEdge[static_cast<size_t>(frame)] = viaEdge;
+        stack.push_back(Step{frame, 0});
+      };
+      enter(root, -1);
+      while (!stack.empty()) {
+        Step& step = stack.back();
+        const int32_t at = step.frame;
+        if (step.next < incident[static_cast<size_t>(at)].size()) {
+          const Incidence touch = incident[static_cast<size_t>(at)][step.next++];
+          // The edge it was reached by, and only that one: a second edge to the same frame is a
+          // cycle, which no bridge crosses.
+          if (touch.edge == parentEdge[static_cast<size_t>(at)]) continue;
+          const RelativeRotation& edge = edges[static_cast<size_t>(touch.edge)];
+          const int32_t other = touch.asTo ? edge.from : edge.to;
+          if (entered[static_cast<size_t>(other)] < 0) {
+            enter(other, touch.edge);
+          } else {
+            low[static_cast<size_t>(at)] =
+                std::min(low[static_cast<size_t>(at)], entered[static_cast<size_t>(other)]);
+          }
+          continue;
+        }
+        stack.pop_back();
+        if (stack.empty()) break;
+        const int32_t up = stack.back().frame;
+        low[static_cast<size_t>(up)] =
+            std::min(low[static_cast<size_t>(up)], low[static_cast<size_t>(at)]);
+        anchorsBelow[static_cast<size_t>(up)] += anchorsBelow[static_cast<size_t>(at)];
+        if (low[static_cast<size_t>(at)] > entered[static_cast<size_t>(up)]) bridged.push_back(at);
+      }
+      const int32_t total = anchorsBelow[static_cast<size_t>(root)];
+      for (const int32_t below : bridged) {
+        const int32_t k = parentEdge[static_cast<size_t>(below)];
+        const bool belowIsFrom = edges[static_cast<size_t>(k)].from == below;
+        // Nothing anchored below: the frame above hears an echo. Nothing above: the one below does.
+        if (anchorsBelow[static_cast<size_t>(below)] == 0) {
+          (belowIsFrom ? echoAtTo : echoAtFrom)[static_cast<size_t>(k)] = 1;
+        }
+        if (total - anchorsBelow[static_cast<size_t>(below)] == 0) {
+          (belowIsFrom ? echoAtFrom : echoAtTo)[static_cast<size_t>(k)] = 1;
+        }
+      }
+    }
+  }
+
   // **Each frame becomes the weighted average of what everything touching it says it should be.**
   // Gauss-Seidel rather than a batch update: a frame moved this sweep is read by its neighbours
   // later in the same sweep, so information crosses the graph in one pass instead of one hop per
@@ -317,6 +403,7 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       // it is placed too. The guard above does the work for both, and does it by skipping the whole
       // loop rather than each turn of it.
       for (const Incidence& touch : incident[static_cast<size_t>(i)]) {
+        if ((touch.asTo ? echoAtTo : echoAtFrom)[static_cast<size_t>(touch.edge)] != 0) continue;
         const RelativeRotation& edge = edges[static_cast<size_t>(touch.edge)];
         const int32_t other = touch.asTo ? edge.from : edge.to;
         const Quat& unit = rotation[static_cast<size_t>(touch.edge)];
@@ -340,7 +427,7 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       // is empty and `anchorsUsed` zero whichever gate said no.
       const QuaternionAverage average = AverageQuaternions(predictions, weights);
       if (!average.valid) return AveragedRotations{};
-      if (!average.isUnique) everAmbiguous[static_cast<size_t>(i)] = 1;
+      if (average.separation < kTieSeparation) everAmbiguous[static_cast<size_t>(i)] = 1;
 
       largestMoveDeg = std::max(
           largestMoveDeg,
@@ -377,7 +464,9 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
         // Anchors a half turn apart about where the piece sits: which one it sides with is the
         // eigensolver's scan order, and that is true of every frame in it. One flag is enough —
         // the pass after the sweeps names the whole piece of any frame flagged (ADR 0073).
-        if (!gauge.isUnique) everAmbiguous[static_cast<size_t>(piece.front())] = 1;
+        if (gauge.separation < kTieSeparation) {
+          everAmbiguous[static_cast<size_t>(piece.front())] = 1;
+        }
         largestMoveDeg = std::max(largestMoveDeg, AngleBetween(Quat{}, gauge.rotation) * kDegPerRad);
         for (const int32_t i : piece) {
           solved[static_cast<size_t>(i)] =

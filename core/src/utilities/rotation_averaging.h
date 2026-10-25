@@ -147,11 +147,16 @@ struct AveragedRotations {
   // a capture, for one contradictory pair. No edge or gauge reaches another piece; a tie can only
   // change when the solve stops, and so how far each other piece is from its own fixed point.
   //
-  // **Only ties the arithmetic leaves exact are seen**: an average whose top two eigenvalues are
-  // within `AverageQuaternions`' threshold of each other. A neighbour joined to nothing else echoes
-  // a frame's own place back, and a neighbour updated earlier in the sweep can tilt it; either can
-  // split a tie in the evidence by far more than that, and the frame is then placed by the walk or
-  // the sweep order with nothing named — and with any edge error, a fraction of a degree included.
+  // **A tie is an average whose top two eigenvalues are a relative thousandth apart or less**,
+  // which for two equal predictions is 0.057 degrees short of a half turn (ADR 0080): wider than
+  // the eigensolver's own threshold, because a neighbour updated earlier in the sweep tilts a tie
+  // in the evidence by a millionth. A neighbour whose side of its edge holds no anchor is not
+  // averaged in, since it only echoes the frame's own place back and would outvote a tie.
+  //
+  // **Not every placement a coin decided is seen.** A tie the solve passes through and then settles
+  // away from leaves no trace in the final averages. Over 20,000 contradictory graphs, 243 still
+  // left out a frame that a 1e-12 nudge moves, and a few of those with every edge within a degree:
+  // a whole piece turned by anchors that nearly cancel, which no edge can see.
   //
   // **Any sweep, not the last.** A frame placed by a coin flip inherits that placement through
   // every sweep that follows, so a later iteration finding a single maximiser does not make the

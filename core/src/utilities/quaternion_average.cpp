@@ -42,6 +42,7 @@ constexpr double kEigenvalueGap = 1e-12;
 struct Eigen {
   double vector[4]{};
   bool separated = true;
+  double separation = 0;
 };
 
 // The eigenvector of the largest eigenvalue of a 4x4 symmetric matrix, by cyclic Jacobi.
@@ -129,7 +130,8 @@ Eigen DominantEigenvector(double m[4][4]) {
   const double top = m[largest][largest];
   const bool separated = (top - m[second][second]) > kEigenvalueGap * top;
 
-  return Eigen{{v[0][largest], v[1][largest], v[2][largest], v[3][largest]}, separated};
+  return Eigen{{v[0][largest], v[1][largest], v[2][largest], v[3][largest]}, separated,
+               (top - m[second][second]) / top};
 }
 
 }  // namespace
@@ -198,6 +200,7 @@ QuaternionAverage AverageQuaternions(std::span<const Quat> rotations,
   // there is an answer.
   out.rotation = Normalize(Quat{eigen.vector[0], eigen.vector[1], eigen.vector[2], eigen.vector[3]});
   out.isUnique = eigen.separated;
+  out.separation = eigen.separation;
   out.valid = true;
   return out;
 }

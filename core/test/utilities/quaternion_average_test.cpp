@@ -398,6 +398,30 @@ TEST(AverageQuaternions, ATenthOfADegreeShortOfAHalfTurnIsStillUnique) {
   EXPECT_TRUE(sharp.isUnique) << "a relative eigenvalue gap of 1.7e-9 is being read as a tie";
 }
 
+/**
+ * How far from a tie an average is, as the gap between its top two eigenvalues over the top one.
+ *
+ * For two rotations at equal weight with quaternion dot `d`, the eigenvalues are `1 ± |d|`, so the
+ * separation is `2|d| / (1 + |d|)`: one for a single rotation, zero for a half turn. The solver
+ * reads this against its own measured threshold, where `isUnique` keeps the eigensolver's.
+ */
+TEST(AverageQuaternions, TheSeparationIsTheRelativeGapOfTheTopTwoEigenvalues) {
+  const auto expected = [](double separationDeg) {
+    const double d = std::cos(separationDeg / kDegPerRad / 2.0);
+    return 2.0 * std::abs(d) / (1.0 + std::abs(d));
+  };
+  for (const double sep : {90.0, 179.9, 179.97}) {
+    const std::vector<Quat> pair{AboutY(0.0), AboutY(sep)};
+    const QuaternionAverage average = AverageQuaternions(pair, {});
+    ASSERT_TRUE(average.valid);
+    EXPECT_NEAR(average.separation, expected(sep), 1e-9) << sep << " degrees apart";
+  }
+  const std::vector<Quat> one{AboutY(30.0)};
+  EXPECT_NEAR(AverageQuaternions(one, {}).separation, 1.0, 1e-12);
+  const std::vector<Quat> opposed{AboutY(0.0), AboutY(180.0)};
+  EXPECT_LT(AverageQuaternions(opposed, {}).separation, 1e-12);
+}
+
 // ----------------------------------------------------------------- refusals
 //
 // Each way of having no answer is asserted on its own rather than in a loop over "bad inputs": a
