@@ -204,7 +204,7 @@ describe('what the worker asks back', () => {
 
   it('hands on each change in whether the store is saving, failure and recovery both', async () => {
     // Pushed rather than asked: a store that fills mid-session fails a persist nobody flushed, and
-    // the page says it for as long as it lasts (ADR 0078).
+    // the page says it for as long as it lasts (ADR 0079).
     const w = fakeWorker();
     const { remote } = await w.boot();
     const heard: Array<string | null> = [];

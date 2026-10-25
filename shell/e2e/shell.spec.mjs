@@ -300,7 +300,7 @@ test('a store that stops saving mid-session says so, and stops once it saves', a
   // The store loads, and then its writes are refused: a full disk, which Chromium can be made to
   // have by shrinking the origin's quota. The boot said nothing because nothing had failed yet, so
   // the page has to hear it from the persist that failed, and hear the next one go through
-  // (ADR 0078).
+  // (ADR 0079).
   const server = await serve();
   try {
     await page.goto(server.appUrl);
@@ -310,13 +310,19 @@ test('a store that stops saving mid-session says so, and stops once it saves', a
 
     const origin = new URL(server.appUrl).origin;
     const cdp = await page.context().newCDPSession(page);
+    // Folded first, so the toggle that stays on screen is held to it as well as the row.
+    await page.locator('#panel-toggle').click();
+    await expect(page.locator('#panel-toggle')).toHaveText('details');
+
     await cdp.send('Storage.overrideQuotaForOrigin', { origin, quotaSize: 1 });
     await page.evaluate(() => window.sphanoramaCore.project.create('refused'));
     await expect(page.locator('#core-caps')).toContainText('not saving', { timeout: 15000 });
+    await expect(page.locator('#panel-toggle')).toHaveText('details · not saving');
 
     await cdp.send('Storage.overrideQuotaForOrigin', { origin });
     await page.evaluate(() => window.sphanoramaCore.project.create('kept'));
     await expect(page.locator('#core-caps')).not.toContainText('not saving', { timeout: 15000 });
+    await expect(page.locator('#panel-toggle')).toHaveText('details');
   } finally {
     await server.close();
   }

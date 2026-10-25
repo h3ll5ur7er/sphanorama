@@ -215,7 +215,7 @@ describe('whether it is saving now', () => {
   it('says when persisting starts failing and when it recovers, and only then', async () => {
     // `lastPersistError()` holds on to the last failure for good, which is the right answer to
     // "did anything ever fail" and the wrong one to "is this being kept now". The page shows the
-    // second, for the life of the page, so a store that fills mid-session is said (ADR 0078).
+    // second, for the life of the page, so a store that fills mid-session is said (ADR 0079).
     const store = fakeStore();
     const host = await createDocumentHost(store, { flushDelayMs: 0 });
     const heard: Array<string | null> = [];
@@ -233,6 +233,14 @@ describe('whether it is saving now', () => {
     expect(heard[0]).toContain('quota exceeded');
     expect(host.persistFailing()).toContain('quota exceeded');
 
+    // And failing again is not news: a sustained outage is one change, not a flicker of
+    // "saving" between each refused persist.
+    store.failNextWrite();
+    host.write(1, 'title', 'refused again');
+    await host.flush();
+    expect(heard).toHaveLength(1);
+    expect(host.persistFailing()).toContain('quota exceeded');
+
     host.write(1, 'title', 'kept again');
     await host.flush();
     expect(heard).toHaveLength(2);
@@ -247,8 +255,9 @@ describe('whether it is saving now', () => {
     // there is no persist to fail and nothing to hear.
     const host = await createDocumentHost({
       loadAll: async () => { throw new Error('no storage'); },
-      put: async () => {},
-      remove: async () => {},
+      // Refusing too, so that a host which did try would be heard failing.
+      put: async () => { throw new Error('no storage'); },
+      remove: async () => { throw new Error('no storage'); },
     }, { flushDelayMs: 0 });
     const heard: Array<string | null> = [];
     host.onPersistChange((failing) => heard.push(failing));
@@ -256,6 +265,23 @@ describe('whether it is saving now', () => {
     await host.flush();
     expect(heard).toEqual([]);
     expect(host.persistFailing()).toBeNull();
+  });
+});
+
+describe('a listener that throws', () => {
+  it('does not cost the writes that failed, nor the persists after it', async () => {
+    // Listeners are the page's business; durability is the host's. One that throws must not turn
+    // a failed persist into a lost one.
+    const store = fakeStore();
+    const host = await createDocumentHost(store, { flushDelayMs: 0 });
+    host.onPersistChange(() => { throw new Error('listener broke'); });
+    store.failNextWrite();
+    host.write(1, 'title', 'kept in the end');
+    await host.flush();
+    host.write(2, 'title', 'next');
+    await host.flush();
+    expect(store.rows.get('1/title')).toBe('kept in the end');
+    expect(store.rows.get('2/title')).toBe('next');
   });
 });
 

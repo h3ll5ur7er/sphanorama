@@ -91,7 +91,9 @@ scope.onmessage = (event: MessageEvent<ToWorker>) => {
           scope.postMessage({
             kind: 'flushed',
             seq: message.seq,
-            persistError: documents?.lastPersistError() ?? null,
+            // What is true now, not the last failure ever: a flush that commits everything after a
+            // recovery is durable, and one after a failed load never is (ADR 0079).
+            persistError: documents ? documents.loadError() ?? documents.persistFailing() : null,
           });
           return;
         }

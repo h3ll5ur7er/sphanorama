@@ -59,8 +59,8 @@ const targetArrow = el<HTMLElement>('target-arrow');
  */
 const panel = el<HTMLElement>('panel');
 const panelToggle = el<HTMLButtonElement>('panel-toggle');
-// Whether this page's documents are being kept, known from the boot (ADR 0078). Until then the page
-// has not said otherwise, and the folded label is the plain one; the boot redraws it.
+// Whether this page's documents are being kept, from the boot and each persist since (ADR 0079).
+// Until the boot the page has not said otherwise, and the folded label is the plain one.
 let saving = true;
 function openPanel(open: boolean) {
   panel.dataset.open = String(open);
@@ -321,7 +321,7 @@ function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean
 /**
  * Says whether this page's documents are being kept, on both places that say it: the capabilities
  * row, and the panel toggle that stays on screen when the row folds away. Both the boot's failed
- * load and a persist that is failing now mean not kept (ADR 0078).
+ * load and a persist that is failing now mean not kept (ADR 0078, ADR 0079).
  */
 function showSaving(now: boolean) {
   saving = now;

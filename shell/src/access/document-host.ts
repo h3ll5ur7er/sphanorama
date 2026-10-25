@@ -38,7 +38,7 @@ export interface DocumentHost {
   /**
    * Why persisting is failing now, or null when the last persist went through. Unlike
    * `lastPersistError()` it clears on recovery: it answers "is this being kept", which the page
-   * says for the life of the page (ADR 0078). Null after a failed load, which persists nothing.
+   * says for the life of the page (ADR 0079). Null after a failed load, which persists nothing.
    */
   persistFailing(): string | null;
   /** Called with `persistFailing()` each time it changes. */
@@ -65,7 +65,15 @@ export async function createDocumentHost(
   function setFailing(now: string | null): void {
     if (now === failing) return;
     failing = now;
-    for (const listener of listeners) listener(now);
+    // A listener is the page's business and durability is this host's: one that throws is
+    // reported and does not unwind the persist that told it.
+    for (const listener of listeners) {
+      try {
+        listener(now);
+      } catch (cause) {
+        console.warn('sphanorama: a persist listener threw —', String(cause));
+      }
+    }
   }
   let timer: ReturnType<typeof setTimeout> | null = null;
   let inFlight: Promise<void> | null = null;
@@ -90,7 +98,6 @@ export async function createDocumentHost(
       setFailing(null);
     } catch (cause) {
       persistError = String(cause);
-      setFailing(persistError);
       // Put the work back, or a single transient quota error means the resident state can never
       // become durable again — the caller has no way to know which documents to rewrite. A newer
       // value already queued for the same key wins: this is a retry of what failed, not a
@@ -101,6 +108,7 @@ export async function createDocumentHost(
       for (const [key, value] of writes) {
         if (!pending.has(key) && resident.has(key)) pending.set(key, value);
       }
+      setFailing(persistError);
     }
   }
 
@@ -176,7 +184,7 @@ export async function createDocumentHost(
         const before = pending.size + removed.size;
         await enqueue();
         // A failed persist requeues what it could not write. Retrying it forever here would
-        // hang the page on a full disk; the caller reads lastPersistError() and decides.
+        // hang the page on a full disk; the caller reads persistFailing() and decides.
         if (pending.size + removed.size >= before) break;
       }
     },
