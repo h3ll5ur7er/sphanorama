@@ -20,7 +20,7 @@ import { canvasDrawTarget, createFrameGrabber, GRAB_MAX_EDGE } from './access/pr
 import { toImuSample } from './access/orientation';
 import {
   CORE_FROM_ANOTHER_UPDATE, describeFailure, describeGuidanceFailure, describeLocks,
-  formatCapabilities,
+  formatCapabilities, panelToggleLabel,
 } from './clients/capture/status';
 import {
   describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
@@ -59,10 +59,13 @@ const targetArrow = el<HTMLElement>('target-arrow');
  */
 const panel = el<HTMLElement>('panel');
 const panelToggle = el<HTMLButtonElement>('panel-toggle');
+// Whether this page's documents are being kept, known from the boot (ADR 0078). Until then the page
+// has not said otherwise, and the folded label is the plain one.
+let saving = true;
 function openPanel(open: boolean) {
   panel.dataset.open = String(open);
   panelToggle.setAttribute('aria-expanded', String(open));
-  panelToggle.textContent = open ? 'hide' : 'details';
+  panelToggle.textContent = panelToggleLabel(open, saving);
 }
 openPanel(true);
 panelToggle.addEventListener('click', () => openPanel(panel.dataset.open !== 'true'));
@@ -1647,6 +1650,7 @@ async function main() {
       hardwareConcurrency: navigator.hardwareConcurrency ?? 1,
       crossOriginIsolated: self.crossOriginIsolated,
     }), remote.canSpill(), remote.storageError() === null);
+    saving = remote.storageError() === null;
     // Exposed for the end-to-end suite to drive the boundary directly. The client itself never
     // reads these; it holds `core` and `remote` in scope.
     Object.assign(window as unknown as Record<string, unknown>, {

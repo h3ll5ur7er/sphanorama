@@ -34,8 +34,10 @@ other way, answering any failed read as `NotFound`, "no session to resume".
   lists nothing and fails nothing. The fold is the store's, one layer below this rule. The host
   now persists nothing after a failed load, and the worker reports the load's error at boot. The
   page then shows the failed-listing line (`DocumentHost.loadError`, `RemoteCore.storageError`),
-  adding that a new capture would not be saved. The capabilities row keeps "not saving projects"
-  up for the life of the page, since the capture the stage line warns about rewrites that line.
+  adding that a new capture would not be saved. The capture the stage line warns about rewrites
+  that line and folds the panel away, so the capabilities row says "not saving projects" for the
+  life of the page and the panel's toggle, the one control left on screen, reads "details · not
+  saving" while it is folded.
 
 ## Consequences
 
@@ -55,6 +57,9 @@ other way, answering any failed read as `NotFound`, "no session to resume".
   written and persists over it. That predates this decision and is not closed by it: it needs ids
   that are never reissued, or a store that refuses to create over an existing project, and is open
   on the roadmap.
+- "Not saving" is what the boot found, not what the host knows now. A store that loads and then
+  fails every write, a full disk or site data cleared mid-session, says nothing: the host keeps
+  `lastPersistError()` (ADR 0014) and the page reads it from no `flush`. Open on the roadmap.
 - One project's unreadable session fails the whole listing, the others' with it. Today the page
   lists once at load to find one capture to offer, so nothing is lost that it used.
 - A title that cannot be read still lists as an empty title. That costs a blank row and no frames.

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { err, ok } from '../../access/result';
 import {
   CORE_FROM_ANOTHER_UPDATE, describeFailure, describeGuidanceFailure, describeLocks,
-  formatCapabilities,
+  formatCapabilities, panelToggleLabel,
 } from './status';
 
 describe('describeFailure', () => {
@@ -269,5 +269,17 @@ describe('a tick that failed', () => {
   it('says just the code when there was nothing else to say', () => {
     const line = describeGuidanceFailure({ code: 'Internal', component: 'X', detail: '' });
     expect(line).toBe('Internal');
+  });
+});
+
+describe('panelToggleLabel', () => {
+  it('names the press it offers, and says on the folded panel that nothing is being saved', () => {
+    // The panel folds away when a capture starts, and the capabilities row folds with it, so the
+    // one control left on screen is where a capture on a store that would not load is told that
+    // it is not being kept (ADR 0078).
+    expect(panelToggleLabel(true, true)).toBe('hide');
+    expect(panelToggleLabel(true, false)).toBe('hide');
+    expect(panelToggleLabel(false, true)).toBe('details');
+    expect(panelToggleLabel(false, false)).toMatch(/not saving/);
   });
 });

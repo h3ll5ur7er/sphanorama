@@ -104,6 +104,18 @@ export function formatCapabilities(capabilities: RuntimeCapabilities, canSpill: 
   return parts.join(' · ');
 }
 
+/**
+ * The panel toggle's label: the press it offers, and, folded, whether anything is being saved.
+ *
+ * The panel folds away when a capture starts and the capabilities row goes with it, so the toggle
+ * is the one control left on screen through the capture a store that would not load is not
+ * keeping (ADR 0078).
+ */
+export function panelToggleLabel(open: boolean, saving: boolean): string {
+  if (open) return 'hide';
+  return saving ? 'details' : 'details · not saving';
+}
+
 // The shape the page confirmed and pushed to the core, not a third copy of it. `ICameraAccess`
 // takes the three locks as positional booleans, so the contract generates no struct to share and
 // the camera adapter keeps its own `LockState` — a client must not depend on a resource access,

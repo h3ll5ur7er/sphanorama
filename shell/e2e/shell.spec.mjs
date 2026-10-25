@@ -280,6 +280,14 @@ test('a document store that will not open is not read as having nothing', async 
     // capture it warns about; and the diagnostic row does not count an unread store as empty.
     await expect(page.locator('#core-caps')).toContainText('not saving');
     await expect(page.locator('#facade')).not.toContainText('0 projects');
+
+    // And still on screen once a capture is running, which is when it matters: the panel folds
+    // away when one starts and takes the capabilities row with it.
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText(/\d+ cells planned/, { timeout: 15000 });
+    await expect(page.locator('#core-caps')).toBeHidden();
+    await expect(page.locator('#panel-toggle')).toBeVisible();
+    await expect(page.locator('#panel-toggle')).toContainText('not saving');
   } finally {
     await server.close();
   }
