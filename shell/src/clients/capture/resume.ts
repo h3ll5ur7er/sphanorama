@@ -120,10 +120,21 @@ export function describeResumeRefusal(status: Status): ResumeRefusal {
  * that keeps failing must not lock the user out of capturing anything, and the line says what it
  * would cost (ADR 0078).
  */
-export function startOffer(listed: Result<ProjectSummary[]>): {
+export function startOffer(listed: Result<ProjectSummary[]>, storageError: string | null = null): {
   resume: ProjectId | null;
   message: string;
 } {
+  // A store that would not load lists nothing and fails nothing: the worker's host starts empty and
+  // keeps the app running, so an empty listing is all the core can report. Said as a failed
+  // listing is, since a capture may be waiting on disk all the same.
+  if (storageError !== null) {
+    return {
+      resume: null,
+      message:
+        'core ready, but it could not tell whether a capture is waiting: the saved projects did ' +
+        `not load (${storageError}) — reload to try again; a new capture would clear one that is`,
+    };
+  }
   if (!listed.ok) {
     return {
       resume: null,

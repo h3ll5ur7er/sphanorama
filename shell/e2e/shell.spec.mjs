@@ -254,6 +254,58 @@ test('loads the core and reports its capabilities', async ({ page }) => {
   }
 });
 
+test('a document store that will not open is not read as having nothing', async ({ page }) => {
+  // The worker's document host starts empty when its database will not open, so the core lists
+  // nothing and fails nothing. A capture may still be on disk, and a new capture's `Begin` empties
+  // the tier holding its frames, so the line must not invite that press as "continue" (ADR 0078).
+  //
+  // Opened at a newer version than the build asks for, from the page before any of its scripts
+  // run: open requests on one database are served in order, so the worker's comes after this one
+  // and fails with a VersionError, which is what an older build meets after a newer one ran.
+  await page.addInitScript(() => {
+    const request = indexedDB.open('sphanorama', 999);
+    request.onsuccess = () => request.result.close();
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('the saved projects did not load',
+                                                       { timeout: 15000 });
+    await expect(page.locator('#stage')).toContainText('a new capture would clear one');
+    await expect(page.locator('#stage')).not.toContainText('enable the camera to continue');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a listing that failed is not read as one with nothing waiting', async ({ page }) => {
+  // No store in this build fails a session read, so the listing is made to fail at the page's
+  // own handle on the core, which the page assigns before it lists. What this pins is the page
+  // handing the failure to the line rather than an empty listing (ADR 0078).
+  await page.addInitScript(() => {
+    let held;
+    Object.defineProperty(window, 'sphanoramaCore', {
+      configurable: true,
+      get: () => held,
+      set: (core) => {
+        core.project.list = async () => ({
+          ok: false, status: { code: 'Internal', component: 'ProjectManager', detail: 'refused' },
+        });
+        held = core;
+      },
+    });
+  });
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage'))
+      .toContainText('could not tell whether a capture is waiting', { timeout: 15000 });
+    await expect(page.locator('#stage')).toContainText('a new capture would clear one');
+  } finally {
+    await server.close();
+  }
+});
+
 test('a second tab open on the app gets a spill tier of its own', async ({ page, context }) => {
   // Reported from a phone: the app said "no spill tier" until every other tab running it was
   // closed. A sync access handle is exclusive, and both tabs were asking for the same fixed

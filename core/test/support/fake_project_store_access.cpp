@@ -18,7 +18,7 @@ Result<std::string> FakeProjectStoreAccess::ReadDocument(ProjectId project, std:
     return Err<std::string>(StatusCode::NotFound, kComponent, "no such project");
   }
   if (!unreadable_.empty() && key == unreadable_) {
-    return Err<std::string>(StatusCode::StorageQuotaExceeded, kComponent, "unreadable");
+    return Err<std::string>(unreadable_code_, kComponent, "unreadable");
   }
   const auto doc_it = project_it->second.find(key);
   if (doc_it == project_it->second.end()) {

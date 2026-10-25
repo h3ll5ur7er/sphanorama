@@ -69,6 +69,12 @@ export interface RemoteCore extends CoreRuntime {
    * saying out loud rather than surfacing later as a refusal nobody can explain (ADR 0020).
    */
   canSpill(): boolean;
+  /**
+   * Why the worker's document store would not load, or null. The core then lists nothing and fails
+   * nothing, since its store runs from memory, so only this says a capture may be waiting
+   * (ADR 0078).
+   */
+  storageError(): string | null;
 }
 
 export interface RemoteCoreHandle {
@@ -216,6 +222,7 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
       releaseLocks = handler;
     },
     canSpill: () => booted.spill,
+    storageError: () => booted.storageError ?? null,
   };
 
   return { core: coreFrom(runtime), remote };

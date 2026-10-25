@@ -172,4 +172,15 @@ describe('startOffer', () => {
     expect(offer.message).toContain('reload');
     expect(offer.message).not.toContain('enable the camera to continue');
   });
+
+  it('does not read a store that could not be loaded as one with nothing in it', () => {
+    // The worker's document store starts empty when its database will not open, so the listing
+    // succeeds with nothing in it while a capture may be waiting on disk (ADR 0078).
+    const offer = startOffer({ ok: true, value: [] }, 'VersionError: the database is newer');
+    expect(offer.resume).toBeNull();
+    expect(offer.message).toContain('could not tell whether a capture is waiting');
+    expect(offer.message).toContain('VersionError: the database is newer');
+    expect(offer.message).toContain('reload');
+    expect(offer.message).not.toContain('enable the camera to continue');
+  });
 });

@@ -6386,15 +6386,17 @@ TEST_F(ResumedSession, ASessionThatCannotBeReadIsNotReportedAsAbsent) {
                               *projects, clock);
   ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
   ASSERT_TRUE(first.End().ok());
-  projects->RefuseReadsOf(kSessionDocumentKey);
-
-  auto second_store = NewStore();
-  FakeCameraAccess second_camera(second_store);
-  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
-                               *second_store, *projects, clock);
-  const Result<SessionId> refused = second.Resume(kProject);
-  EXPECT_EQ(refused.status.code, StatusCode::StorageQuotaExceeded) << refused.status.detail;
-  EXPECT_EQ(second_camera.Opens(), 0);
+  // Two codes, so an answer of the manager's own choosing cannot pass for the store's.
+  for (const StatusCode code : {StatusCode::StorageQuotaExceeded, StatusCode::CodecFailure}) {
+    projects->RefuseReadsOf(kSessionDocumentKey, code);
+    auto second_store = NewStore();
+    FakeCameraAccess second_camera(second_store);
+    CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                                 *second_store, *projects, clock);
+    const Result<SessionId> refused = second.Resume(kProject);
+    EXPECT_EQ(refused.status.code, code) << refused.status.detail;
+    EXPECT_EQ(second_camera.Opens(), 0);
+  }
 }
 
 TEST_F(ResumedSession, WillNotResumeOverALiveSession) {

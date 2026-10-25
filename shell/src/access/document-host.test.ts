@@ -70,6 +70,35 @@ describe('hydration', () => {
     const host = await createDocumentHost(broken);
     expect(host.projectIds()).toEqual([]);
     expect(() => host.write(1, 'title', 'x')).not.toThrow();
+    expect(host.loadError()).toContain('no storage');
+  });
+
+  it('never writes over a store it could not load', async () => {
+    // What it could not load may still be there: a capture whose documents are on disk and that
+    // this host, starting empty, cannot see. Project ids restart at 1 against an empty listing, so
+    // persisting behind would put a new capture's title and session over the old one's. Kept
+    // resident instead, which is what "runs without remembering" means (ADR 0078).
+    let writes = 0;
+    let removals = 0;
+    const unreadable: DocumentStore = {
+      loadAll: async () => { throw new Error('version error'); },
+      put: async () => { writes += 1; },
+      remove: async () => { removals += 1; },
+    };
+    const host = await createDocumentHost(unreadable, { flushDelayMs: 0 });
+    host.write(1, 'title', 'new');
+    host.write(1, 'session', 'sphanorama-session 3');
+    host.remove(1);
+    host.write(2, 'title', 'other');
+    await host.flush();
+    expect(writes).toBe(0);
+    expect(removals).toBe(0);
+    expect(host.read(2, 'title')).toBe('other');
+  });
+
+  it('reports no load error for a store that loaded', async () => {
+    const host = await createDocumentHost(fakeStore({ '7/title': 'kitchen' }));
+    expect(host.loadError()).toBeNull();
   });
 });
 

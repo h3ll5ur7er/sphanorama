@@ -126,12 +126,15 @@ TEST_F(Projects, AListingThatCannotTellWhetherThereIsASessionSaysSo) {
   auto interrupted = manager->Create("interrupted");
   ASSERT_TRUE(interrupted.ok());
   ASSERT_TRUE(store.WriteDocument(interrupted.value, "session", "sphanorama-session 1\n").ok());
-  UnreadableProjectStoreAccess unreadable(store, "session", StatusCode::StorageQuotaExceeded);
-  ProjectManager listing(unreadable);
-  auto listed = listing.List();
-  EXPECT_FALSE(listed.ok())
-      << "a project whose session could not be read was listed as having none";
-  EXPECT_EQ(listed.status.code, StatusCode::StorageQuotaExceeded) << listed.status.detail;
+  // Two codes, so an answer of the manager's own choosing cannot pass for the store's.
+  for (const StatusCode code : {StatusCode::StorageQuotaExceeded, StatusCode::CodecFailure}) {
+    UnreadableProjectStoreAccess unreadable(store, "session", code);
+    ProjectManager listing(unreadable);
+    auto listed = listing.List();
+    EXPECT_FALSE(listed.ok())
+        << "a project whose session could not be read was listed as having none";
+    EXPECT_EQ(listed.status.code, code) << listed.status.detail;
+  }
 
   // And absence is still absence.
   UnreadableProjectStoreAccess absent(store, "session", StatusCode::NotFound);

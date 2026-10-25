@@ -8,6 +8,10 @@
  * So: reads and writes are immediate and never block the core, and durability follows shortly
  * after. A write that fails to persist still stands in memory, because losing durability is bad
  * and losing the session in progress is worse.
+ *
+ * A store that would not load is never written to. What it holds may still be there, and a host
+ * that starts empty cannot see it: project ids restart at 1 against an empty listing, so writing
+ * behind would put a new capture's documents over the ones it could not read (ADR 0078).
  */
 
 /** The persistence side, kept separate so the resident model can be tested without a database. */
@@ -26,6 +30,11 @@ export interface DocumentHost {
   flush(): Promise<void>;
   /** Why the last persist failed, if it did. Durability problems are reportable, not silent. */
   lastPersistError(): string | null;
+  /**
+   * Why the store would not load, if it would not: the host then holds nothing it was given and
+   * persists nothing, so an empty listing says nothing about what is on disk (ADR 0078).
+   */
+  loadError(): string | null;
 }
 
 const DEFAULT_FLUSH_DELAY_MS = 250;
@@ -42,6 +51,7 @@ export async function createDocumentHost(
   const pending = new Map<string, string>();
   const removed = new Set<number>();
   let persistError: string | null = null;
+  let loadError: string | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let inFlight: Promise<void> | null = null;
 
@@ -51,6 +61,7 @@ export async function createDocumentHost(
     // Private browsing, blocked storage, a corrupt database: the app runs, it just does not
     // remember anything. Refusing to start would be a worse trade.
     persistError = String(cause);
+    loadError = String(cause);
   }
 
   async function persist(): Promise<void> {
@@ -109,6 +120,7 @@ export async function createDocumentHost(
       // blocked on storage in the middle of a capture.
       const full = documentKey(project, key);
       resident.set(full, value);
+      if (loadError !== null) return;
       pending.set(full, value);   // a Map, so repeated writes coalesce to the last value
       schedule();
     },
@@ -123,7 +135,7 @@ export async function createDocumentHost(
           found = true;
         }
       }
-      if (found) {
+      if (found && loadError === null) {
         removed.add(project);
         schedule();
       }
@@ -150,6 +162,10 @@ export async function createDocumentHost(
 
     lastPersistError(): string | null {
       return persistError;
+    },
+
+    loadError(): string | null {
+      return loadError;
     },
   };
 }
