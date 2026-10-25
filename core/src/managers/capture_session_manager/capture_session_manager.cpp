@@ -419,8 +419,8 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
 
   // Read before the camera is touched, for the same reason Begin checks the title first: asking
   // for a camera on behalf of a session that cannot start is the worst order to fail in.
-  // Only `NotFound` is "no session"; any other failure is the store's, and says so, since the
-  // page offers the resume again for it where `NotFound` would say there is nothing (ADR 0078).
+  // Only `NotFound` is "no session"; any other failure is the store's, and its status comes back
+  // as the tier's does below. A read that failed has not said there is nothing (ADR 0078).
   auto document = projects_.ReadDocument(project, kSessionDocumentKey);
   if (!document.ok()) {
     if (document.status.code != StatusCode::NotFound) {

@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ProjectId, ProjectSummary } from '../../../../contracts/ts/contracts';
 import { describeResumeRefusal, resumableProject, startOffer } from './resume';
+import { describeFailure } from './status';
 
 function project(id: number, hasSession: boolean, title = `sphere ${id}`): ProjectSummary {
   return {
@@ -159,13 +160,15 @@ describe('startOffer', () => {
     // A new capture empties the spill tier, so if a capture is waiting in it the press that the
     // old line invited would erase it. The listing could not say, so the line says that instead
     // of "continue" (ADR 0078).
-    const offer = startOffer({
-      ok: false,
-      status: { code: 'StorageQuotaExceeded', component: 'ProjectManager', detail: 'full' },
-    });
+    const status = {
+      code: 'StorageQuotaExceeded', component: 'ProjectManager', detail: 'full',
+    } as const;
+    const offer = startOffer({ ok: false, status });
     expect(offer.resume).toBeNull();
     expect(offer.message).toContain('could not tell whether a capture is waiting');
-    expect(offer.message).toContain('StorageQuotaExceeded');
+    // Named the way every other failure on the page is, not as a raw code.
+    expect(offer.message).toContain(describeFailure(status));
+    expect(offer.message).not.toContain('StorageQuotaExceeded');
     expect(offer.message).toContain('reload');
     expect(offer.message).not.toContain('enable the camera to continue');
   });

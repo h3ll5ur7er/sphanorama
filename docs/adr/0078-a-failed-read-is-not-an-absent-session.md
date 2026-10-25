@@ -22,8 +22,10 @@ other way, answering any failed read as `NotFound`, "no session to resume".
   of a session read fails the listing with the store's status, since a summary has no way to say
   "could not tell".
 - **`Resume` answers `NotFound` only for a document that is not there**, and the store's own
-  status for a read that failed. The page offers a resume again for either, so this is the word
-  rather than the behaviour.
+  status for a read that failed, as it already does for the tier's. The page offers a resume
+  again for every code but `Unsupported` and `SensorUnavailable`, which say no press changes the
+  answer (ADR 0039, ADR 0044) and would mean that from a store too. For any other store failure this
+  changes the words and not the behaviour.
 - **The page says what a failed listing means.** The stage line names the failure, tells the user
   to reload, and says a new capture would clear one that is waiting. That is the press the line
   used to invite as "continue" (`startOffer`, `resume.ts`). The new capture stays on offer.
@@ -36,13 +38,21 @@ other way, answering any failed read as `NotFound`, "no session to resume".
 - One project's unreadable session fails the whole listing, the others' with it. Today the page
   lists once at load to find one capture to offer, so nothing is lost that it used.
 - A title that cannot be read still lists as an empty title. That costs a blank row and no frames.
+  `Begin` still answers one as `NotFound`, "no such project", which refuses a capture and loses
+  nothing.
+- A refused resume still ends "try again, or start a new one", for a store failure as for every
+  refusal the page offers again. There the resume stays on offer, so the waiting capture is in
+  front of the user. After a failed listing nothing is, which is why only that line warns.
 
 ## Rejected alternatives
 
-**`hasSession = true` when the read failed.** It offers the resume, which protects the frames, but
-the summary then says a session exists when nothing said so. A resume pressed on it fails with the
-store's status anyway, so the page ends where this decision puts it, by way of a claim nobody made.
+**`hasSession = true` when the read failed.** It offers the resume, which protects the frames, and
+a transient failure would resume on the press, where this decision makes the user reload. Rejected
+because the summary would then say a session exists when nothing said so: `hasSession` is the
+fact, not a promise (ADR 0036), and a flag that is sometimes a guess is one no reader can trust.
 
 **Withdraw the new capture after a failed listing.** It protects the frames completely, and it
-locks out a user whose store fails every read until the store recovers, which a reload may never
-make happen. The line says what the press would cost and leaves the choice with the user.
+locks out a user whose store fails only its session reads, until the store recovers, which a
+reload may never make happen. A store that fails every read needs no withdrawing, since `Begin`
+reads the title first and refuses. The line says what the press would cost and leaves the choice
+with the user.

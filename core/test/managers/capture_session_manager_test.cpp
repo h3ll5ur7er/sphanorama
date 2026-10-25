@@ -6378,8 +6378,8 @@ TEST_F(ResumedSession, RefusesAProjectThatWasNeverCaptured) {
 
 TEST_F(ResumedSession, ASessionThatCannotBeReadIsNotReportedAsAbsent) {
   // `NotFound` says there is nothing to come back to. A read that failed has not said that, so the
-  // store's own status comes back, and the page offers the resume again rather than taking a
-  // failure for an answer (ADR 0078).
+  // store's own status comes back, and what the page shows names the store's failure rather than
+  // an absence (ADR 0078).
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
   CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,

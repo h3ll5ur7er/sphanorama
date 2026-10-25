@@ -7,7 +7,7 @@
  * from `ProjectManager::List`, which reports it as a fact about the project and hands back no
  * session (ADR 0036).
  *
- * Both functions here are decisions rather than rendering, which is why they are testable
+ * The functions here are decisions rather than rendering, which is why they are testable
  * separately from the page that calls them.
  */
 import type { ProjectId, ProjectSummary, Result } from '../../../../contracts/ts/contracts';
@@ -128,9 +128,9 @@ export function startOffer(listed: Result<ProjectSummary[]>): {
     return {
       resume: null,
       message:
-        'core ready, but it could not tell whether a capture is waiting ' +
-        `(${listed.status.code}) — ` +
-        'reload to try again; a new capture would clear one that is',
+        'core ready, but it could not tell whether a capture is waiting: ' +
+        `${describeFailure(listed.status)} — reload to try again; a new capture would clear one ` +
+        'that is',
     };
   }
   const resume = resumableProject(listed.value);
