@@ -279,6 +279,6 @@ describe('panelToggleLabel', () => {
     expect(panelToggleLabel(true, true)).toBe('hide');
     expect(panelToggleLabel(true, false)).toBe('hide');
     expect(panelToggleLabel(false, true)).toBe('details');
-    expect(panelToggleLabel(false, false)).toMatch(/not saving/);
+    expect(panelToggleLabel(false, false)).toBe('details · not saving');
   });
 });

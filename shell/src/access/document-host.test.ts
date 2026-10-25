@@ -93,8 +93,10 @@ describe('hydration', () => {
     await host.flush();
     // And through the debounce, which is how almost every real write persists. `flush` cancels
     // the timer the writes above set, so one more write after it sets a timer nothing cancels, and
-    // a host that refused only in `flush` writes when it fires.
+    // a host that refused only in `flush` writes when it fires. A removal too, since removing a
+    // project the host could not see would delete the very capture this is protecting.
     host.write(3, 'title', 'after');
+    host.remove(3);
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(writes).toBe(0);
     expect(removals).toBe(0);
