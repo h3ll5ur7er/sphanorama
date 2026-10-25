@@ -94,9 +94,13 @@ export async function createDocumentHost(
       // Put the work back, or a single transient quota error means the resident state can never
       // become durable again — the caller has no way to know which documents to rewrite. A newer
       // value already queued for the same key wins: this is a retry of what failed, not a
-      // rollback of what happened since.
+      // rollback of what happened since. So does a removal since: a document no longer resident
+      // was removed after it was written, and putting it back wrote a deleted project's title
+      // over the removal on the next persist.
       for (const project of removals) removed.add(project);
-      for (const [key, value] of writes) if (!pending.has(key)) pending.set(key, value);
+      for (const [key, value] of writes) {
+        if (!pending.has(key) && resident.has(key)) pending.set(key, value);
+      }
     }
   }
 

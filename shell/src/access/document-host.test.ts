@@ -259,6 +259,46 @@ describe('whether it is saving now', () => {
   });
 });
 
+describe('a project removed while its persist is failing', () => {
+  it('is not written back by the retry', async () => {
+    // The retry puts back what failed unless something newer is queued for the key, and a removal
+    // is the other thing that can happen since: put back, the next persist removed the project and
+    // then wrote its title again, so a deleted project came back on disk with nothing but a title.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered: () => void = () => {};
+    const parkedInPut = new Promise<void>((resolve) => { entered = resolve; });
+    let parkNext = true;
+    const rows = new Map<string, string>();
+    const store: DocumentStore = {
+      loadAll: async () => ({}),
+      put: async (key, value) => {
+        if (parkNext) {
+          parkNext = false;
+          entered();
+          await gate;
+          throw new Error('quota exceeded');
+        }
+        rows.set(key, value);
+      },
+      remove: async (prefix) => {
+        for (const key of [...rows.keys()]) if (key.startsWith(prefix)) rows.delete(key);
+      },
+    };
+    const host = await createDocumentHost(store, { flushDelayMs: 0 });
+    host.write(1, 'title', 'doomed');
+    const parked = host.flush();
+    await parkedInPut;
+    host.remove(1);
+    release();
+    await parked;
+    await host.flush();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(host.projectIds()).toEqual([]);
+    expect([...rows.keys()]).toEqual([]);
+  });
+});
+
 describe('durability under failure and concurrency', () => {
   it('keeps failed writes pending so a later flush can retry them', async () => {
     // Pending work was cleared before the write was attempted and never put back, so one
