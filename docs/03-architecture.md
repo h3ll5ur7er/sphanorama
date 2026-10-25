@@ -457,7 +457,9 @@ the same predicate `ArmBurst` asks.
 ### UC-5 · Coming back to a capture a phone call interrupted
 
 At load the Capture Client calls `ProjectManager.List()` and looks for the newest summary carrying
-`hasSession`. If there is one it offers a resume beside the ordinary enable; both are the same user
+`hasSession`. A listing that failed is not one with nothing to resume: the page says it could not
+tell, and that a new capture would clear a capture that is waiting (ADR 0078). If there is one it
+offers a resume beside the ordinary enable; both are the same user
 gesture, because a resume needs the camera and the sensor exactly as a new capture does. Pressed,
 it establishes the motion capability first — a device reporting none is turned away before
 `getUserMedia`, so nobody answers a camera prompt on the way to being told the session cannot start

@@ -6376,6 +6376,27 @@ TEST_F(ResumedSession, RefusesAProjectThatWasNeverCaptured) {
   EXPECT_FALSE(fresh_camera.IsOpen());
 }
 
+TEST_F(ResumedSession, ASessionThatCannotBeReadIsNotReportedAsAbsent) {
+  // `NotFound` says there is nothing to come back to. A read that failed has not said that, so the
+  // store's own status comes back, and the page offers the resume again rather than taking a
+  // failure for an answer (ADR 0078).
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(first.End().ok());
+  projects->RefuseReadsOf(kSessionDocumentKey);
+
+  auto second_store = NewStore();
+  FakeCameraAccess second_camera(second_store);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *second_store, *projects, clock);
+  const Result<SessionId> refused = second.Resume(kProject);
+  EXPECT_EQ(refused.status.code, StatusCode::StorageQuotaExceeded) << refused.status.detail;
+  EXPECT_EQ(second_camera.Opens(), 0);
+}
+
 TEST_F(ResumedSession, WillNotResumeOverALiveSession) {
   // The same rule Begin has, for the same reason: replacing a live session drops its candidate
   // map with the frames still in the store and nothing left holding the handles.

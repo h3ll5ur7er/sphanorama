@@ -119,6 +119,28 @@ TEST_F(Projects, AProjectWithASessionDocumentIsOfferedBackToTheUser) {
   }
 }
 
+TEST_F(Projects, AListingThatCannotTellWhetherThereIsASessionSaysSo) {
+  // `hasSession` false is what keeps a capture from being offered back, and the page's next press
+  // is then a new capture, whose `Begin` empties the spill tier that capture's frames are in. A
+  // read that failed is not a document that is absent, so it is not answered as one (ADR 0078).
+  auto interrupted = manager->Create("interrupted");
+  ASSERT_TRUE(interrupted.ok());
+  ASSERT_TRUE(store.WriteDocument(interrupted.value, "session", "sphanorama-session 1\n").ok());
+  UnreadableProjectStoreAccess unreadable(store, "session", StatusCode::StorageQuotaExceeded);
+  ProjectManager listing(unreadable);
+  auto listed = listing.List();
+  EXPECT_FALSE(listed.ok())
+      << "a project whose session could not be read was listed as having none";
+  EXPECT_EQ(listed.status.code, StatusCode::StorageQuotaExceeded) << listed.status.detail;
+
+  // And absence is still absence.
+  UnreadableProjectStoreAccess absent(store, "session", StatusCode::NotFound);
+  ProjectManager listingAbsent(absent);
+  auto none = listingAbsent.List();
+  ASSERT_TRUE(none.ok()) << none.status.detail;
+  EXPECT_FALSE(none.value.front().hasSession);
+}
+
 TEST_F(Projects, TheSessionFlagIsReadOffTheStoreEveryTime) {
   // Not latched at Create, and not cached from the last listing. A session document appears while
   // this manager is alive — CaptureSessionManager checkpoints one on the way out of every burst —
