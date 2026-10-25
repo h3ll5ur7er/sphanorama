@@ -1,6 +1,7 @@
 # ADR 0014 — Resource-access ports are synchronous over a resident host
 
-**Status:** accepted
+**Status:** accepted; amended by [0079](0079-the-page-says-whether-it-is-saving-now.md), which
+reports a failing persist through `persistFailing()` and removes `lastPersistError()`
 
 ## Context
 The resource-access contracts are synchronous: `ReadDocument` returns `Result<std::string>`, not a

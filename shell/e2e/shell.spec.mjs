@@ -330,7 +330,7 @@ test('a store that stops saving mid-session says so, and stops once it saves', a
     await page.evaluate(() => window.sphanoramaCore.project.create('refused'));
     await expect(page.locator('#core-caps')).toContainText('not saving', { timeout: 15000 });
     await expect(page.locator('#panel-toggle')).toHaveText('details · not saving');
-    // And a flush answers with the same question, so a hidden page is told what is true at it.
+    // And a flush's reply says the same, rather than answering durable.
     expect(await page.evaluate(() => window.sphanoramaHost.flush())).not.toBeNull();
 
     await cdp.send('Storage.overrideQuotaForOrigin', { origin });
@@ -355,7 +355,8 @@ test('a store whose site data is cleared mid-session says so for the rest of the
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await expect(page.locator('#core-caps')).not.toContainText('not saving');
     // A write made while a flush runs is drained by it and leaves its debounce timer behind, whose
-    // persist has nothing in it and goes through after the clear: it must not say "saving".
+    // persist has nothing in it and goes through, usually after the clear, which nothing here
+    // forces; the host's own test pins that order. Either way it must not say "saving".
     expect(await page.evaluate(async () => {
       await window.sphanoramaCore.project.create('before');
       const flushing = window.sphanoramaHost.flush();
@@ -376,6 +377,22 @@ test('a store whose site data is cleared mid-session says so for the rest of the
     await page.evaluate(() => window.sphanoramaCore.project.create('and after that'));
     expect(await page.evaluate(() => window.sphanoramaHost.flush())).not.toBeNull();
     await expect(page.locator('#core-caps')).toContainText('not saving');
+    // And nothing reconnected behind the indicator: the disk holds none of the writes since.
+    expect(await page.evaluate(() => new Promise((resolve, reject) => {
+      const request = indexedDB.open('sphanorama');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains('documents')) {
+          db.close();
+          resolve([]);
+          return;
+        }
+        const read = db.transaction('documents', 'readonly').objectStore('documents').getAll();
+        read.onsuccess = () => { db.close(); resolve(read.result); };
+        read.onerror = () => { db.close(); reject(read.error); };
+      };
+    }))).toEqual([]);
   } finally {
     await server.close();
   }

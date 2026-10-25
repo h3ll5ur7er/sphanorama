@@ -216,9 +216,9 @@ describe('what the worker asks back', () => {
   });
 
   it('hands a change that came before anyone listened to whoever listens next', async () => {
-    // Nothing writes before the page registers today, but a push that landed in that window was
-    // dropped and never sent again, since the host announces only changes. Kept and replayed, a
-    // late handler hears the store's state rather than a silence that reads as "saving".
+    // A push can land before the page registers, a database lost during the boot for one, and
+    // the host announces only changes, so it is kept and replayed: a late handler hears the
+    // store's state rather than a silence that reads as "saving".
     const w = fakeWorker();
     const { remote } = await w.boot();
     w.reply({ kind: 'persisting', failing: 'QuotaExceededError' });

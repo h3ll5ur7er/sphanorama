@@ -1,7 +1,8 @@
 # 0079 — The page says whether it is saving now
 
 **Status:** accepted; amends [0078](0078-a-failed-read-is-not-an-absent-session.md), whose open
-item on a store that stops saving mid-session closes
+item on a store that stops saving mid-session closes, and
+[0014](0014-synchronous-ports-over-a-resident-host.md), whose `lastPersistError()` it replaces
 
 ## Context
 
@@ -22,8 +23,9 @@ answers "did anything ever fail to save" and not "is this being kept now".
   loses its database (`DocumentStore.onLost`) sets it for good, and the loss stays its reason: a
   persist that goes through after the loss, even one with nothing in it, says nothing about
   documents whose database is gone, and one that fails against it says less about why.
-  `lastPersistError()` keeps its meaning, the history. After a failed load nothing is persisted,
-  so nothing fails, and the load is the boot's to say as before.
+  `lastPersistError()`, which held the last failure for good and has no reader left, is removed.
+  After a failed load nothing is persisted, so nothing fails, and the load is the boot's to say
+  as before.
 - **The worker pushes each change** as a `persisting` message, and `RemoteCore.onPersistChange`
   hands it to the page, replaying the latest to a handler that registers after it. A worker that
   dies is reported as not saving, since the documents it had not persisted went with it.
@@ -56,6 +58,4 @@ answers "did anything ever fail to save" and not "is this being kept now".
 ## Rejected alternative
 
 **Read `flush`'s reply on the page.** It is already sent, so it would cost no protocol. But `flush`
-runs on `pagehide` and when the page is hidden, after the capture it would warn. When this was
-decided it also carried `lastPersistError()`, which never clears; it now says what is true at the
-flush, which leaves the timing as the reason.
+runs on `pagehide` and when the page is hidden, after the capture it would warn.

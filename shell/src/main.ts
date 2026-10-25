@@ -320,8 +320,9 @@ function renderCapabilities(capabilities: RuntimeCapabilities, canSpill: boolean
 
 /**
  * Says whether this page's documents are being kept, on both places that say it: the capabilities
- * row, and the panel toggle that stays on screen when the row folds away. Both the boot's failed
- * load and a persist that is failing now mean not kept (ADR 0078, ADR 0079).
+ * row, and the panel toggle that stays on screen when the row folds away. The boot's failed
+ * load, a persist that is failing now, a database lost under the page and a worker that died all
+ * mean not kept (ADR 0078, ADR 0079).
  */
 function showSaving(now: boolean) {
   saving = now;
@@ -1817,6 +1818,9 @@ async function main() {
     // Three things can fail now rather than one — the worker starts, the module loads inside it,
     // the document store opens — so the detail is what says which, and it is worth showing.
     stage.textContent = 'The core failed to load.';
+    // The row is the failure's now: a persist push from a worker still alive must not redraw the
+    // capabilities over the only text that says what failed.
+    shownCapabilities = null;
     coreCaps.textContent = String(cause);
     enableButton.disabled = true;
   }

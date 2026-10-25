@@ -62,8 +62,9 @@ export interface RemoteCore extends CoreRuntime {
   /** Fires when `ICameraAccess::Close` reached the host: only the page can stop a MediaStream. */
   onCloseCamera(handler: () => void): void;
   /**
-   * Fires each time the worker's document store starts failing to save, or recovers, and at once
-   * if it is failing when registered. Replaces any earlier handler, as the other pushes do.
+   * Fires each time the worker's document store starts failing to save, or recovers, or the
+   * worker dies, which never recovers; and at once if it is failing when registered. Replaces any
+   * earlier handler, as the other pushes do.
    */
   onPersistChange(handler: (failing: string | null) => void): void;
   /** Fires when the core wants the locks back: only the page can apply constraints to a track. */

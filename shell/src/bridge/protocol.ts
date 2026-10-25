@@ -105,6 +105,7 @@ export type FromWorker =
   | { kind: 'releaseLocks' }
   /**
    * Whether the document store is saving changed: why it is failing, or null once a persist goes
-   * through again. Pushed, since the persist that fails is one nobody asked for (ADR 0079).
+   * through again, which after a lost database none does. Pushed, since the persist that fails is
+   * one nobody asked for (ADR 0079).
    */
   | { kind: 'persisting'; failing: string | null };

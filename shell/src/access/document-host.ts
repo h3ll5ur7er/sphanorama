@@ -33,17 +33,15 @@ export interface DocumentHost {
   remove(project: number): boolean;
   /** Awaits everything pending. The client calls this when the page is hidden or unloaded. */
   flush(): Promise<void>;
-  /** Why the last persist failed, if it did. Durability problems are reportable, not silent. */
-  lastPersistError(): string | null;
   /**
    * Why the store would not load, if it would not: the host then holds nothing it was given and
    * persists nothing, so an empty listing says nothing about what is on disk (ADR 0078).
    */
   loadError(): string | null;
   /**
-   * Why persisting is failing now, or null when the last persist went through. Unlike
-   * `lastPersistError()` it clears on recovery: it answers "is this being kept", which the page
-   * says for the life of the page (ADR 0079). A store that lost its database never recovers, so
+   * Why persisting is failing now, or null when the last persist went through. It clears on
+   * recovery: it answers "is this being kept", which the page says for the life of the page
+   * (ADR 0079). A store that lost its database never recovers, so
    * that loss is kept whatever persists after it. Null after a failed load, which persists nothing.
    */
   persistFailing(): string | null;
@@ -64,7 +62,6 @@ export async function createDocumentHost(
   const resident = new Map<string, string>();
   const pending = new Map<string, string>();
   const removed = new Set<number>();
-  let persistError: string | null = null;
   let loadError: string | null = null;
   let failing: string | null = null;
   // Kept for good once heard: the database the documents were in is gone, so a persist that goes
@@ -92,13 +89,11 @@ export async function createDocumentHost(
   } catch (cause) {
     // Private browsing, blocked storage, a corrupt database: the app runs, it just does not
     // remember anything. Refusing to start would be a worse trade.
-    persistError = String(cause);
     loadError = String(cause);
   }
   if (loadError === null) {
     store.onLost?.((reason) => {
       lost = reason;
-      persistError = reason;
       setFailing(reason);
     });
   }
@@ -115,7 +110,6 @@ export async function createDocumentHost(
       setFailing(lost);
       return true;
     } catch (cause) {
-      persistError = String(cause);
       // Put the work back, or a single transient quota error means the resident state can never
       // become durable again — the caller has no way to know which documents to rewrite. A newer
       // value already queued for the same key wins: this is a retry of what failed, not a
@@ -127,7 +121,7 @@ export async function createDocumentHost(
         if (!pending.has(key) && resident.has(key)) pending.set(key, value);
       }
       // A loss stays the reason: what follows from it says less about why than it does.
-      setFailing(lost ?? persistError);
+      setFailing(lost ?? String(cause));
       return false;
     }
   }
@@ -208,10 +202,6 @@ export async function createDocumentHost(
         // Nor can `failing`, which a loss holds whether or not the persist went through.
         if (!(await enqueue())) break;
       }
-    },
-
-    lastPersistError(): string | null {
-      return persistError;
     },
 
     loadError(): string | null {

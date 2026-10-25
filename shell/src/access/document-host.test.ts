@@ -175,7 +175,7 @@ describe('persistence', () => {
     host.write(6, 'title', 'attic');
     await host.flush();
     expect(host.read(6, 'title')).toBe('attic');
-    expect(host.lastPersistError()).toMatch(/quota/i);
+    expect(host.persistFailing()).toMatch(/quota/i);
   });
 
   it('coalesces repeated writes to the same document', async () => {
@@ -213,9 +213,8 @@ describe('persistence', () => {
 
 describe('whether it is saving now', () => {
   it('says when persisting starts failing and when it recovers, and only then', async () => {
-    // `lastPersistError()` holds on to the last failure for good, which is the right answer to
-    // "did anything ever fail" and the wrong one to "is this being kept now". The page shows the
-    // second, for the life of the page, so a store that fills mid-session is said (ADR 0079).
+    // "Is this being kept now", not "did anything ever fail": the page shows it for the life of
+    // the page, so a store that fills mid-session is said, and so is its recovery (ADR 0079).
     const store = fakeStore();
     const host = await createDocumentHost(store, { flushDelayMs: 0 });
     const heard: Array<string | null> = [];
@@ -246,8 +245,6 @@ describe('whether it is saving now', () => {
     expect(heard).toHaveLength(2);
     expect(heard[1]).toBeNull();
     expect(host.persistFailing()).toBeNull();
-    // The history is not the state: the last failure is still reported as having happened.
-    expect(host.lastPersistError()).toContain('quota exceeded');
   });
 
   it('is not failing for a store that would not load, since it never tries', async () => {
@@ -292,7 +289,6 @@ describe('a store that loses its database', () => {
     lose('the database was closed');
     expect(heard).toEqual(['the database was closed']);
     expect(host.persistFailing()).toBe('the database was closed');
-    expect(host.lastPersistError()).toBe('the database was closed');
     // And it stays lost: a persist that goes through after it was put somewhere that is not
     // where the documents were, or nowhere at all, and does not say "saving" again.
     host.write(1, 'title', 'after');
@@ -377,8 +373,8 @@ describe('a flush', () => {
     // The core keeps running while a persist awaits the store, so a flush can find as much queued
     // after a persist as it carried. Only a failed persist is a reason to stop, since a flush
     // that returned with work queued is answered "durable" (ADR 0079).
-    // After a failure it recovered from, too: the stop is on whether persisting is failing now,
-    // which the history of failures would answer wrongly for the rest of the page.
+    // After a failure it recovered from, too: the stop is on whether this persist went through,
+    // which neither a failure before it nor `persistFailing()` after a loss can say.
     const rows = new Map<string, string>();
     let host: Awaited<ReturnType<typeof createDocumentHost>> | null = null;
     let failNext = true;
@@ -490,7 +486,7 @@ describe('durability under failure and concurrency', () => {
     const host = await createDocumentHost(store, { flushDelayMs: 0 });
     host.write(1, 'title', 'kitchen');
     await host.flush();
-    expect(host.lastPersistError()).toContain('Quota');
+    expect(host.persistFailing()).toContain('Quota');
     expect(written.size).toBe(0);
 
     failing = false;
