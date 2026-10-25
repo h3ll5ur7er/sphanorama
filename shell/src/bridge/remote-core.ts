@@ -121,6 +121,9 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
     // And a worker that is gone holds no files, so the page lets go of the right to them: otherwise
     // a broken tab left open keeps every other page off a free pair (ADR 0063).
     tier.settle(false);
+    // The documents it had not persisted went with it, and no push will say so.
+    persisting = reason;
+    persistChange(reason);
   };
 
   worker.addEventListener('error', (event: unknown) => {

@@ -181,11 +181,12 @@ export async function createDocumentHost(
       // guarantee that is not one.
       await inFlight;
       while (pending.size > 0 || removed.size > 0) {
-        const before = pending.size + removed.size;
         await enqueue();
         // A failed persist requeues what it could not write. Retrying it forever here would
-        // hang the page on a full disk; the caller reads persistFailing() and decides.
-        if (pending.size + removed.size >= before) break;
+        // hang the page on a full disk; the caller reads persistFailing() and decides. Work left
+        // after one that went through arrived while it ran, and is drained: the queue's size
+        // cannot tell the two apart, and a flush that stopped on it was answered "durable".
+        if (failing !== null) break;
       }
     },
 

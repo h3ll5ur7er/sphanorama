@@ -268,6 +268,32 @@ describe('whether it is saving now', () => {
   });
 });
 
+describe('a flush', () => {
+  it('drains writes that arrive during a persist that went through', async () => {
+    // The core keeps running while a persist awaits the store, so a flush can find as much queued
+    // after a persist as it carried. Only a failed persist is a reason to stop, since a flush
+    // that returned with work queued is answered "durable" (ADR 0079).
+    const rows = new Map<string, string>();
+    let host: Awaited<ReturnType<typeof createDocumentHost>> | null = null;
+    let writeDuring = true;
+    host = await createDocumentHost({
+      loadAll: async () => ({}),
+      put: async (key, value) => {
+        if (writeDuring) {
+          writeDuring = false;
+          host!.write(1, 'session', 'written while the title persisted');
+        }
+        rows.set(key, value);
+      },
+      remove: async () => {},
+    }, { flushDelayMs: 0 });
+    host.write(1, 'title', 'first');
+    await host.flush();
+    expect(rows.get('1/session')).toBe('written while the title persisted');
+    expect(host.persistFailing()).toBeNull();
+  });
+});
+
 describe('a listener that throws', () => {
   it('does not cost the writes that failed, nor the persists after it', async () => {
     // Listeners are the page's business; durability is the host's. One that throws must not turn

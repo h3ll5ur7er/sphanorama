@@ -333,6 +333,33 @@ test('a store that stops saving mid-session says so, and stops once it saves', a
   }
 });
 
+test('a store whose site data is cleared mid-session says so for the rest of the page',
+     async ({ page }) => {
+  // A clear closes the database under the host, and what was on disk before it is gone. Nothing
+  // reconnects: the documents the host still holds could be put back, but a clear is as often the
+  // user deleting them, and saying "saving" of the writes since would be saying it of a disk that
+  // no longer has the rest (ADR 0079).
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#core-caps')).not.toContainText('not saving');
+    await page.evaluate(() => window.sphanoramaCore.project.create('before'));
+    expect(await page.evaluate(() => window.sphanoramaHost.flush())).toBeNull();
+
+    const origin = new URL(server.appUrl).origin;
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Storage.clearDataForOrigin', { origin, storageTypes: 'indexeddb' });
+    await page.evaluate(() => window.sphanoramaCore.project.create('after'));
+    await expect(page.locator('#core-caps')).toContainText('not saving', { timeout: 15000 });
+    await page.evaluate(() => window.sphanoramaCore.project.create('and after that'));
+    expect(await page.evaluate(() => window.sphanoramaHost.flush())).not.toBeNull();
+    await expect(page.locator('#core-caps')).toContainText('not saving');
+  } finally {
+    await server.close();
+  }
+});
+
 test('a panel folded before the store is known says so once it is', async ({ page }) => {
   // The toggle answers a press from the moment the page's script runs, and the boot that learns
   // whether the store loaded comes later, so a panel folded during "starting…" was labelled before

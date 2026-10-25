@@ -88,6 +88,10 @@ export type FromWorker =
   }
   | { kind: 'result'; seq: number; bytes: Uint8Array }
   | { kind: 'capabilities'; seq: number; value: RuntimeCapabilities }
+  /**
+   * Whether the documents are kept as of the flush: why the store would not load, or why a
+   * persist is failing now, and null once everything committed (ADR 0079).
+   */
   | { kind: 'flushed'; seq: number; persistError: string | null }
   /**
    * Anything that threw where a reply was expected. Startup is three failures now — the worker

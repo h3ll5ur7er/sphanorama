@@ -279,6 +279,18 @@ describe('a worker that stops answering', () => {
     expect(w.wasTerminated()).toBe(true);
   });
 
+  it('says the store is not saving, since a worker that died took its unsaved writes', async () => {
+    // The host's persists ran in the worker, and so did the documents it had not persisted yet:
+    // a page that kept saying "saving" after the death would be saying it of nothing (ADR 0079).
+    const w = fakeWorker();
+    const core = await w.boot();
+    const heard: Array<string | null> = [];
+    core.remote.onPersistChange((failing) => heard.push(failing));
+    w.raise('error', { message: 'boom' });
+    expect(heard).toHaveLength(1);
+    expect(heard[0]).toMatch(/boom/);
+  });
+
   it('treats an undeserialisable message as the same kind of death', async () => {
     // `messageerror` means a reply arrived and could not be read. It carries no sequence number,
     // so there is no call to fail in particular — and the one that was waiting for it never hears
