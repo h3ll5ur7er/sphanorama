@@ -275,6 +275,9 @@ describe('a listener that throws', () => {
     const store = fakeStore();
     const host = await createDocumentHost(store, { flushDelayMs: 0 });
     host.onPersistChange(() => { throw new Error('listener broke'); });
+    // Nor cost the listeners after it the news.
+    const heard: Array<string | null> = [];
+    host.onPersistChange((failing) => heard.push(failing));
     store.failNextWrite();
     host.write(1, 'title', 'kept in the end');
     await host.flush();
@@ -282,6 +285,8 @@ describe('a listener that throws', () => {
     await host.flush();
     expect(store.rows.get('1/title')).toBe('kept in the end');
     expect(store.rows.get('2/title')).toBe('next');
+    expect(heard).toHaveLength(2);
+    expect(heard[1]).toBeNull();
   });
 });
 

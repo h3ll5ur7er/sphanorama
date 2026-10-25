@@ -227,6 +227,16 @@ describe('what the worker asks back', () => {
     expect(heard).toEqual(['QuotaExceededError']);
   });
 
+  it('hands a late listener the latest state, so a recovery it missed is not a failure', async () => {
+    const w = fakeWorker();
+    const { remote } = await w.boot();
+    w.reply({ kind: 'persisting', failing: 'QuotaExceededError' });
+    w.reply({ kind: 'persisting', failing: null });
+    const heard: Array<string | null> = [];
+    remote.onPersistChange((failing) => heard.push(failing));
+    expect(heard).toEqual([]);
+  });
+
   it('carries a persist failure back from the flush that found it', async () => {
     const w = fakeWorker();
     const { remote } = await w.boot();

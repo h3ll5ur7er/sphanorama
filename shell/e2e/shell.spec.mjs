@@ -283,6 +283,8 @@ test('a document store that will not open is not read as having nothing', async 
     await expect(page.locator('#core-caps')).toContainText('not saving');
     await expect(page.locator('#facade')).toContainText('projects not loaded');
     await expect(page.locator('#facade')).not.toContainText('0 projects');
+    // A flush has persisted nothing, and says so rather than answering durable.
+    expect(await page.evaluate(() => window.sphanoramaHost.flush())).toContain('VersionError');
 
     // And still on screen once a capture is running, which is when it matters: the panel folds
     // away when one starts and takes the capabilities row with it.
@@ -318,11 +320,14 @@ test('a store that stops saving mid-session says so, and stops once it saves', a
     await page.evaluate(() => window.sphanoramaCore.project.create('refused'));
     await expect(page.locator('#core-caps')).toContainText('not saving', { timeout: 15000 });
     await expect(page.locator('#panel-toggle')).toHaveText('details · not saving');
+    // And a flush answers with the same question, so session end is told what is true at it.
+    expect(await page.evaluate(() => window.sphanoramaHost.flush())).not.toBeNull();
 
     await cdp.send('Storage.overrideQuotaForOrigin', { origin });
     await page.evaluate(() => window.sphanoramaCore.project.create('kept'));
     await expect(page.locator('#core-caps')).not.toContainText('not saving', { timeout: 15000 });
     await expect(page.locator('#panel-toggle')).toHaveText('details');
+    expect(await page.evaluate(() => window.sphanoramaHost.flush())).toBeNull();
   } finally {
     await server.close();
   }
