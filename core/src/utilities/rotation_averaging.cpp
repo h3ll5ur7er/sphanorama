@@ -92,9 +92,10 @@ constexpr int kMaxSweeps = 1000;
 // 1e-3 is 0.057 degrees short of a half turn, which no registration that worked produces.
 //
 // Measured over 20,000 contradictory graphs, counting a frame a 1e-12 nudge moves more than a
-// thousandth of a degree and `ambiguous` leaves out: 289 graphs at 1e-12, 274 here, 243 with the
-// echo exclusion below. And over 3,000 graphs with consistent edges jittered half a degree and
-// priors three degrees out, it names none, as 1e-12 does.
+// thousandth of a degree and `ambiguous` leaves out: 289 graphs at 1e-12, 274 here, and with the
+// echo exclusion below about 250, for a nudge cannot see what the echoes hid (ADR 0080). Over 3,000
+// graphs with consistent edges jittered half a degree and priors three degrees out, it names none,
+// as 1e-12 does.
 constexpr double kTieSeparation = 1e-3;
 
 // One end of one edge, from the point of view of a frame it touches.
@@ -289,74 +290,52 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
     }
   }
 
-  // **A neighbour whose side of the edge holds no anchor is an echo**, and is not averaged into the
-  // frame it hangs from. Everything on that side is placed from this frame and nothing else, so
-  // what it predicts for this frame is this frame's own place handed back: averaged in, it outvotes
-  // evidence that cancels, and a tie is settled by wherever the walk first put the frame. Such an
-  // edge is a bridge, so a depth-first search over the believed edges finds every one, with the
-  // anchors on each side counted below it. `echoAtFrom[k]` means edge `k` is an echo seen from its
-  // `from` frame, and `echoAtTo[k]` from its `to`.
-  std::vector<char> echoAtFrom(edges.size(), 0);
-  std::vector<char> echoAtTo(edges.size(), 0);
+  // **A neighbour that only this frame places is an echo**, and is not averaged into it. Take the
+  // frame away and whatever that neighbour is still joined to holds no anchor: everything there is
+  // placed from this frame and nothing else, so its prediction for the frame is the frame's own
+  // place handed back. Averaged in, it outvotes evidence that cancels, and a tie is settled by
+  // wherever the walk first put the frame. A bridge to a leaf is the plain case; a leaf held by two
+  // edges, or an unanchored cycle hanging off the frame, is the same and has no bridge to find, so
+  // the parts left by removing the frame are what is counted. `echo[i][t]` is the `t`th incidence
+  // of frame `i`, parallel to `incident`.
+  std::vector<std::vector<char>> echo(static_cast<size_t>(frames));
   {
-    std::vector<int32_t> entered(static_cast<size_t>(frames), -1);
-    std::vector<int32_t> low(static_cast<size_t>(frames), 0);
-    std::vector<int32_t> anchorsBelow(static_cast<size_t>(frames), 0);
-    std::vector<int32_t> parentEdge(static_cast<size_t>(frames), -1);
-    std::vector<int32_t> bridged;   // the child end of each bridge found in this component
-    struct Step {
-      int32_t frame;
-      size_t next;
-    };
-    std::vector<Step> stack;
-    int32_t clock = 0;
-    for (int32_t root = 0; root < frames; ++root) {
-      if (entered[static_cast<size_t>(root)] >= 0) continue;
-      bridged.clear();
-      const auto enter = [&](int32_t frame, int32_t viaEdge) {
-        entered[static_cast<size_t>(frame)] = low[static_cast<size_t>(frame)] = clock++;
-        anchorsBelow[static_cast<size_t>(frame)] = anchored[static_cast<size_t>(frame)];
-        parentEdge[static_cast<size_t>(frame)] = viaEdge;
-        stack.push_back(Step{frame, 0});
-      };
-      enter(root, -1);
-      while (!stack.empty()) {
-        Step& step = stack.back();
-        const int32_t at = step.frame;
-        if (step.next < incident[static_cast<size_t>(at)].size()) {
-          const Incidence touch = incident[static_cast<size_t>(at)][step.next++];
-          // The edge it was reached by, and only that one: a second edge to the same frame is a
-          // cycle, which no bridge crosses.
-          if (touch.edge == parentEdge[static_cast<size_t>(at)]) continue;
-          const RelativeRotation& edge = edges[static_cast<size_t>(touch.edge)];
-          const int32_t other = touch.asTo ? edge.from : edge.to;
-          if (entered[static_cast<size_t>(other)] < 0) {
-            enter(other, touch.edge);
-          } else {
-            low[static_cast<size_t>(at)] =
-                std::min(low[static_cast<size_t>(at)], entered[static_cast<size_t>(other)]);
+    // Labels are unique across frames, so `part` is never cleared: a frame belongs to one of the
+    // current frame's parts exactly when its label is at least `first`.
+    std::vector<int32_t> part(static_cast<size_t>(frames), -1);
+    std::vector<char> partAnchored;
+    std::vector<int32_t> queue;
+    int32_t next = 0;
+    for (int32_t i = 0; i < frames; ++i) {
+      echo[static_cast<size_t>(i)].assign(incident[static_cast<size_t>(i)].size(), 0);
+      if (placed[static_cast<size_t>(i)] == 0) continue;
+      const int32_t first = next;
+      partAnchored.clear();
+      for (size_t t = 0; t < incident[static_cast<size_t>(i)].size(); ++t) {
+        const Incidence& touch = incident[static_cast<size_t>(i)][t];
+        const RelativeRotation& edge = edges[static_cast<size_t>(touch.edge)];
+        const int32_t neighbour = touch.asTo ? edge.from : edge.to;
+        if (part[static_cast<size_t>(neighbour)] < first) {
+          const int32_t label = next++;
+          partAnchored.push_back(0);
+          queue.assign(1, neighbour);
+          part[static_cast<size_t>(neighbour)] = label;
+          for (size_t head = 0; head < queue.size(); ++head) {
+            const int32_t at = queue[head];
+            if (anchored[static_cast<size_t>(at)] != 0) {
+              partAnchored[static_cast<size_t>(label - first)] = 1;
+            }
+            for (const Incidence& onward : incident[static_cast<size_t>(at)]) {
+              const RelativeRotation& link = edges[static_cast<size_t>(onward.edge)];
+              const int32_t beyond = onward.asTo ? link.from : link.to;
+              if (beyond == i || part[static_cast<size_t>(beyond)] >= first) continue;
+              part[static_cast<size_t>(beyond)] = label;
+              queue.push_back(beyond);
+            }
           }
-          continue;
         }
-        stack.pop_back();
-        if (stack.empty()) break;
-        const int32_t up = stack.back().frame;
-        low[static_cast<size_t>(up)] =
-            std::min(low[static_cast<size_t>(up)], low[static_cast<size_t>(at)]);
-        anchorsBelow[static_cast<size_t>(up)] += anchorsBelow[static_cast<size_t>(at)];
-        if (low[static_cast<size_t>(at)] > entered[static_cast<size_t>(up)]) bridged.push_back(at);
-      }
-      const int32_t total = anchorsBelow[static_cast<size_t>(root)];
-      for (const int32_t below : bridged) {
-        const int32_t k = parentEdge[static_cast<size_t>(below)];
-        const bool belowIsFrom = edges[static_cast<size_t>(k)].from == below;
-        // Nothing anchored below: the frame above hears an echo. Nothing above: the one below does.
-        if (anchorsBelow[static_cast<size_t>(below)] == 0) {
-          (belowIsFrom ? echoAtTo : echoAtFrom)[static_cast<size_t>(k)] = 1;
-        }
-        if (total - anchorsBelow[static_cast<size_t>(below)] == 0) {
-          (belowIsFrom ? echoAtFrom : echoAtTo)[static_cast<size_t>(k)] = 1;
-        }
+        const int32_t label = part[static_cast<size_t>(neighbour)];
+        echo[static_cast<size_t>(i)][t] = partAnchored[static_cast<size_t>(label - first)] == 0;
       }
     }
   }
@@ -402,8 +381,9 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       // frames in one component, so `i` being placed means every frame a believed edge reaches from
       // it is placed too. The guard above does the work for both, and does it by skipping the whole
       // loop rather than each turn of it.
-      for (const Incidence& touch : incident[static_cast<size_t>(i)]) {
-        if ((touch.asTo ? echoAtTo : echoAtFrom)[static_cast<size_t>(touch.edge)] != 0) continue;
+      for (size_t t = 0; t < incident[static_cast<size_t>(i)].size(); ++t) {
+        if (echo[static_cast<size_t>(i)][t] != 0) continue;
+        const Incidence& touch = incident[static_cast<size_t>(i)][t];
         const RelativeRotation& edge = edges[static_cast<size_t>(touch.edge)];
         const int32_t other = touch.asTo ? edge.from : edge.to;
         const Quat& unit = rotation[static_cast<size_t>(touch.edge)];

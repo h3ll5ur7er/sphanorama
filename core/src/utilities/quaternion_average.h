@@ -36,8 +36,9 @@ struct QuaternionAverage {
 
   // How far the answer is from a tie: the gap between the top two eigenvalues over the top one,
   // from one for a single rotation down to zero for a half turn. A caller judging a tie by its own
-  // measure reads this; `isUnique` is the eigensolver's.
-  double separation = 0;
+  // measure reads this; `isUnique` is the eigensolver's. On a refusal it says "not a tie", as
+  // `isUnique` does, rather than zero, which is an answer: an exact half turn.
+  double separation = 1;
 
   bool valid = false;
 };

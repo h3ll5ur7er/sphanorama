@@ -10,18 +10,21 @@ the evidence (ADR 0073). A tie was an average whose top two eigenvalues fell wit
 `AverageQuaternions`' threshold, a relative 1e-12, and ADR 0073 recorded two ways the solver splits
 a tie in the evidence by far more than that, leaving `ambiguous` empty:
 
-- **An echo.** A neighbour whose side of its edge holds no anchor is placed from the frame it hangs
-  from and nothing else, so its prediction for that frame is the frame's own place handed back.
+- **An echo.** A neighbour that, with the frame removed, is joined to no anchor is placed from that
+  frame and nothing else, so its prediction for the frame is the frame's own place handed back.
   Averaged in, it outvotes evidence that cancels, and the frame stays wherever the walk first put
   it, which the anchors' index order decides. One unanchored leaf on the tied frame of a committed
   fixture emptied the list, and swapping two frames' labels moved the tied frame a half turn.
 - **A residual.** A neighbour updated earlier in the same sweep tilts a frame's predictions, so a
   tie exact in the input reached the average a relative 1e-6 apart, a million times the threshold.
 
-The measure is a 1e-12 nudge to one edge or anchor: a frame it moves by more than a thousandth of a
-degree, with both solves converged, sits where an arbitrary choice put it. Over 20,000 contradictory
-graphs of three to seven frames, with rotations drawn from the identity, half turns, a quarter and
-a third, 289 left such a frame out of `ambiguous`.
+Two measures say a frame sits where an arbitrary choice put it, both with the solves converged: a
+1e-12 nudge to one edge or anchor moves it more than a thousandth of a degree, or renumbering the
+frames and shuffling the edges moves it more than a tenth. The nudge cannot see an echo, which makes
+the coin's placement stable; the renumbering can, and also counts answers that depend on the order
+without balancing on a tie. Over 20,000 contradictory graphs of three to seven frames, with
+rotations drawn from the identity, half turns, a quarter and a third, 309 left out a frame the nudge
+moves, and 1,544 one that either moves.
 
 ## Decision
 
@@ -29,38 +32,55 @@ a third, 289 left such a frame out of `ambiguous`.
   `AverageQuaternions` reports the separation, and the solver judges it against its own threshold;
   `isUnique` keeps the eigensolver's. For two predictions at equal weight a thousandth is 0.057
   degrees short of a half turn, which no registration that worked produces.
-- **An echo is not averaged into the frame it hangs from.** Edges whose far side holds no anchor are
-  bridges, found once by a depth-first search over the believed edges with the anchors on each side
-  counted. The frames beyond still average the frame they hang from.
+- **An echo is not averaged into the frame it hangs from.** For each frame, the believed edges
+  without it fall into parts, found by flooding from each neighbour, and an edge into a part with no
+  anchor is not averaged in. A bridge to a leaf is one case; a leaf held by two edges, or an
+  unanchored cycle hanging off the frame, has no bridge and is the same echo. The frames beyond
+  still average the frame they hang from. It costs a flood per frame, frames times edges, against
+  sweeps that each average every frame.
 
 ## Consequences
 
-- Both cases the reviews constructed are named, and over the same 20,000 graphs 243 leave a frame
-  out, against 289; across four seeds, 243 to 270 against 285 to 315. Over 3,000 graphs with
-  consistent edges jittered half a degree and priors three degrees out, nothing is named, as before.
+- Both cases the reviews constructed are named, and so are the leaf held by two edges and the
+  hanging triangle, each with its labels swapped. Over the same 20,000 graphs, 261 leave out a frame
+  the nudge moves, against 309, and 1,341 one that either measure moves, against 1,544. Searching
+  for bridges alone did no better on the nudge, 263, and worse on both, 1,410, because the nudge
+  cannot see the echoes it missed. Over 3,000 graphs with consistent edges jittered half a degree
+  and priors three degrees out, nothing is named, as before.
 - **Ties remain that no test of the final answer can see.** The solve can pass through a tie and
   then settle into a basin it is stable in. On the solver before this change, pushing every frame
-  five degrees off the answer and relaxing again still left 167 of the 289 graphs unexplained, since
-  they came back. A few of what is left have every edge within a degree,
-  because what the coin decided was where a whole piece sits, between anchors that nearly cancel,
-  and no edge can see a piece turned bodily. So `maxEdgeErrorDeg` is not a stand-in for the list,
-  and the list is not complete. The header says so.
-- **An echo that agrees changes nothing; one that disagrees no longer bends its frame.** An exact
-  echo returns the frame's own place, so leaving it out leaves the fixed point where it was. A
-  piece hanging by one edge whose own cycles disagree used to pull the frame it hangs from by its
-  disagreement, and does not now. In `Refine` every frame with a sensor reading is anchored, so an
-  echo there needs a frame without one.
-- Separations between 1e-12 and 1e-3 are now named where they were not. Over the 20,000 graphs,
-  frames were named in 3,025 against 2,920.
+  five degrees off the answer and relaxing again still left 167 of 289 nudge-moved graphs
+  unexplained, since they came back. On three seeds of four, one to three of what is left have
+  every edge within a degree, because what the coin decided was where a whole piece sits, between
+  anchors that nearly cancel, and no edge can see a piece turned bodily. So `maxEdgeErrorDeg` is not
+  a stand-in for the list, and the list is not complete. The header says so.
+- **Leaving an echo out moves no fixed point; it changes the path to one.** A part with no anchor
+  can turn bodily, so where the solve stops its edges pull on the frame no more than the frame pulls
+  back: measured, an unanchored triangle thirty degrees out of true, hanging by one edge, moved its
+  frame by 1.5e-5 degrees. The path is where a tie is broken, which is the point. At an
+  `anchorWeight` of zero, where nothing turns a piece onto its anchors, the path also decides the
+  gauge: on the 3,000 consistent graphs the answer turned bodily by up to 1.35 degrees, its shape
+  within 4e-4. In `Refine` every frame with a sensor reading is anchored, and a build pairs no frame
+  without one, so a build holds no echo.
+- **More is named, some of it decided by the evidence.** Over the 20,000 graphs frames were named
+  in 3,180 against 3,041, and the graphs named where no nudge moves anything rose too, 476 to 503.
+  A separation is a ratio, so two opposing edges whose weights are within a thousandth of each
+  other, 1,001 inliers against 1,000, are named, though the heavier one decides and no order or
+  nudge changes it.
+- ADR 0073's figure of 250 unnamed graphs came from the review's own generator; the 309 and 289
+  here are this one's, on the same kind of input.
 - `GlobalSolution::ambiguousFrames` says what it can and cannot see in the contract comment, which
   was regenerated into the TypeScript mirror.
 
 ## Rejected alternatives
 
+Both were measured on the nudge alone, in a run of the same 20,000 graphs where the solver before
+this change left 289 out.
+
 **Re-solve in another order.** Solve again with the walk seeded and the sweep run backwards, and
 name the frames whose place differs beyond the convergence noise, the gauge removed per piece. It
-sees ties decided partway through a solve, which nothing at the answer can: 120 of the 20,000 graphs
-left a frame out. It doubles every solve, and `Refine` solves once per focal-length trial on the
+sees ties decided partway through a solve, which nothing at the answer can: 120 graphs left a frame
+out. It doubles every solve, and `Refine` solves once per focal-length trial on the
 phone, where how long a sphere takes is not yet measured. It also names 2,190 graphs where no nudge
 moves anything: answers that depend on the order without balancing on a tie, which the header has
 called a hazard of contradictory input rather than an arbitrary placement. This is the next step if

@@ -431,7 +431,12 @@ TEST(AverageQuaternions, TheSeparationIsTheRelativeGapOfTheTopTwoEigenvalues) {
 
 TEST(AverageQuaternions, NoRotationsIsARefusal) {
   const std::vector<Quat> none;
-  EXPECT_FALSE(AverageQuaternions(none, {}).valid);
+  const QuaternionAverage refused = AverageQuaternions(none, {});
+  EXPECT_FALSE(refused.valid);
+  // Both measures of a tie say "not one" on a refusal, so a reader that skips `valid` errs the
+  // same way with either; zero separation would be an exact half turn.
+  EXPECT_TRUE(refused.isUnique);
+  EXPECT_EQ(refused.separation, 1.0);
 }
 
 TEST(AverageQuaternions, AWeightSpanOfTheWrongLengthIsARefusal) {

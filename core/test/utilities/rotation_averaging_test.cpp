@@ -1330,11 +1330,53 @@ TEST(AverageRotations, ALeafThatEchoesItsNeighbourDoesNotHideATie) {
     EXPECT_EQ(swapped.ambiguous, (std::vector<int32_t>{0, 1, 2, 3})) << "anchor weight " << weight;
   }
 
-  // Agreeing, the leaf still follows frame 1 to where the evidence puts it and nothing is named.
+  // **An echo need not be a bridge.** A leaf held by two edges, or an unanchored triangle hanging
+  // off frame 1, is still placed from frame 1 and nothing else: removing frame 1 leaves it with no
+  // anchor. Neither shape has a bridge to find.
+  const std::vector<Quat> withTriangle{AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(0.0),
+                                       Quat{0, 0, 0, 0}, Quat{0, 0, 0, 0}};
+  for (const bool swap : {false, true}) {
+    const Quat fromZero = swap ? opposing : agreeing;
+    const Quat fromTwo = swap ? agreeing : opposing;
+    std::vector<RelativeRotation> doubled = withLeaf(fromZero, fromTwo);
+    doubled.push_back(RelativeRotation{3, 1, agreeing, 1.0});
+    const AveragedRotations twice = AverageRotations(doubled, anchors, 1000.0);
+    ASSERT_TRUE(twice.valid);
+    EXPECT_EQ(twice.ambiguous, (std::vector<int32_t>{0, 1, 2, 3})) << "swapped " << swap;
+
+    const std::vector<RelativeRotation> triangle{
+        RelativeRotation{0, 1, fromZero, 1.0}, RelativeRotation{2, 1, fromTwo, 1.0},
+        RelativeRotation{3, 1, agreeing, 1.0}, RelativeRotation{4, 1, agreeing, 1.0},
+        RelativeRotation{3, 4, agreeing, 1.0}};
+    const AveragedRotations hung = AverageRotations(triangle, withTriangle, 1000.0);
+    ASSERT_TRUE(hung.valid);
+    EXPECT_EQ(hung.ambiguous, (std::vector<int32_t>{0, 1, 2, 3, 4})) << "swapped " << swap;
+  }
+
+  // Agreeing, nothing is named.
   const AveragedRotations agreed = AverageRotations(withLeaf(agreeing, agreeing), anchors, 1000.0);
   ASSERT_TRUE(agreed.valid);
   EXPECT_TRUE(agreed.ambiguous.empty());
-  EXPECT_NEAR(SeparationDeg(agreed.rotations[3], AboutY(0.0)), 0.0, kSameRotationDeg);
+
+  // **The leaf still hears the frame it hangs from**, which only a frame the sweeps move can show:
+  // the walk puts frame 1 at frame 0's prediction and the leaf with it, and the average then takes
+  // frame 1 halfway to frame 2's sixty degrees. A leaf that stopped averaging its frame would stay
+  // where the walk left it.
+  const AveragedRotations moved = AverageRotations(
+      withLeaf(agreeing, TrueEdge(AboutY(0.0), AboutY(60.0))), anchors, 1000.0);
+  ASSERT_TRUE(moved.valid);
+  EXPECT_GT(SeparationDeg(moved.rotations[1], AboutY(0.0)), 20.0);
+  EXPECT_NEAR(SeparationDeg(moved.rotations[3], moved.rotations[1]), 0.0, kSameRotationDeg);
+
+  // And numbered the other way about, the leaf frame 0 and the tie frame 2, so no order in which
+  // frames are visited is what finds the echo.
+  const std::vector<Quat> renumbered{Quat{0, 0, 0, 0}, AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(0.0)};
+  const std::vector<RelativeRotation> reversed{RelativeRotation{1, 2, agreeing, 1.0},
+                                               RelativeRotation{3, 2, opposing, 1.0},
+                                               RelativeRotation{0, 2, agreeing, 1.0}};
+  const AveragedRotations other = AverageRotations(reversed, renumbered, 1000.0);
+  ASSERT_TRUE(other.valid);
+  EXPECT_EQ(other.ambiguous, (std::vector<int32_t>{0, 1, 2, 3}));
 }
 
 /**
@@ -1376,9 +1418,9 @@ TEST(AverageRotations, ATieTheSweepsOwnResidualsSplitIsStillNamed) {
  * A tie is called within the measured separation of a half turn, and no wider.
  *
  * Frame 1 has no anchor and is told 0 degrees by one neighbour and nearly a half turn by the other.
- * Three hundredths of a degree short leaves a relative eigenvalue gap of 5.2e-4, under the solver's
- * threshold, and a tenth leaves 1.7e-3, over it. The anchors are heavy so the neighbours stay put
- * and the gap is the one the edges give.
+ * Five hundredths of a degree short leaves a relative eigenvalue gap of 8.7e-4, under the solver's
+ * threshold, and 0.065 leaves 1.13e-3, over it, which holds the threshold within an eighth of
+ * itself. The anchors are heavy so the neighbours stay put and the gap is the one the edges give.
  */
 TEST(AverageRotations, ATieIsCalledWithinTheMeasuredSeparationOfAHalfTurnAndNoWider) {
   const std::vector<Quat> anchors{AboutY(0.0), Quat{0, 0, 0, 0}, AboutY(0.0)};
@@ -1387,10 +1429,10 @@ TEST(AverageRotations, ATieIsCalledWithinTheMeasuredSeparationOfAHalfTurnAndNoWi
         RelativeRotation{0, 1, TrueEdge(AboutY(0.0), AboutY(0.0)), 1.0},
         RelativeRotation{2, 1, TrueEdge(AboutY(0.0), AboutY(degrees)), 1.0}};
   };
-  const AveragedRotations close = AverageRotations(told(179.97), anchors, 1000.0);
+  const AveragedRotations close = AverageRotations(told(179.95), anchors, 1000.0);
   ASSERT_TRUE(close.valid);
   EXPECT_EQ(close.ambiguous, (std::vector<int32_t>{0, 1, 2}));
-  const AveragedRotations clear = AverageRotations(told(179.9), anchors, 1000.0);
+  const AveragedRotations clear = AverageRotations(told(179.935), anchors, 1000.0);
   ASSERT_TRUE(clear.valid);
   EXPECT_TRUE(clear.ambiguous.empty());
 }
