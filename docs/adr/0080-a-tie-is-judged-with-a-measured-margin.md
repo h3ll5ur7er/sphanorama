@@ -36,8 +36,10 @@ moves, and 1,544 one that either moves.
   without it fall into parts, found by flooding from each neighbour, and an edge into a part with no
   anchor is not averaged in. A bridge to a leaf is one case; a leaf held by two edges, or an
   unanchored cycle hanging off the frame, has no bridge and is the same echo. The frames beyond
-  still average the frame they hang from. It costs a flood per frame, frames times edges, against
-  sweeps that each average every frame.
+  still average the frame they hang from. No flood starts from an anchored neighbour, which is
+  evidence by being one, so where every frame is anchored, as in a build, the search costs a pass
+  over the edges; a flood per frame costs frames times edges, which at 200 frames and 800 edges
+  is about five sweeps.
 
 ## Consequences
 
@@ -74,17 +76,18 @@ moves, and 1,544 one that either moves.
 
 ## Rejected alternatives
 
-Both were measured on the nudge alone, in a run of the same 20,000 graphs where the solver before
+Both were measured on the nudge alone, by a harness that draws its 20,000 graphs the same way but
+not the same graphs, since the renumbering takes from the same generator; there the solver before
 this change left 289 out.
 
 **Re-solve in another order.** Solve again with the walk seeded and the sweep run backwards, and
 name the frames whose place differs beyond the convergence noise, the gauge removed per piece. It
 sees ties decided partway through a solve, which nothing at the answer can: 120 graphs left a frame
-out. It doubles every solve, and `Refine` solves once per focal-length trial on the
-phone, where how long a sphere takes is not yet measured. It also names 2,190 graphs where no nudge
-moves anything: answers that depend on the order without balancing on a tie, which the header has
-called a hazard of contradictory input rather than an arbitrary placement. This is the next step if
-the list is to be made more complete, and it is a cost to decide on rather than one to slip in.
+out. It also names 2,190 graphs where no nudge moves anything: answers that depend on the order,
+which the renumbering measure above counts as misses, so those names are earned rather than
+spurious. It doubles every solve, and `Refine` solves once per focal-length trial on the phone,
+where how long a sphere takes is not yet measured. This is the next step if the list is to be made
+more complete, and it is a cost to decide on rather than one to slip in.
 
 **Push the answer and relax it again.** Turn every frame a few degrees off the converged answer,
 relax, and name what does not come back. It finds an unstable balance directly, without a threshold

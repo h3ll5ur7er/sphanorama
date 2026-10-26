@@ -91,9 +91,7 @@ constexpr int kMaxSweeps = 1000;
 // million times `AverageQuaternions`' 1e-12. For two predictions at equal weight a relative gap of
 // 1e-3 is 0.057 degrees short of a half turn, which no registration that worked produces.
 //
-// Measured over 20,000 contradictory graphs, counting a frame a 1e-12 nudge moves more than a
-// thousandth of a degree and `ambiguous` leaves out: 289 graphs at 1e-12, 274 here, and with the
-// echo exclusion below about 250, for a nudge cannot see what the echoes hid (ADR 0080). Over 3,000
+// What it buys, and what it names that the evidence decided, is measured in ADR 0080. Over 3,000
 // graphs with consistent edges jittered half a degree and priors three degrees out, it names none,
 // as 1e-12 does.
 constexpr double kTieSeparation = 1e-3;
@@ -315,6 +313,9 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
         const Incidence& touch = incident[static_cast<size_t>(i)][t];
         const RelativeRotation& edge = edges[static_cast<size_t>(touch.edge)];
         const int32_t neighbour = touch.asTo ? edge.from : edge.to;
+        // An anchored neighbour's own part holds it, so no flood is needed to say it is evidence:
+        // and where every frame is anchored, as in a build, no flood runs at all.
+        if (anchored[static_cast<size_t>(neighbour)] != 0) continue;
         if (part[static_cast<size_t>(neighbour)] < first) {
           const int32_t label = next++;
           partAnchored.push_back(0);

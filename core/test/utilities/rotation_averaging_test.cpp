@@ -509,9 +509,9 @@ TEST(AverageRotations, AnchorsAHalfTurnApartLeaveTheWholePieceAmbiguous) {
   ASSERT_TRUE(agreed.valid);
   EXPECT_TRUE(agreed.ambiguous.empty());
 
-  // **And nearly a half turn is judged by the same separation as a frame's own average.** Three
-  // hundredths of a degree short leaves the gauge's top two eigenvalues a relative 5.2e-4 apart, a
-  // tie by the solver's measure and not by the eigensolver's; a tenth short leaves 1.7e-3, which is
+  // **And nearly a half turn is judged by the same separation as a frame's own average.** Five
+  // hundredths of a degree short leaves the gauge's top two eigenvalues a relative 8.7e-4 apart, a
+  // tie by the solver's measure and not by the eigensolver's; 0.065 short leaves 1.13e-3, which is
   // not one by either.
   const auto turned = [&](double degrees) {
     return std::vector<Quat>{
@@ -519,10 +519,10 @@ TEST(AverageRotations, AnchorsAHalfTurnApartLeaveTheWholePieceAmbiguous) {
         Normalize(Multiply(FromAxisAngle(Vec3{1, 0, 0}, degrees / kDegPerRad), truth[1])),
         Quat{0, 0, 0, 0}};
   };
-  const AveragedRotations close = AverageRotations(edges, turned(179.97), 1e-6);
+  const AveragedRotations close = AverageRotations(edges, turned(179.95), 1e-6);
   ASSERT_TRUE(close.valid);
   EXPECT_EQ(close.ambiguous, (std::vector<int32_t>{0, 1, 2}));
-  const AveragedRotations clear = AverageRotations(edges, turned(179.9), 1e-6);
+  const AveragedRotations clear = AverageRotations(edges, turned(179.935), 1e-6);
   ASSERT_TRUE(clear.valid);
   EXPECT_TRUE(clear.ambiguous.empty());
 }
@@ -1353,6 +1353,24 @@ TEST(AverageRotations, ALeafThatEchoesItsNeighbourDoesNotHideATie) {
     EXPECT_EQ(hung.ambiguous, (std::vector<int32_t>{0, 1, 2, 3, 4})) << "swapped " << swap;
   }
 
+  // **An edge weighed at zero joins nothing**, so a leaf whose only other edge is one is still an
+  // echo: the flood follows believed edges, as the sweep does.
+  std::vector<RelativeRotation> unbelieved = withLeaf(agreeing, opposing);
+  unbelieved.push_back(RelativeRotation{3, 0, agreeing, 0.0});
+  const AveragedRotations ignored = AverageRotations(unbelieved, anchors, 1000.0);
+  ASSERT_TRUE(ignored.valid);
+  EXPECT_EQ(ignored.ambiguous, (std::vector<int32_t>{0, 1, 2, 3}));
+
+  // **And a frame with an anchor of its own hears no echo either.** Weighed lightly, frame 1's
+  // prior cannot settle the tie, so the leaf would.
+  const std::vector<Quat> anchoredTie{AboutY(0.0), AboutY(0.0), AboutY(0.0), Quat{0, 0, 0, 0}};
+  for (const double weight : {0.0, 1e-6}) {
+    const AveragedRotations held =
+        AverageRotations(withLeaf(agreeing, opposing), anchoredTie, weight);
+    ASSERT_TRUE(held.valid);
+    EXPECT_EQ(held.ambiguous, (std::vector<int32_t>{0, 1, 2, 3})) << "anchor weight " << weight;
+  }
+
   // Agreeing, nothing is named.
   const AveragedRotations agreed = AverageRotations(withLeaf(agreeing, agreeing), anchors, 1000.0);
   ASSERT_TRUE(agreed.valid);
@@ -1419,7 +1437,7 @@ TEST(AverageRotations, ATieTheSweepsOwnResidualsSplitIsStillNamed) {
  *
  * Frame 1 has no anchor and is told 0 degrees by one neighbour and nearly a half turn by the other.
  * Five hundredths of a degree short leaves a relative eigenvalue gap of 8.7e-4, under the solver's
- * threshold, and 0.065 leaves 1.13e-3, over it, which holds the threshold within an eighth of
+ * threshold, and 0.065 leaves 1.13e-3, over it, which holds the threshold within about 13% of
  * itself. The anchors are heavy so the neighbours stay put and the gap is the one the edges give.
  */
 TEST(AverageRotations, ATieIsCalledWithinTheMeasuredSeparationOfAHalfTurnAndNoWider) {
