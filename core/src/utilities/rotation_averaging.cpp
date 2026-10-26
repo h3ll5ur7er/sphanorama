@@ -91,9 +91,8 @@ constexpr int kMaxSweeps = 1000;
 // million times `AverageQuaternions`' 1e-12. For two predictions at equal weight a relative gap of
 // 1e-3 is 0.057 degrees short of a half turn, which no registration that worked produces.
 //
-// What it buys, and what it names that the evidence decided, is measured in ADR 0080. Over 3,000
-// graphs with consistent edges jittered half a degree and priors three degrees out, it names none,
-// as 1e-12 does.
+// What it buys, what it costs on consistent input, and what it names that the evidence decided,
+// are measured in ADR 0080.
 constexpr double kTieSeparation = 1e-3;
 
 // One end of one edge, from the point of view of a frame it touches.

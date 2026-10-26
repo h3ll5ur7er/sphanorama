@@ -1361,15 +1361,12 @@ TEST(AverageRotations, ALeafThatEchoesItsNeighbourDoesNotHideATie) {
   ASSERT_TRUE(ignored.valid);
   EXPECT_EQ(ignored.ambiguous, (std::vector<int32_t>{0, 1, 2, 3}));
 
-  // **And a frame with an anchor of its own hears no echo either.** Weighed lightly, frame 1's
-  // prior cannot settle the tie, so the leaf would.
+  // **And a frame with an anchor of its own hears no echo either.** At an anchor weight of zero
+  // frame 1's prior is not consulted, so nothing but the leaf could settle the tie.
   const std::vector<Quat> anchoredTie{AboutY(0.0), AboutY(0.0), AboutY(0.0), Quat{0, 0, 0, 0}};
-  for (const double weight : {0.0, 1e-6}) {
-    const AveragedRotations held =
-        AverageRotations(withLeaf(agreeing, opposing), anchoredTie, weight);
-    ASSERT_TRUE(held.valid);
-    EXPECT_EQ(held.ambiguous, (std::vector<int32_t>{0, 1, 2, 3})) << "anchor weight " << weight;
-  }
+  const AveragedRotations held = AverageRotations(withLeaf(agreeing, opposing), anchoredTie, 0.0);
+  ASSERT_TRUE(held.valid);
+  EXPECT_EQ(held.ambiguous, (std::vector<int32_t>{0, 1, 2, 3}));
 
   // Agreeing, nothing is named.
   const AveragedRotations agreed = AverageRotations(withLeaf(agreeing, agreeing), anchors, 1000.0);

@@ -68,7 +68,10 @@ moves, and 1,544 one that either moves.
   in 3,180 against 3,041, and the graphs named where no nudge moves anything rose too, 476 to 503.
   A separation is a ratio, so two opposing edges whose weights are within a thousandth of each
   other, 1,001 inliers against 1,000, are named, though the heavier one decides and no order or
-  nudge changes it.
+  nudge changes it. And because a tie on any sweep is named (ADR 0073), so is a near-tie that
+  exists only early in a solve: a frame whose neighbour has not yet moved this sweep can see its
+  evidence cancel to within its own light prior, and is named in that order and not in another,
+  over an answer neither changes.
 - ADR 0073's figure of 250 unnamed graphs came from the review's own generator; the 309 and 289
   here are this one's, on the same kind of input.
 - `GlobalSolution::ambiguousFrames` says what it can and cannot see in the contract comment, which
@@ -84,10 +87,11 @@ this change left 289 out.
 name the frames whose place differs beyond the convergence noise, the gauge removed per piece. It
 sees ties decided partway through a solve, which nothing at the answer can: 120 graphs left a frame
 out. It also names 2,190 graphs where no nudge moves anything: answers that depend on the order,
-which the renumbering measure above counts as misses, so those names are earned rather than
-spurious. It doubles every solve, and `Refine` solves once per focal-length trial on the phone,
-where how long a sphere takes is not yet measured. This is the next step if the list is to be made
-more complete, and it is a cost to decide on rather than one to slip in.
+which is what the renumbering measure above counts as a miss, so most of those names are expected
+to be earned; how many of the 2,190 the renumbering flags was not measured. It doubles every
+solve, and `Refine` solves once per focal-length trial on the phone, where how long a sphere takes
+is not yet measured. This is the next step if the list is to be made more complete, and it is a
+cost to decide on rather than one to slip in.
 
 **Push the answer and relax it again.** Turn every frame a few degrees off the converged answer,
 relax, and name what does not come back. It finds an unstable balance directly, without a threshold
