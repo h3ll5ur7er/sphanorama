@@ -1,7 +1,8 @@
 # ADR 0036 — A resumable capture is visible in the project listing
 
 **Status:** accepted; amended by [0078](0078-a-failed-read-is-not-an-absent-session.md), which reads
-only `NotFound` as no session
+only `NotFound` as no session, and by [0081](0081-the-store-issues-project-ids.md), under which the
+store issues ids that still ascend with creation
 
 ## Context
 

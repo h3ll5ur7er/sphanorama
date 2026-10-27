@@ -366,12 +366,12 @@ What is left, and what has landed since:
   call came in mid-capture", not "come back to it tomorrow" — so no `navigator.storage.persist()`,
   and the tier is cleared when a *new* session begins rather than at worker startup, which is what
   lets a reload find its frames still there.
-- **A second tab can write a project over the first's — open.** The document host loads
-  IndexedDB once, and `ProjectManager::Create` issues one past the highest id it holds. A tab that
-  loaded before another tab captured, or a page restored from the back/forward cache, issues the
-  other's id again and persists its title and session over the other capture's (ADR 0078 records
-  it). Ids that are never reissued, or a create that the store refuses over an existing project,
-  would close it.
+- **A second tab can write a project over the first's — done.** The document host loads
+  IndexedDB once, so one past the highest id it holds was an id another tab, or the page this one
+  was before the back/forward cache restored it, may have written since. The store issues ids now:
+  the browser's are seconds since the epoch over twenty random bits, above every id the host has
+  held, so they ascend with creation and two tabs collide only by creating in the same second with
+  equal draws (ADR 0081). An end-to-end test creates in a stale tab and finds both projects.
 - **A store that stops saving mid-session says so — done.** The document host tracks whether
   persisting is failing now, the worker pushes each change, and the page says "not saving" while
   the store would not load or is failing to save, and stops once a persist goes through

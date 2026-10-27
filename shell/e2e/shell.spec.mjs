@@ -3356,6 +3356,41 @@ test('a project written through the core survives a reload', async ({ page }) =>
   }
 });
 
+test('a tab that loaded before another created a project does not create over it', async ({ page, context }) => {
+  // Each tab holds the documents it loaded, so neither sees what the other writes after. Ids
+  // counted one past the highest a tab could see were the same id in both, and the stale tab's
+  // title went over the other's project on disk (ADR 0081).
+  const server = await serve();
+  try {
+    const create = (tab, title) => tab.evaluate(async (name) => {
+      const result = await window.sphanoramaCore.project.create(name);
+      await window.sphanoramaHost.flush();
+      return result.ok ? result.value : null;
+    }, title);
+
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    const second = await context.newPage();
+    await second.goto(server.appUrl);
+    await expect(second.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    const theirs = await create(second, 'theirs');
+    const mine = await create(page, 'mine');
+    expect(theirs).not.toBeNull();
+    expect(mine).not.toBeNull();
+
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    const listed = await page.evaluate(async () => {
+      const result = await window.sphanoramaCore.project.list();
+      return result.ok ? result.value : null;
+    });
+    expect(listed.map((p) => p.title).sort()).toEqual(['mine', 'theirs']);
+  } finally {
+    await server.close();
+  }
+});
+
 test('nothing to come back to means nothing is offered', async ({ page }) => {
   // The other half of the pair below, and the one that keeps the offer meaningful: a page that
   // proposed resuming on every load would train the button out of being read, and the state it

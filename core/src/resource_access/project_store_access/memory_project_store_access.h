@@ -15,12 +15,15 @@ namespace sphanorama {
 class MemoryProjectStoreAccess final : public IProjectStoreAccess {
  public:
   Result<std::vector<ProjectId>> ListProjects() override;
+  Result<ProjectId> IssueProjectId() override;
   Result<std::string> ReadDocument(ProjectId project, std::string_view key) override;
   Status WriteDocument(ProjectId project, std::string_view key, std::string_view value) override;
   Status DeleteProject(ProjectId project) override;
 
  private:
   std::map<uint64_t, std::map<std::string, std::string, std::less<>>> projects_;
+  // The highest id issued or written: deleting a project does not hand its id out again.
+  uint64_t highest_ = 0;
 };
 
 }  // namespace sphanorama

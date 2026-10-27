@@ -1,5 +1,7 @@
 #include "resource_access/project_store_access/memory_project_store_access.h"
 
+#include <algorithm>
+
 namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "MemoryProjectStoreAccess";
@@ -10,6 +12,16 @@ Result<std::vector<ProjectId>> MemoryProjectStoreAccess::ListProjects() {
   ids.reserve(projects_.size());
   for (const auto& [id, documents] : projects_) ids.push_back(ProjectId{id});
   return Ok(std::move(ids));
+}
+
+Result<ProjectId> MemoryProjectStoreAccess::IssueProjectId() {
+  // One process holds this store, so a counter is never stale. Past what a double holds exactly,
+  // the page would read two projects as one.
+  if (highest_ >= (uint64_t{1} << 53) - 1) {
+    return Err<ProjectId>(StatusCode::FailedPrecondition, kComponent,
+                          "no project id left to issue");
+  }
+  return Ok(ProjectId{++highest_});
 }
 
 Result<std::string> MemoryProjectStoreAccess::ReadDocument(ProjectId project,
@@ -32,6 +44,7 @@ Status MemoryProjectStoreAccess::WriteDocument(ProjectId project, std::string_vi
   if (!project.valid()) return Fail(StatusCode::InvalidArgument, kComponent, "project id is unset");
   if (key.empty()) return Fail(StatusCode::InvalidArgument, kComponent, "document key is empty");
   projects_[project.value][std::string(key)] = std::string(value);
+  highest_ = std::max(highest_, project.value);
   return Status::Ok();
 }
 

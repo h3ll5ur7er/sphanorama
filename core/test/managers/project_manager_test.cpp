@@ -29,6 +29,7 @@ class UnreadableProjectStoreAccess final : public IProjectStoreAccess {
       : real_(real), key_(std::move(key)), code_(code) {}
 
   Result<std::vector<ProjectId>> ListProjects() override { return real_.ListProjects(); }
+  Result<ProjectId> IssueProjectId() override { return real_.IssueProjectId(); }
   Result<std::string> ReadDocument(ProjectId project, std::string_view key) override {
     if (key == key_) return Err<std::string>(code_, "test", "this document will not come back");
     return real_.ReadDocument(project, key);
@@ -42,6 +43,27 @@ class UnreadableProjectStoreAccess final : public IProjectStoreAccess {
   IProjectStoreAccess& real_;
   std::string key_;
   StatusCode code_;
+};
+
+// A store that issues the id the test names, or refuses to issue one.
+class IssuingProjectStoreAccess final : public IProjectStoreAccess {
+ public:
+  IssuingProjectStoreAccess(IProjectStoreAccess& real, Result<ProjectId> issue)
+      : real_(real), issue_(std::move(issue)) {}
+
+  Result<std::vector<ProjectId>> ListProjects() override { return real_.ListProjects(); }
+  Result<ProjectId> IssueProjectId() override { return issue_; }
+  Result<std::string> ReadDocument(ProjectId project, std::string_view key) override {
+    return real_.ReadDocument(project, key);
+  }
+  Status WriteDocument(ProjectId project, std::string_view key, std::string_view value) override {
+    return real_.WriteDocument(project, key, value);
+  }
+  Status DeleteProject(ProjectId project) override { return real_.DeleteProject(project); }
+
+ private:
+  IProjectStoreAccess& real_;
+  Result<ProjectId> issue_;
 };
 
 class Projects : public ::testing::Test {
@@ -398,6 +420,30 @@ TEST_F(Projects, IdsDoNotCollideWithProjectsThatOutlivedTheManager) {
   auto listed = reloaded.List();
   ASSERT_TRUE(listed.ok());
   EXPECT_EQ(listed.value.size(), 3u);
+}
+
+TEST_F(Projects, ANewProjectTakesTheIdTheStoreIssues) {
+  // Not one past the highest the manager can see. A page's listing is a copy taken when it loaded,
+  // so another tab may have written that id since, and the title would land on its project
+  // (ADR 0081). Above every id the store holds, so a manager that counted would not get here.
+  ASSERT_TRUE(store.WriteDocument(ProjectId{3}, "title", "theirs").ok());
+  IssuingProjectStoreAccess issuing(store, Ok(ProjectId{2}));
+  ProjectManager tab(issuing);
+
+  auto created = tab.Create("mine");
+  ASSERT_TRUE(created.ok());
+  EXPECT_EQ(created.value.value, 2u);
+  EXPECT_EQ(store.ReadDocument(ProjectId{2}, "title").value, "mine");
+  EXPECT_EQ(store.ReadDocument(ProjectId{3}, "title").value, "theirs");
+}
+
+TEST_F(Projects, AStoreThatIssuesNoIdCreatesNoProject) {
+  IssuingProjectStoreAccess issuing(
+      store, Err<ProjectId>(StatusCode::FailedPrecondition, "test", "no id left"));
+  ProjectManager tab(issuing);
+
+  EXPECT_EQ(tab.Create("mine").status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(store.WriteCount(), 0);
 }
 
 }  // namespace

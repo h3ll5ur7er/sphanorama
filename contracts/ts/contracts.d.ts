@@ -1398,6 +1398,17 @@ export interface CameraAccess {
  */
 export interface ProjectStoreAccess {
   listProjects(): Promise<Result<ProjectId[]>>;
+  /**
+   * An identity for a new project, above every id this store has issued or held. Issuing creates
+   * nothing; the first document written does. Ids ascend in the order they were issued, which is
+   * how a page tells the newest capture.
+   * The store's to answer rather than the manager's, because the store is the only thing every
+   * page shares. A page's listing is a copy taken when it loaded, so one past the highest id in it
+   * may be an id another tab has written since, and a write creates on demand. Where another page
+   * writes the same storage, an id is one that page all but certainly does not issue too; ADR 0081
+   * says how near to certain.
+   */
+  issueProjectId(): Promise<Result<ProjectId>>;
   readDocument(project: ProjectId, key: string): Promise<Result<string>>;
   writeDocument(project: ProjectId, key: string, value: string): Promise<Result<void>>;
   deleteProject(project: ProjectId): Promise<Result<void>>;

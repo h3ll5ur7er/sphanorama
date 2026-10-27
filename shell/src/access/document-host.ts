@@ -31,6 +31,16 @@ export interface DocumentHost {
   read(project: number, key: string): string | undefined;
   write(project: number, key: string, value: string): void;
   remove(project: number): boolean;
+  /**
+   * An id for a new project, or null when there is none a double holds exactly. Creates nothing.
+   *
+   * Taken from the clock rather than counted from what is resident, because what is resident is
+   * what this page loaded: another tab may have written one past the highest id in it since
+   * (ADR 0081). Seconds since the epoch over twenty random bits, so tabs issuing in the same
+   * second are apart by the draw, and always above every id this host has held, so a page's ids
+   * ascend however its clock moves.
+   */
+  issueProjectId(): number | null;
   /** Awaits everything pending. The client calls this when the page is hidden or unloaded. */
   flush(): Promise<void>;
   /**
@@ -51,18 +61,42 @@ export interface DocumentHost {
 
 const DEFAULT_FLUSH_DELAY_MS = 250;
 
+const DRAWN_BITS = 20;
+
+function drawLowBits(): number {
+  const bits = new Uint32Array(1);
+  crypto.getRandomValues(bits);
+  return bits[0] % 2 ** DRAWN_BITS;
+}
+
+/** The project a document key names, or null for a key no id could have written. */
+function projectOf(key: string): number | null {
+  const project = Number(key.slice(0, key.indexOf('/')));
+  return Number.isSafeInteger(project) && project > 0 ? project : null;
+}
+
 function documentKey(project: number, key: string): string {
   return `${project}/${key}`;
 }
 
 export async function createDocumentHost(
   store: DocumentStore,
-  options: { flushDelayMs?: number } = {},
+  options: {
+    flushDelayMs?: number;
+    /** Milliseconds since the epoch. */
+    now?: () => number;
+    /** A whole number under 2^20. */
+    draw?: () => number;
+  } = {},
 ): Promise<DocumentHost> {
+  const now = options.now ?? Date.now;
+  const draw = options.draw ?? drawLowBits;
   const resident = new Map<string, string>();
   const pending = new Map<string, string>();
   const removed = new Set<number>();
   let loadError: string | null = null;
+  // The highest id issued, loaded or written, removed or not: what an issued id must be above.
+  let highest = 0;
   let failing: string | null = null;
   // Kept for good once heard: the database the documents were in is gone, so a persist that goes
   // through after it, even one with nothing in it, says nothing about them (ADR 0079).
@@ -85,7 +119,10 @@ export async function createDocumentHost(
   let inFlight: Promise<boolean> | null = null;
 
   try {
-    for (const [key, value] of Object.entries(await store.loadAll())) resident.set(key, value);
+    for (const [key, value] of Object.entries(await store.loadAll())) {
+      resident.set(key, value);
+      highest = Math.max(highest, projectOf(key) ?? 0);
+    }
   } catch (cause) {
     // Private browsing, blocked storage, a corrupt database: the app runs, it just does not
     // remember anything. Refusing to start would be a worse trade.
@@ -163,6 +200,7 @@ export async function createDocumentHost(
       // blocked on storage in the middle of a capture.
       const full = documentKey(project, key);
       resident.set(full, value);
+      highest = Math.max(highest, projectOf(full) ?? 0);
       if (loadError !== null) return;
       pending.set(full, value);   // a Map, so repeated writes coalesce to the last value
       schedule();
@@ -183,6 +221,16 @@ export async function createDocumentHost(
         schedule();
       }
       return found;
+    },
+
+    issueProjectId(): number | null {
+      const timed = Math.floor(now() / 1000) * 2 ** DRAWN_BITS + draw();
+      // A clock past what a double holds exactly is a broken device, and its projects still need
+      // ids: they ascend from what is held instead.
+      const id = Number.isSafeInteger(timed) ? Math.max(timed, highest + 1) : highest + 1;
+      if (id > Number.MAX_SAFE_INTEGER) return null;
+      highest = id;
+      return id;
     },
 
     async flush(): Promise<void> {

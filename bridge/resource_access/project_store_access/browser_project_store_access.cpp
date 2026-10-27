@@ -26,6 +26,13 @@ EM_JS(double, host_project_id_at, (int32_t index), {
   return Module.sphHost.projectIds()[index];
 });
 
+// -1 with no host to ask, or one older than this module; 0 when the host has no id left to issue.
+EM_JS(double, host_issue_project_id, (), {
+  if (!Module.sphHost || typeof Module.sphHost.issueProjectId !== 'function') return -1;
+  const id = Module.sphHost.issueProjectId();
+  return id === null ? 0 : id;
+});
+
 // Read in two steps, so nothing here allocates on the JavaScript side.
 //
 // The single-call version malloc'd a buffer and wrote the document through the pointer without
@@ -80,6 +87,25 @@ Result<std::vector<ProjectId>> BrowserProjectStoreAccess::ListProjects() {
     ids.push_back(ProjectId{static_cast<uint64_t>(raw)});
   }
   return Ok(std::move(ids));
+}
+
+Result<ProjectId> BrowserProjectStoreAccess::IssueProjectId() {
+  const double raw = host_issue_project_id();
+  if (raw < 0) {
+    return Err<ProjectId>(StatusCode::FailedPrecondition, kComponent,
+                          "no document host that issues project ids");
+  }
+  if (raw == 0) {
+    return Err<ProjectId>(StatusCode::FailedPrecondition, kComponent,
+                          "no project id left to issue");
+  }
+  // Checked rather than cast, as a listed id is, and below 2^53 as well: past it the page holds
+  // two projects under one number.
+  if (!wire::IsRepresentableId(raw) || raw >= 9007199254740992.0) {
+    return Err<ProjectId>(StatusCode::Internal, kComponent,
+                          "the document host issued a project id that is not one");
+  }
+  return Ok(ProjectId{static_cast<uint64_t>(raw)});
 }
 
 Result<std::string> BrowserProjectStoreAccess::ReadDocument(ProjectId project,

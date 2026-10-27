@@ -17,9 +17,9 @@ import { describeFailure } from './status';
 /**
  * The capture worth offering back, or null when there is none.
  *
- * The newest one that has a session, and "newest" is the largest identity: `ProjectManager`
- * issues ids one past the highest the store holds, so they ascend with creation, while the
- * listing's *order* is whatever the document host's key map happened to iterate.
+ * The newest one that has a session, and "newest" is the largest identity: the store issues ids
+ * from the clock and above every id it has held, so they ascend with creation (ADR 0081), while
+ * the listing's *order* is whatever the document host's key map happened to iterate.
  *
  * Newest rather than any, because only one capture's frames are in the spill tier: `Begin`
  * empties it, so an older session's document would come back naming frames the tier no longer

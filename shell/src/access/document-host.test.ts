@@ -568,3 +568,83 @@ describe('durability under failure and concurrency', () => {
     expect(written.get('1/b')).toBe('2');
   });
 });
+
+describe('issuing a project id', () => {
+  // A tab's documents are a copy taken when it loaded, so the ids it can see say nothing about what
+  // another tab has written since. The id is taken from the clock instead, with random low bits,
+  // and kept above everything this host has held (ADR 0081).
+  const SECOND = 1000;
+
+  it('issues a tab that loaded earlier an id above one another tab issued since', async () => {
+    // The overwrite this exists to close: both tabs load the same documents, the second captures,
+    // and the first, which cannot see that, creates a project of its own. One past the highest
+    // id either could see is the same id in both. The draws are equal, so the clock is what
+    // separates them.
+    const store = fakeStore({ '1/title': 'old' });
+    let clock = 1_000 * SECOND;
+    const options = { now: () => clock, draw: () => 7 };
+    const first = await createDocumentHost(store, options);
+    const second = await createDocumentHost(store, options);
+
+    const theirs = second.issueProjectId();
+    clock += SECOND;
+    const mine = first.issueProjectId();
+    expect(theirs).not.toBeNull();
+    expect(mine).toBeGreaterThan(theirs as number);
+  });
+
+  it('keeps tabs issuing in the same second apart by the draw', async () => {
+    const store = fakeStore();
+    const first = await createDocumentHost(store, { now: () => 5 * SECOND, draw: () => 1 });
+    const second = await createDocumentHost(store, { now: () => 5 * SECOND, draw: () => 2 });
+    expect(first.issueProjectId()).not.toBe(second.issueProjectId());
+  });
+
+  it('ascends within a tab, in the same second and when the clock steps back', async () => {
+    // Newest is the largest id, which is how the page picks the capture to offer back.
+    let clock = 1_000 * SECOND;
+    const host = await createDocumentHost(fakeStore(), { now: () => clock, draw: () => 900 });
+    const first = host.issueProjectId() as number;
+    const second = host.issueProjectId() as number;
+    clock -= 3600 * SECOND;
+    const third = host.issueProjectId() as number;
+    expect(second).toBeGreaterThan(first);
+    expect(third).toBeGreaterThan(second);
+  });
+
+  it('is above every id it loaded, written or removed, and never zero', async () => {
+    // A clock at the epoch and a draw of zero would issue zero, which is every id's "unset". Ids an
+    // older build counted out from 1 are below any the clock gives, and still held above here.
+    const host = await createDocumentHost(fakeStore({ '3/title': 'counted' }),
+      { now: () => 0, draw: () => 0 });
+    expect(host.issueProjectId()).toBe(4);
+    host.write(9, 'title', 'written');
+    host.remove(9);
+    expect(host.issueProjectId()).toBe(10);
+  });
+
+  it('creates nothing', async () => {
+    const host = await createDocumentHost(fakeStore());
+    expect(host.issueProjectId()).toBeGreaterThan(0);
+    expect(host.projectIds()).toEqual([]);
+  });
+
+  it('issues only an id a double holds exactly, and refuses when there is none', async () => {
+    // A clock centuries out is a broken device, and its projects still need ids: issued above the
+    // highest held instead. Past 2^53, two ids are one number, which is the overwrite again.
+    const broken = await createDocumentHost(fakeStore({ '5/title': 'a' }),
+      { now: () => 2 ** 60, draw: () => 0 });
+    expect(broken.issueProjectId()).toBe(6);
+    const full = await createDocumentHost(fakeStore({ [`${Number.MAX_SAFE_INTEGER}/title`]: 'a' }));
+    expect(full.issueProjectId()).toBeNull();
+  });
+
+  it('draws from the real clock and a random source by default', async () => {
+    const before = Math.floor(Date.now() / SECOND) * 2 ** 20;
+    const host = await createDocumentHost(fakeStore());
+    const id = host.issueProjectId() as number;
+    expect(Number.isSafeInteger(id)).toBe(true);
+    expect(id).toBeGreaterThanOrEqual(before);
+    expect(id).toBeLessThan(before + 2 * 2 ** 20);
+  });
+});
