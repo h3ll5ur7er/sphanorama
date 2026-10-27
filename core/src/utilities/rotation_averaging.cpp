@@ -83,6 +83,18 @@ constexpr double kSettledDeg = 1e-5;
 // promised for exactly that.
 constexpr int kMaxSweeps = 1000;
 
+// The separation under which an average is a tie, for a frame's own and for a piece's gauge alike.
+//
+// **The eigensolver's own threshold sees only ties the arithmetic leaves exact, and the sweep does
+// not leave them exact.** A neighbour updated earlier in the same sweep tilts a frame's
+// predictions, so evidence that cancels in the input reaches the average a relative 1e-6 apart — a
+// million times `AverageQuaternions`' 1e-12. For two predictions at equal weight a relative gap of
+// 1e-3 is 0.057 degrees short of a half turn, which no registration that worked produces.
+//
+// What it buys, what it costs on consistent input, and what it names that the evidence decided,
+// are measured in ADR 0080.
+constexpr double kTieSeparation = 1e-3;
+
 // One end of one edge, from the point of view of a frame it touches.
 struct Incidence {
   int32_t edge = 0;
@@ -275,6 +287,59 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
     }
   }
 
+  // **A neighbour that only this frame places is an echo**, and is not averaged into it. Take the
+  // frame away and whatever that neighbour is still joined to holds no anchor: everything there is
+  // placed from this frame and nothing else, so its prediction for the frame is the frame's own
+  // place handed back. Averaged in, it outvotes evidence that cancels, and a tie is settled by
+  // wherever the walk first put the frame. A bridge to a leaf is the plain case; a leaf held by two
+  // edges, or an unanchored cycle hanging off the frame, is the same and has no bridge to find, so
+  // the parts left by removing the frame are what is counted. `echo[i][t]` is the `t`th incidence
+  // of frame `i`, parallel to `incident`.
+  std::vector<std::vector<char>> echo(static_cast<size_t>(frames));
+  {
+    // Labels are unique across frames, so `part` is never cleared: a frame belongs to one of the
+    // current frame's parts exactly when its label is at least `first`.
+    std::vector<int32_t> part(static_cast<size_t>(frames), -1);
+    std::vector<char> partAnchored;
+    std::vector<int32_t> queue;
+    int32_t next = 0;
+    for (int32_t i = 0; i < frames; ++i) {
+      echo[static_cast<size_t>(i)].assign(incident[static_cast<size_t>(i)].size(), 0);
+      if (placed[static_cast<size_t>(i)] == 0) continue;
+      const int32_t first = next;
+      partAnchored.clear();
+      for (size_t t = 0; t < incident[static_cast<size_t>(i)].size(); ++t) {
+        const Incidence& touch = incident[static_cast<size_t>(i)][t];
+        const RelativeRotation& edge = edges[static_cast<size_t>(touch.edge)];
+        const int32_t neighbour = touch.asTo ? edge.from : edge.to;
+        // An anchored neighbour's own part holds it, so no flood is needed to say it is evidence:
+        // and where every frame is anchored, as in a build, no flood runs at all.
+        if (anchored[static_cast<size_t>(neighbour)] != 0) continue;
+        if (part[static_cast<size_t>(neighbour)] < first) {
+          const int32_t label = next++;
+          partAnchored.push_back(0);
+          queue.assign(1, neighbour);
+          part[static_cast<size_t>(neighbour)] = label;
+          for (size_t head = 0; head < queue.size(); ++head) {
+            const int32_t at = queue[head];
+            if (anchored[static_cast<size_t>(at)] != 0) {
+              partAnchored[static_cast<size_t>(label - first)] = 1;
+            }
+            for (const Incidence& onward : incident[static_cast<size_t>(at)]) {
+              const RelativeRotation& link = edges[static_cast<size_t>(onward.edge)];
+              const int32_t beyond = onward.asTo ? link.from : link.to;
+              if (beyond == i || part[static_cast<size_t>(beyond)] >= first) continue;
+              part[static_cast<size_t>(beyond)] = label;
+              queue.push_back(beyond);
+            }
+          }
+        }
+        const int32_t label = part[static_cast<size_t>(neighbour)];
+        echo[static_cast<size_t>(i)][t] = partAnchored[static_cast<size_t>(label - first)] == 0;
+      }
+    }
+  }
+
   // **Each frame becomes the weighted average of what everything touching it says it should be.**
   // Gauss-Seidel rather than a batch update: a frame moved this sweep is read by its neighbours
   // later in the same sweep, so information crosses the graph in one pass instead of one hop per
@@ -316,7 +381,9 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       // frames in one component, so `i` being placed means every frame a believed edge reaches from
       // it is placed too. The guard above does the work for both, and does it by skipping the whole
       // loop rather than each turn of it.
-      for (const Incidence& touch : incident[static_cast<size_t>(i)]) {
+      for (size_t t = 0; t < incident[static_cast<size_t>(i)].size(); ++t) {
+        if (echo[static_cast<size_t>(i)][t] != 0) continue;
+        const Incidence& touch = incident[static_cast<size_t>(i)][t];
         const RelativeRotation& edge = edges[static_cast<size_t>(touch.edge)];
         const int32_t other = touch.asTo ? edge.from : edge.to;
         const Quat& unit = rotation[static_cast<size_t>(touch.edge)];
@@ -340,7 +407,7 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
       // is empty and `anchorsUsed` zero whichever gate said no.
       const QuaternionAverage average = AverageQuaternions(predictions, weights);
       if (!average.valid) return AveragedRotations{};
-      if (!average.isUnique) everAmbiguous[static_cast<size_t>(i)] = 1;
+      if (average.separation < kTieSeparation) everAmbiguous[static_cast<size_t>(i)] = 1;
 
       largestMoveDeg = std::max(
           largestMoveDeg,
@@ -377,7 +444,9 @@ AveragedRotations AverageRotations(std::span<const RelativeRotation> edges,
         // Anchors a half turn apart about where the piece sits: which one it sides with is the
         // eigensolver's scan order, and that is true of every frame in it. One flag is enough —
         // the pass after the sweeps names the whole piece of any frame flagged (ADR 0073).
-        if (!gauge.isUnique) everAmbiguous[static_cast<size_t>(piece.front())] = 1;
+        if (gauge.separation < kTieSeparation) {
+          everAmbiguous[static_cast<size_t>(piece.front())] = 1;
+        }
         largestMoveDeg = std::max(largestMoveDeg, AngleBetween(Quat{}, gauge.rotation) * kDegPerRad);
         for (const int32_t i : piece) {
           solved[static_cast<size_t>(i)] =

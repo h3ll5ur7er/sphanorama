@@ -768,8 +768,10 @@ export interface GlobalSolution {
   /**
    * The frames of every piece where some place was settled by the solver's scan order rather than
    * the evidence — pairs that cancel, or priors a half turn apart. The whole piece, because the
-   * rest of it is averaged against what the coin decided (ADR 0073). Only ties the arithmetic
-   * leaves exact are seen: a tie it splits can leave this empty, whatever the edge errors read.
+   * rest of it is averaged against what the coin decided (ADR 0073). A tie is judged with a margin,
+   * so one the solver's own arithmetic splits slightly is still seen (ADR 0080); but one the solve
+   * passes through and then settles away from leaves no trace, so this can be empty over a
+   * placement a coin decided, whatever the edge errors read.
    */
   ambiguousFrames: FrameId[];
   /** False when the solve ran out of sweeps; the rotations are the best it reached. */

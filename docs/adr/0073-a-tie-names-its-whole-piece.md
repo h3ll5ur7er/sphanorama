@@ -1,6 +1,7 @@
 # 0073 — A tie names its whole piece
 
-**Status:** accepted
+**Status:** accepted; amended by [0080](0080-a-tie-is-judged-with-a-measured-margin.md), which
+judges a tie with a measured margin and leaves echoes out of the average
 
 ## Context
 
