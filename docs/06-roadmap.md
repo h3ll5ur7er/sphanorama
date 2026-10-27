@@ -369,9 +369,10 @@ What is left, and what has landed since:
 - **A second tab can write a project over the first's — done.** The document host loads
   IndexedDB once, so one past the highest id it holds was an id another tab, or the page this one
   was before the back/forward cache restored it, may have written since. The store issues ids now:
-  the browser's are seconds since the epoch over twenty random bits, above every id the host has
-  held, so they ascend with creation and two tabs collide only by creating in the same second with
-  equal draws (ADR 0081). An end-to-end test creates in a stale tab and finds both projects.
+  the browser's are seconds since the epoch over twenty random bits, drawn in a later second where
+  an id the host holds is ahead of the clock. They ascend with creation, across tabs only by the
+  second, and two tabs collide only on equal draws in one second (ADR 0081). An end-to-end test
+  creates in a stale tab and finds both projects.
 - **A store that stops saving mid-session says so — done.** The document host tracks whether
   persisting is failing now, the worker pushes each change, and the page says "not saving" while
   the store would not load or is failing to save, and stops once a persist goes through

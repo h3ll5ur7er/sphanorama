@@ -24,24 +24,32 @@ into every manager (ADR 0014).
   that store has issued or held, removed or not, and creates nothing. `Create` takes it and writes
   the title under it. The store owns this because the storage is the only thing every page shares.
 - **The browser's id is the clock's second over twenty random bits**, from the document host:
-  seconds since the epoch times 2^20, plus a draw from `crypto.getRandomValues`, and never at or
-  below the highest id the host has loaded, written or issued. A tab that creates in a later second
-  than another issues a larger id whatever either holds. Two tabs creating in the same second
-  collide only on equal draws, one chance in 1,048,576.
+  seconds since the epoch times 2^20, plus a draw from `crypto.getRandomValues`. Where that is not
+  above the highest id the host has loaded, written or issued, the id is drawn in the next second
+  above that one instead. The draw survives either way: tabs that loaded the same documents hold
+  the same highest id, so one past it would be the same id in all of them. Two tabs issuing from the
+  same second collide only on equal draws, one chance in 1,048,576.
 - **Ids still ascend with creation**, which is how the page picks the capture to offer back
-  (ADR 0036). Ids an older build counted out from 1 are below every id the clock gives.
+  (ADR 0036): within a page in the order issued, and across pages by the second, while the clock is
+  ahead of every id held. Ids an older build counted out from 1 are below every id the clock gives.
 - **Past what a double holds exactly, no id is issued.** An id crosses to the page as a number, and
   past 2^53 two ids are one number, which is the overwrite again. A clock that far out issues ids
-  from the highest held instead; a store holding an id that high refuses with
+  drawn above the highest held instead, as a clock behind one does; in the last second a double
+  holds, one past the highest, undrawn; and a store holding an id that high refuses with
   `FailedPrecondition`. The memory store counts, since one process holds it.
 
 ## Consequences
 
 - An id is about 2^50.7 today. It stays under 2^52 until 2106 and under 2^53 until 2242.
 - Uniqueness across tabs is a probability, not a check. Besides an equal draw in one second, a clock
-  set back can make a tab issue an id another tab issued earlier; the floor keeps one tab's own ids
-  apart, not two tabs'. A refusal at persist time would be the check, and it would come after the
-  core has written under the id.
+  set back can make a tab issue an id another tab issued earlier, in a second the other tab already
+  drew in. A refusal at persist time would be the check, and it would come after the core has
+  written under the id.
+- Across tabs, two captures created in the same second are ordered by their draws, not by which
+  came first. If both began, the later `Begin` emptied the tier, and the page may offer the earlier
+  one back with its frames gone. So may a clock set back, or a page holding an id the other does
+  not, since both issue above what is held rather than by the clock. `Resume` refuses a document
+  that names another capture's tier (ADR 0035), so the cost is an offer that is refused.
 - Ids are no longer small. Nothing displays one, and every reader takes an id as a double and checks
   it whole and in range (`wire::IsRepresentableId`) before using it.
 - The host still persists nothing after a failed load (ADR 0078). The reason given there, ids

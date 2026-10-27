@@ -10,8 +10,9 @@
  * and losing the session in progress is worse.
  *
  * A store that would not load is never written to. What it holds may still be there, and a host
- * that starts empty cannot see it: project ids restart at 1 against an empty listing, so writing
- * behind would put a new capture's documents over the ones it could not read (ADR 0078).
+ * that starts empty cannot see it (ADR 0078). Project ids no longer restart at 1 against an empty
+ * listing (ADR 0081), so a new capture's documents would land beside those rather than over them;
+ * the guard is kept rather than revisited, since this host knows nothing of what that store holds.
  */
 
 /** The persistence side, kept separate so the resident model can be tested without a database. */
@@ -37,8 +38,8 @@ export interface DocumentHost {
    * Taken from the clock rather than counted from what is resident, because what is resident is
    * what this page loaded: another tab may have written one past the highest id in it since
    * (ADR 0081). Seconds since the epoch over twenty random bits, so tabs issuing in the same
-   * second are apart by the draw, and always above every id this host has held, so a page's ids
-   * ascend however its clock moves.
+   * second are apart by the draw, and always above every id this host has held, drawn in the next
+   * second above it where the clock is behind, so a page's ids ascend however its clock moves.
    */
   issueProjectId(): number | null;
   /** Awaits everything pending. The client calls this when the page is hidden or unloaded. */
@@ -69,10 +70,13 @@ function drawLowBits(): number {
   return bits[0] % 2 ** DRAWN_BITS;
 }
 
-/** The project a document key names, or null for a key no id could have written. */
+/**
+ * The project a document key names, or null for a key no id could have written. Past what a double
+ * holds exactly too, since such a key is listed and an issued id must be above it.
+ */
 function projectOf(key: string): number | null {
   const project = Number(key.slice(0, key.indexOf('/')));
-  return Number.isSafeInteger(project) && project > 0 ? project : null;
+  return Number.isInteger(project) && project > 0 ? project : null;
 }
 
 function documentKey(project: number, key: string): string {
@@ -224,10 +228,14 @@ export async function createDocumentHost(
     },
 
     issueProjectId(): number | null {
-      const timed = Math.floor(now() / 1000) * 2 ** DRAWN_BITS + draw();
-      // A clock past what a double holds exactly is a broken device, and its projects still need
-      // ids: they ascend from what is held instead.
-      const id = Number.isSafeInteger(timed) ? Math.max(timed, highest + 1) : highest + 1;
+      const drawn = draw();
+      const timed = Math.floor(now() / 1000) * 2 ** DRAWN_BITS + drawn;
+      // Where an id held is ahead of the clock, or the clock gives no id a double holds, the next
+      // second's ids above it, still drawn: every tab that loaded it holds the same one, and one
+      // past it is the same id in all of them. Past the last second, one past it, undrawn.
+      const above = (Math.floor(highest / 2 ** DRAWN_BITS) + 1) * 2 ** DRAWN_BITS + drawn;
+      let id = Number.isSafeInteger(timed) && timed > highest ? timed : above;
+      if (id > Number.MAX_SAFE_INTEGER) id = highest + 1;
       if (id > Number.MAX_SAFE_INTEGER) return null;
       highest = id;
       return id;

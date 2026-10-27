@@ -154,7 +154,10 @@ TYPED_TEST(ProjectStoreAccessContract, NoIdIsIssuedThatADoubleCannotHold) {
   // as its neighbour. Refused rather than issued, because two projects under one key is the
   // overwrite this method exists to prevent.
   constexpr uint64_t kLargestExact = (uint64_t{1} << 53) - 1;
-  ASSERT_TRUE(this->store->WriteDocument(ProjectId{kLargestExact}, "title", "a").ok());
+  ASSERT_TRUE(this->store->WriteDocument(ProjectId{kLargestExact - 1}, "title", "a").ok());
+  auto last = this->store->IssueProjectId();
+  ASSERT_TRUE(last.ok());
+  EXPECT_EQ(last.value.value, kLargestExact);
   EXPECT_EQ(this->store->IssueProjectId().status.code, StatusCode::FailedPrecondition);
 }
 

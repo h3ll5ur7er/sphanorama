@@ -1400,8 +1400,10 @@ export interface ProjectStoreAccess {
   listProjects(): Promise<Result<ProjectId[]>>;
   /**
    * An identity for a new project, above every id this store has issued or held. Issuing creates
-   * nothing; the first document written does. Ids ascend in the order they were issued, which is
-   * how a page tells the newest capture.
+   * nothing; the first document written does. One page's ids ascend in the order it issued them,
+   * which is how a page tells the newest capture; across pages, only as nearly as ADR 0081 says.
+   * `FailedPrecondition` when no id is left that a double holds exactly, since every id crosses to
+   * the page as one.
    * The store's to answer rather than the manager's, because the store is the only thing every
    * page shares. A page's listing is a copy taken when it loaded, so one past the highest id in it
    * may be an id another tab has written since, and a write creates on demand. Where another page

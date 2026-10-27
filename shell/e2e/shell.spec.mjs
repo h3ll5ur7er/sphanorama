@@ -3391,6 +3391,39 @@ test('a tab that loaded before another created a project does not create over it
   }
 });
 
+test('a store holding the last id a double holds creates no project', async ({ page }) => {
+  // Past 2^53 two ids are one number, so the host issues nothing rather than an id the bridge
+  // would carry as its neighbour, and the core refuses the create (ADR 0081). Seeded from a page
+  // of the same origin outside the app, so it is on disk before the worker loads.
+  const server = await serve();
+  try {
+    await page.goto(new URL('/not-the-app', server.appUrl).href);
+    await page.evaluate(() => new Promise((resolve, reject) => {
+      const request = indexedDB.open('sphanorama', 1);
+      request.onupgradeneeded = () => request.result.createObjectStore('documents');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const transaction = request.result.transaction('documents', 'readwrite');
+        transaction.objectStore('documents').put('last', `${Number.MAX_SAFE_INTEGER}/title`);
+        transaction.oncomplete = () => { request.result.close(); resolve(undefined); };
+        transaction.onerror = () => reject(transaction.error);
+      };
+    }));
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    const refused = await page.evaluate(async () => {
+      const result = await window.sphanoramaCore.project.create('one too many');
+      return result.ok ? null : result.status.code;
+    });
+    expect(refused).toBe('FailedPrecondition');
+    const listed = await page.evaluate(async () => (await window.sphanoramaCore.project.list()).value);
+    expect(listed.map((p) => p.title)).toEqual(['last']);
+  } finally {
+    await server.close();
+  }
+});
+
 test('nothing to come back to means nothing is offered', async ({ page }) => {
   // The other half of the pair below, and the one that keeps the offer meaningful: a page that
   // proposed resuming on every load would train the button out of being read, and the state it

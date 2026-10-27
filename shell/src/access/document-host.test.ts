@@ -75,9 +75,8 @@ describe('hydration', () => {
 
   it('never writes over a store it could not load', async () => {
     // What it could not load may still be there: a capture whose documents are on disk and that
-    // this host, starting empty, cannot see. Project ids restart at 1 against an empty listing, so
-    // persisting behind would put a new capture's title and session over the old one's. Kept
-    // resident instead, which is what "runs without remembering" means (ADR 0078).
+    // this host, starting empty, cannot see, and knows nothing about. Kept resident instead, which
+    // is what "runs without remembering" means (ADR 0078).
     let writes = 0;
     let removals = 0;
     const unreadable: DocumentStore = {
@@ -600,6 +599,28 @@ describe('issuing a project id', () => {
     expect(first.issueProjectId()).not.toBe(second.issueProjectId());
   });
 
+  it('keeps tabs apart by the draw when an id they hold is ahead of the clock', async () => {
+    // A project created while the device's clock ran ahead, or before it stepped back, leaves an
+    // id above what the clock now gives. Both tabs loaded it, so one past it is the same id in
+    // both, which is the overwrite again; the draw has to survive the floor.
+    const ahead = 2_000 * SECOND * 2 ** 20;
+    const store = fakeStore({ [`${ahead}/title`]: 'from a fast clock' });
+    const first = await createDocumentHost(store, { now: () => 1_000 * SECOND, draw: () => 1 });
+    const second = await createDocumentHost(store, { now: () => 1_000 * SECOND, draw: () => 2 });
+    const mine = first.issueProjectId() as number;
+    const theirs = second.issueProjectId() as number;
+    expect(mine).toBeGreaterThan(ahead);
+    expect(theirs).toBeGreaterThan(ahead);
+    expect(mine).not.toBe(theirs);
+  });
+
+  it('keeps tabs apart by the draw on a clock no id can come from', async () => {
+    const store = fakeStore({ '5/title': 'a' });
+    const first = await createDocumentHost(store, { now: () => 2 ** 60, draw: () => 1 });
+    const second = await createDocumentHost(store, { now: () => 2 ** 60, draw: () => 2 });
+    expect(first.issueProjectId()).not.toBe(second.issueProjectId());
+  });
+
   it('ascends within a tab, in the same second and when the clock steps back', async () => {
     // Newest is the largest id, which is how the page picks the capture to offer back.
     let clock = 1_000 * SECOND;
@@ -617,10 +638,11 @@ describe('issuing a project id', () => {
     // older build counted out from 1 are below any the clock gives, and still held above here.
     const host = await createDocumentHost(fakeStore({ '3/title': 'counted' }),
       { now: () => 0, draw: () => 0 });
-    expect(host.issueProjectId()).toBe(4);
-    host.write(9, 'title', 'written');
-    host.remove(9);
-    expect(host.issueProjectId()).toBe(10);
+    expect(host.issueProjectId()).toBeGreaterThan(3);
+    const written = 5 * 2 ** 20 + 7;
+    host.write(written, 'title', 'written');
+    host.remove(written);
+    expect(host.issueProjectId()).toBeGreaterThan(written);
   });
 
   it('creates nothing', async () => {
@@ -634,9 +656,32 @@ describe('issuing a project id', () => {
     // highest held instead. Past 2^53, two ids are one number, which is the overwrite again.
     const broken = await createDocumentHost(fakeStore({ '5/title': 'a' }),
       { now: () => 2 ** 60, draw: () => 0 });
-    expect(broken.issueProjectId()).toBe(6);
+    expect(broken.issueProjectId()).toBe(2 ** 20);
+    // In the last second a double holds, the next second's ids are past it, so one past what is
+    // held, undrawn; and past that, nothing.
+    const last = Number.MAX_SAFE_INTEGER - 1;
+    const nearly = await createDocumentHost(fakeStore({ [`${last}/title`]: 'a' }));
+    expect(nearly.issueProjectId()).toBe(Number.MAX_SAFE_INTEGER);
+    expect(nearly.issueProjectId()).toBeNull();
     const full = await createDocumentHost(fakeStore({ [`${Number.MAX_SAFE_INTEGER}/title`]: 'a' }));
     expect(full.issueProjectId()).toBeNull();
+    // A key past that, which only an edited database holds, is still one the listing reports.
+    const past = await createDocumentHost(fakeStore({ '1000000000000000000/title': 'a' }));
+    expect(past.issueProjectId()).toBeNull();
+  });
+
+  it('draws the low bits at random by default', async () => {
+    // What keeps two tabs in the same second apart, and nothing else here would see it constant.
+    const store = fakeStore();
+    const ids = new Set<number>();
+    for (let tab = 0; tab < 16; tab += 1) {
+      const host = await createDocumentHost(store, { now: () => 7 * SECOND });
+      const id = host.issueProjectId() as number;
+      expect(id - 7 * 2 ** 20).toBeGreaterThanOrEqual(0);
+      expect(id - 7 * 2 ** 20).toBeLessThan(2 ** 20);
+      ids.add(id);
+    }
+    expect(ids.size).toBeGreaterThan(1);
   });
 
   it('draws from the real clock and a random source by default', async () => {
