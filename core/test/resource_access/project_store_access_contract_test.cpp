@@ -129,7 +129,8 @@ TYPED_TEST(ProjectStoreAccessContract, IssuingAnIdCreatesNothing) {
 
 TYPED_TEST(ProjectStoreAccessContract, AnIdIsNotIssuedAgainOnceItsProjectIsDeleted) {
   // A deleted project's id names nothing on disk, but a document written against it may still
-  // name it somewhere else, and "never issued before" is the promise that does not need checking.
+  // name it somewhere else. Within one opening of the store; the browser's forgets across a reload
+  // what IndexedDB does not hold (ADR 0081).
   auto first = this->store->IssueProjectId();
   ASSERT_TRUE(first.ok());
   ASSERT_TRUE(this->store->WriteDocument(first.value, "title", "a").ok());

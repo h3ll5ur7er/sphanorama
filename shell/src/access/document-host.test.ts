@@ -612,6 +612,9 @@ describe('issuing a project id', () => {
     expect(mine).toBeGreaterThan(ahead);
     expect(theirs).toBeGreaterThan(ahead);
     expect(mine).not.toBe(theirs);
+    // A held id on a second's boundary, and a draw of zero: the next second, not that id again.
+    const third = await createDocumentHost(store, { now: () => 1_000 * SECOND, draw: () => 0 });
+    expect(third.issueProjectId()).toBeGreaterThan(ahead);
   });
 
   it('keeps tabs apart by the draw on a clock no id can come from', async () => {
@@ -645,6 +648,11 @@ describe('issuing a project id', () => {
     expect(host.issueProjectId()).toBeGreaterThan(written);
   });
 
+  it('issues no zero from an empty store at the epoch with a draw of zero', async () => {
+    const host = await createDocumentHost(fakeStore(), { now: () => 0, draw: () => 0 });
+    expect(host.issueProjectId()).toBeGreaterThan(0);
+  });
+
   it('creates nothing', async () => {
     const host = await createDocumentHost(fakeStore());
     expect(host.issueProjectId()).toBeGreaterThan(0);
@@ -672,16 +680,19 @@ describe('issuing a project id', () => {
 
   it('draws the low bits at random by default', async () => {
     // What keeps two tabs in the same second apart, and nothing else here would see it constant.
+    // All twenty bits, too: sixteen draws from 2^20 repeat twice about once in 150 million runs,
+    // and the largest falls below 2^19 once in 65,536; a draw of fewer bits fails one or the other.
     const store = fakeStore();
-    const ids = new Set<number>();
+    const low = new Set<number>();
     for (let tab = 0; tab < 16; tab += 1) {
       const host = await createDocumentHost(store, { now: () => 7 * SECOND });
-      const id = host.issueProjectId() as number;
-      expect(id - 7 * 2 ** 20).toBeGreaterThanOrEqual(0);
-      expect(id - 7 * 2 ** 20).toBeLessThan(2 ** 20);
-      ids.add(id);
+      const drawn = (host.issueProjectId() as number) - 7 * 2 ** 20;
+      expect(drawn).toBeGreaterThanOrEqual(0);
+      expect(drawn).toBeLessThan(2 ** 20);
+      low.add(drawn);
     }
-    expect(ids.size).toBeGreaterThan(1);
+    expect(low.size).toBeGreaterThanOrEqual(15);
+    expect(Math.max(...low)).toBeGreaterThanOrEqual(2 ** 19);
   });
 
   it('draws from the real clock and a random source by default', async () => {

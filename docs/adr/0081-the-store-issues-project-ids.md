@@ -21,7 +21,8 @@ into every manager (ADR 0014).
 ## Decision
 
 - **The store issues the id.** `IProjectStoreAccess::IssueProjectId` answers an id above every one
-  that store has issued or held, removed or not, and creates nothing. `Create` takes it and writes
+  that store holds and every one it has issued since it was opened, removed or not, and creates
+  nothing. `Create` takes it and writes
   the title under it. The store owns this because the storage is the only thing every page shares.
 - **The browser's id is the clock's second over twenty random bits**, from the document host:
   seconds since the epoch times 2^20, plus a draw from `crypto.getRandomValues`. Where that is not
@@ -43,15 +44,30 @@ into every manager (ADR 0014).
 - An id is about 2^50.7 today. It stays under 2^52 until 2106 and under 2^53 until 2242.
 - Uniqueness across tabs is a probability, not a check. Besides an equal draw in one second, a clock
   set back can make a tab issue an id another tab issued earlier, in a second the other tab already
-  drew in. A refusal at persist time would be the check, and it would come after the core has
+  drew in; and in the last second a double holds, reached in 2242 or by an edited database, ids are
+  undrawn and two tabs collide for certain. A refusal at persist time would be the check, and it would come after the core has
   written under the id.
 - Across tabs, two captures created in the same second are ordered by their draws, not by which
-  came first. If both began, the later `Begin` emptied the tier, and the page may offer the earlier
-  one back with its frames gone. So may a clock set back, or a page holding an id the other does
-  not, since both issue above what is held rather than by the clock. `Resume` refuses a document
-  that names another capture's tier (ADR 0035), so the cost is an offer that is refused.
-- Ids are no longer small. Nothing displays one, and every reader takes an id as a double and checks
-  it whole and in range (`wire::IsRepresentableId`) before using it.
+  came first, and so are ids from a clock set back or from a page holding an id the other does
+  not, since both issue above what is held rather than by the clock.
+- **The newest id is not always the capture the tier holds, and this does not fix that.** Only the
+  tab whose worker took the resident spill pair writes the tier the next load resumes from; a tab
+  opened beside it spills to a tier of its own (ADR 0063). If that second tab's capture has the
+  larger id, the page offers it, `Resume` refuses it because its document names another tier
+  (ADR 0035), and the refusal is a `FailedPrecondition`, which keeps the offer up on every load
+  (ADR 0039). The capture the tier does hold is never offered, and the other press, a new capture,
+  clears it. A tab opened after another captured reached this before, by issuing one past what it
+  loaded; a stale tab overwrote the other capture instead, and now reaches this too. Offering the
+  newest capture whose document names the tier the page holds would close it, and is open on the
+  roadmap.
+- **A reload forgets what it removed.** The browser's floor is what the page has loaded, written
+  and issued, and IndexedDB keeps no record of a removed project or of an issued id whose title
+  never persisted. So a reload can issue below such an id, and reissue it on an equal draw in the
+  same second. The memory store keeps every id it issued because one process holds it.
+- Ids are no longer small. A build's failure detail names one, so the page can read "project
+  1887436800000900 holds no capture" where it read "project 3"; nothing else displays one. Every
+  reader takes an id as a double and checks it whole and in range (`wire::IsRepresentableId`)
+  before using it.
 - The host still persists nothing after a failed load (ADR 0078). The reason given there, ids
   restarting at 1, is gone, but a store that would not load may hold captures a delete or a new
   capture's tier clear could still cost. That guard is not revisited here.

@@ -14,9 +14,10 @@ class IProjectStoreAccess {
 
   virtual Result<std::vector<ProjectId>> ListProjects() = 0;
 
-  // An identity for a new project, above every id this store has issued or held. Issuing creates
-  // nothing; the first document written does. One page's ids ascend in the order it issued them,
-  // which is how a page tells the newest capture; across pages, only as nearly as ADR 0081 says.
+  // An identity for a new project, above every id this store holds and every one it has issued
+  // since it was opened, removed or not. Issuing creates nothing; the first document written does.
+  // One page's ids ascend in the order it issued them, which is how a page tells the newest
+  // capture; across pages, only as nearly as ADR 0081 says.
   // `FailedPrecondition` when no id is left that a double holds exactly, since every id crosses to
   // the page as one.
   //

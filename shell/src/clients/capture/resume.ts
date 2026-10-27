@@ -18,7 +18,7 @@ import { describeFailure } from './status';
  * The capture worth offering back, or null when there is none.
  *
  * The newest one that has a session, and "newest" is the largest identity: the store issues ids
- * from the clock and above every id it has held, so they ascend with creation, though across tabs
+ * from the clock and above every id it holds, so they ascend with creation, though across tabs
  * only by the second (ADR 0081), while the listing's *order* is whatever the document host's key
  * map happened to iterate.
  *

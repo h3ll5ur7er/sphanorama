@@ -373,6 +373,12 @@ What is left, and what has landed since:
   an id the host holds is ahead of the clock. They ascend with creation, across tabs only by the
   second, and two tabs collide only on equal draws in one second (ADR 0081). An end-to-end test
   creates in a stale tab and finds both projects.
+- **The newest capture is offered even when another tab's tier holds it — open.** Only the tab
+  holding the resident spill pair writes the tier the next load resumes from (ADR 0063). A capture
+  from a tab beside it with a larger id is offered, refused for naming another tier (ADR 0035), and
+  offered again on every load (ADR 0039), while the capture the tier holds is never offered and a
+  new one clears it. Offering the newest capture whose document names the tier the page holds
+  would close it; ADR 0081 records it.
 - **A store that stops saving mid-session says so — done.** The document host tracks whether
   persisting is failing now, the worker pushes each change, and the page says "not saving" while
   the store would not load or is failing to save, and stops once a persist goes through
