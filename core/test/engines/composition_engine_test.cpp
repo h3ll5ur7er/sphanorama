@@ -11,6 +11,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <numbers>
 #include <optional>
 #include <set>
 #include <string>
@@ -493,6 +494,55 @@ TEST_F(NearestCentreComposition, InputThatIsNotAPreviewIsRefused) {
   frames[1] = Paint(PixelFormat::Gray8, [](int32_t, int32_t) { return Rgb{}; });
   solution.frames[1] = frames[1].id;
   EXPECT_EQ(Refused(), StatusCode::Unsupported) << "a frame that is not RGBA8";
+}
+
+// A phone turned a quarter about the way it looks hands back its frame the other way round, and
+// the lens it looked through is the same glass turned with it (`LensForFrame`). So a frame turned,
+// with its rotation rolled to match, colours the panorama exactly as it did unturned.
+TEST_F(NearestCentreComposition, AFrameTurnedAQuarterColoursWhatItColouredUnturned) {
+  const auto pattern = [](int32_t x, int32_t y) {
+    return Rgb{static_cast<uint8_t>(x * 4), static_cast<uint8_t>(y * 5),
+               static_cast<uint8_t>((x * 7 + y * 3) % 256)};
+  };
+  const Quat facing = FromAzimuthElevation(20.0, 10.0);
+  Look(facing, pattern);
+  Look(FromAzimuthElevation(70.0, -5.0), Rgb{200, 10, 10});
+  const Preview unturned = Render(256);
+
+  // Turned clockwise: the old left edge is the new top, so the new pixel (i, j) is the old pixel
+  // (j, height - 1 - i), and the camera's right is its down -- a roll a quarter turn about its
+  // forward axis, which is -Z.
+  frames[0] = Paint(PixelFormat::RGBA8,
+                    [&](int32_t i, int32_t j) { return pattern(j, kHeight - 1 - i); }, kHeight,
+                    kWidth);
+  solution.frames[0] = frames[0].id;
+  solution.rotations[0] =
+      Multiply(facing, FromAxisAngle(Vec3{0.0, 0.0, 1.0}, std::numbers::pi / 2.0));
+  const Preview turned = Render(256);
+
+  ASSERT_EQ(turned.bytes.size(), unturned.bytes.size());
+  int32_t differing = 0;
+  for (size_t at = 0; at < turned.bytes.size(); at += 4) {
+    if (!std::equal(turned.bytes.begin() + at, turned.bytes.begin() + at + 4,
+                    unturned.bytes.begin() + at)) {
+      ++differing;
+    }
+  }
+  EXPECT_EQ(differing, 0);
+  int32_t covered = 0;
+  for (size_t at = 3; at < turned.bytes.size(); at += 4) covered += turned.bytes[at] == 255;
+  EXPECT_GT(covered, 1000) << "the premise: the frames cover something to compare";
+}
+
+TEST_F(NearestCentreComposition, AFrameTurnedUnderALensThatCannotTurnIsRefused) {
+  // A centre off the middle of the frame lands somewhere different turned either way, and the
+  // frame cannot say which way it turned.
+  Look(Quat{}, Rgb{10, 20, 30});
+  solution.intrinsics.cx += 2;
+  ASSERT_EQ(Refused(), StatusCode::Ok) << "the premise: the lens reads its own frame";
+  frames[0] = Paint(PixelFormat::RGBA8, [](int32_t, int32_t) { return Rgb{}; }, kHeight, kWidth);
+  solution.frames[0] = frames[0].id;
+  EXPECT_TRUE(RefusedSaying("another size than the lens"));
 }
 
 // Each preview pixel names its frame in two bytes, so a solution that names more frames than that

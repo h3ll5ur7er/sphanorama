@@ -493,10 +493,12 @@ TEST_F(PanoramaBuildManagerTest, StartRefusesACaptureFromAnotherTier) {
   EXPECT_EQ(manager_.Start(kProject, BuildSpec{}).status.code, StatusCode::FailedPrecondition);
 }
 
-TEST_F(PanoramaBuildManagerTest, StartRefusesFramesOfMoreThanOneSize) {
-  // Each dimension alone, so neither half of the comparison is carried by the other.
+TEST_F(PanoramaBuildManagerTest, StartRefusesFramesOfMoreThanOneSizeEitherWayRound) {
+  // Each dimension alone, so neither half of the comparison is carried by the other; and a frame
+  // the first's size turned is no defect, it is the phone turned (ADR 0082).
   for (const auto& [width, height] : {std::pair<int32_t, int32_t>{kWidth * 2, kHeight},
-                                      std::pair<int32_t, int32_t>{kWidth, kHeight * 2}}) {
+                                      std::pair<int32_t, int32_t>{kWidth, kHeight * 2},
+                                      std::pair<int32_t, int32_t>{kHeight * 2, kWidth}}) {
     document_.candidates.clear();
     AddCandidate(NodeId{1}, FromAzimuthElevation(0.0, 0.0));
     AddCandidate(NodeId{2}, FromAzimuthElevation(30.0, 0.0), width, height);
@@ -509,10 +511,61 @@ TEST_F(PanoramaBuildManagerTest, StartRefusesFramesOfMoreThanOneSize) {
 TEST_F(PanoramaBuildManagerTest, StartRefusesAFieldOfViewThatIsNotALens) {
   AddCandidate(NodeId{1}, FromAzimuthElevation(0.0, 0.0));
   WriteDocument();
-  document_.spec.horizontalFovDeg = 190.0;
+  // Either angle, so the one read as the wider cannot carry the other past the check.
+  for (const auto& [horizontal, vertical] :
+       {std::pair{190.0, kVerticalFovDeg}, std::pair{kHorizontalFovDeg, 190.0}}) {
+    document_.spec.horizontalFovDeg = horizontal;
+    document_.spec.verticalFovDeg = vertical;
+    ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey,
+                                        EncodeSessionDocument(document_)).ok());
+    EXPECT_EQ(manager_.Start(kProject, BuildSpec{}).status.code, StatusCode::FailedPrecondition)
+        << horizontal << " by " << vertical;
+  }
+}
+
+// The angles are the lens's, and a lens is the same glass however the phone is held: the wider
+// belongs to the frame's longer edge. A capture begun upright and grabbed on its side read them
+// onto the axes they were named for, and built with pixels 1.9 times non-square (ADR 0082).
+TEST_F(PanoramaBuildManagerTest, TheWiderAngleIsTheLongerEdgesWhicheverWayTheCaptureBegan) {
+  CaptureRing(12);
+  document_.spec.horizontalFovDeg = kVerticalFovDeg;
+  document_.spec.verticalFovDeg = kHorizontalFovDeg;
   ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey,
                                       EncodeSessionDocument(document_)).ok());
-  EXPECT_EQ(manager_.Start(kProject, BuildSpec{}).status.code, StatusCode::FailedPrecondition);
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok()) << build.status.detail;
+  RunToEnd(build.value);
+  const Intrinsics expected =
+      LensFromFieldOfView(kHorizontalFovDeg, kVerticalFovDeg, kWidth, kHeight);
+  EXPECT_EQ(registration_.refinedLens.fx, expected.fx);
+  EXPECT_EQ(registration_.refinedLens.fy, expected.fy);
+}
+
+// A phone turned partway through hands its later frames back the other way round. The lens is
+// the first frame's way round, the solve is told each frame's shape, and the build completes.
+TEST_F(PanoramaBuildManagerTest, ACaptureWithThePhoneTurnedPartwayThroughBuilds) {
+  for (int i = 0; i < 12; ++i) {
+    const bool turned = i >= 5;
+    const Quat looking = FromAzimuthElevation(30.0 * i, 0.0);
+    AddCandidate(NodeId{static_cast<uint64_t>(i + 1)},
+                 turned ? Multiply(looking, FromAxisAngle(Vec3{0, 0, 1}, std::numbers::pi / 2))
+                        : looking,
+                 turned ? kHeight : kWidth, turned ? kWidth : kHeight);
+  }
+  WriteDocument();
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok()) << build.status.detail;
+  RunToEnd(build.value);
+  const Result<BuildProgress> progress = manager_.Poll(build.value);
+  ASSERT_TRUE(progress.ok());
+  EXPECT_EQ(progress.value.stage, BuildStage::Complete) << progress.value.failure.detail;
+  EXPECT_EQ(registration_.refinedLens.width, kWidth);
+  EXPECT_EQ(registration_.refinedLens.height, kHeight);
+  ASSERT_EQ(registration_.refinedPriors.size(), 12u);
+  for (size_t i = 0; i < 12; ++i) {
+    EXPECT_EQ(registration_.refinedPriors[i].width, document_.candidates[i].frame.width) << i;
+    EXPECT_EQ(registration_.refinedPriors[i].height, document_.candidates[i].frame.height) << i;
+  }
 }
 
 TEST_F(PanoramaBuildManagerTest, StartRefusesACubemapAndAnOutputTooNarrowToDraw) {

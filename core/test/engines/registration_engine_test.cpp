@@ -1405,6 +1405,25 @@ TEST_P(Extraction, EveryBoundsGuardRefusesRatherThanReadingPastTheFrame) {
     return pair.status.detail;
   };
 
+  // **A frame the lens cannot be read through**, turned or not: its keypoints have no directions
+  // (ADR 0082). Either set, so neither half of the check stands in for the other.
+  {
+    FeatureSet other = a.value;
+    other.width = kWidth / 2;
+    EXPECT_NE(refuses(other, "a set of another shape").find("another shape than the lens"),
+              std::string::npos);
+    FeatureSet unshaped = a.value;
+    unshaped.width = 0;
+    unshaped.height = 0;
+    EXPECT_NE(refuses(unshaped, "a set of no shape").find("another shape than the lens"),
+              std::string::npos);
+    FeatureSet otherB = b.value;
+    otherB.height = kHeight * 2;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(a.value, otherB, Quat{1, 0, 0, 0}, Lens());
+    EXPECT_NE(pair.status.detail.find("another shape than the lens"), std::string::npos)
+        << pair.status.detail;
+  }
   // **A keypoint stride narrower than one row.** Eight bytes is a row — `FeatureSet::keypoints`
   // spells that out in the contract — so seven describes a frame whose rows overlap, which no store
   // produces and a caller can certainly claim.
@@ -1725,6 +1744,9 @@ TEST_P(Extraction, RegisteringAFrameAgainstItselfIsTheIdentity) {
   EXPECT_TRUE(pair.value.accepted);
   EXPECT_EQ(pair.value.a.value, a.value.frame.value);
   EXPECT_EQ(pair.value.b.value, b.value.frame.value);
+  // The shape of the frame the keypoints are pixels of, which says which way round it was held.
+  EXPECT_EQ(a.value.width, kWidth);
+  EXPECT_EQ(a.value.height, kHeight);
   EXPECT_GT(pair.value.inliers, 0);
   EXPECT_LT(pair.value.medianResidualPx, 1e-6)
       << "identical descriptors at identical keypoints leave no residual";

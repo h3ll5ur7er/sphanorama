@@ -230,7 +230,7 @@ TEST_P(RegisteredComposition, ARegisteredRingComposesToThePhotographOnceItsGauge
     pairs.push_back(pair.value);
   }
   const Result<GlobalSolution> solved = registration.Refine(
-      pairs, test::FramePriorsThreeDegreesOut(truth_.frames, truth_.rotations), guess);
+      pairs, test::FramePriorsThreeDegreesOut(frames_, truth_.rotations), guess);
   ASSERT_TRUE(solved.ok()) << solved.status.detail;
   ASSERT_EQ(solved.value.frames, truth_.frames);
   EXPECT_EQ(solved.value.edgesUsed, kFrames) << "not every pair was accepted";

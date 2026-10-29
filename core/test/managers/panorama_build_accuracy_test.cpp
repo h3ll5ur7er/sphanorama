@@ -25,6 +25,7 @@
 #include "support/fake_spill_sink.h"
 #include "support/rendered_dataset.h"
 #include "support/synthetic_dataset.h"
+#include "support/turned_frame.h"
 #include "utilities/camera_model.h"
 #include "utilities/quaternion.h"
 #include "utilities/session_document.h"
@@ -222,6 +223,57 @@ TEST_P(PanoramaBuildAccuracy, ABuiltCaptureDrawsThePhotograph) {
   EXPECT_GT(asPosed.meanError, kMeanErrorBound);
 
   // The panorama is the manager's, so it goes back through the manager.
+  EXPECT_TRUE(manager.Cancel(build.value).ok());
+}
+
+// The phone turned a quarter halfway round the ring, so its last six frames came back the other way
+// round, each with the pose the turned phone reported. Read through the lens turned with them
+// (ADR 0082), they draw the photograph as the unturned ring does.
+TEST_P(PanoramaBuildAccuracy, ACaptureWithThePhoneTurnedPartwayThroughDrawsThePhotograph) {
+  // Each pose out as the unturned ring's is, then turned with its frame: a reading three degrees
+  // off about the camera's own horizontal axis, turned, is off about that axis's new place, and the
+  // errors would no longer cancel round the ring.
+  std::vector<Quat> poses = Poses();
+  for (size_t i = frames_.size() / 2; i < frames_.size(); ++i) {
+    const Result<FrameRef> turned = test::TurnedClockwise(store_, frames_[i]);
+    ASSERT_TRUE(turned.ok()) << turned.status.detail;
+    owned_.push_back(turned.value);
+    frames_[i] = turned.value;
+    poses[i] = test::RolledClockwise(poses[i]);
+  }
+  WriteCapture(poses);
+
+  FeatureRegistrationEngine registration{store_, GetParam()};
+  PanoramaBuildManager manager{registration, composition_, store_, projects_};
+  BuildSpec spec;
+  spec.outputWidth = kPreviewWidth;
+  auto build = manager.Start(kProject, spec);
+  ASSERT_TRUE(build.ok()) << build.status.detail;
+  BuildProgress progress;
+  int polls = 0;
+  while (progress.stage != BuildStage::Complete && progress.stage != BuildStage::Failed) {
+    auto polled = manager.Poll(build.value);
+    ASSERT_TRUE(polled.ok()) << polled.status.detail;
+    progress = polled.value;
+    ASSERT_LT(++polls, 100);
+  }
+  ASSERT_EQ(progress.stage, BuildStage::Complete) << progress.failure.detail;
+  EXPECT_EQ(polls, 26) << "every pair, the turned ones too";
+
+  auto panorama = manager.Panorama(build.value);
+  ASSERT_TRUE(panorama.ok()) << panorama.status.detail;
+  const Comparison built = Compare(panorama.value.preview);
+  std::printf("[built-turned] detector=%d mean=%.3f\n", static_cast<int>(GetParam()),
+              built.meanError);
+  EXPECT_EQ(built.equatorCovered, 1.0);
+  // Today's run: 2.130 (ORB), 1.781 (AKAZE) and 1.347 (SIFT), against the unturned ring's 1.559,
+  // 1.370 and 1.234; at the true poses 2.075, 1.738 and 1.386, so what is left is the pairs. A
+  // turned frame is 46.8 degrees across where it was 60, so neighbours thirty degrees apart share a
+  // strip of 16.8 rather than 30, and register on less. Read through one unturned lens, as before
+  // ADR 0082, the build failed: its frames were not all one size. Still inside the 2.84 a tenth of
+  // a degree composes at.
+  constexpr double kTurnedMeanErrorBound = 2.6;
+  EXPECT_LE(built.meanError, kTurnedMeanErrorBound);
   EXPECT_TRUE(manager.Cancel(build.value).ok());
 }
 

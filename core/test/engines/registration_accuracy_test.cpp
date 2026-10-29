@@ -38,6 +38,7 @@
 #include "support/rotation_scoring.h"
 #include "support/solved_ring.h"
 #include "support/synthetic_dataset.h"
+#include "support/turned_frame.h"
 #include "support/wrong_priors.h"
 #include "utilities/camera_model.h"
 #include "utilities/quaternion.h"
@@ -490,6 +491,81 @@ TEST_P(Accuracy, TheRingSolvedWithItsClosingPairIsWithinTheStatedBound) {
 }
 
 /**
+ * The same ring with every other frame taken with the phone turned a quarter, which hands those
+ * frames back the other way round (ADR 0082). Each is read through the lens turned with it, so the
+ * pairs between a frame held one way and a frame held the other register, the loop still sees the
+ * focal length, and the ring solves within the bounds the unturned one is held to.
+ */
+TEST_P(Accuracy, ARingTakenWithThePhoneTurnedEveryOtherFrameSolvesAsTheUnturnedOneDoes) {
+  constexpr int kFrames = test::kSolvedRingFrames;
+  Rendered rendered(kFrames, test::kSolvedRingWidth, test::kSolvedRingHeight, World::Photograph);
+  ASSERT_FALSE(rendered.inputMissing()) << rendered.why();
+  if (!rendered.ok()) {
+    GTEST_SKIP() << "the dataset generator did not run, so nothing was measured. "
+                 << rendered.why();
+  }
+
+  MemoryFrameStoreAccess store{1 << 28};
+  Owned owned{store};
+  const Result<SyntheticDataset> dataset = LoadSyntheticDataset(store, rendered.path());
+  ASSERT_TRUE(dataset.ok()) << dataset.status.detail;
+  for (const SyntheticFrame& frame : dataset.value.frames) owned.frames.push_back(frame.frame);
+  ASSERT_EQ(dataset.value.frames.size(), static_cast<size_t>(kFrames));
+
+  std::vector<SyntheticFrame> held = dataset.value.frames;
+  for (size_t i = 1; i < held.size(); i += 2) {
+    const Result<FrameRef> turned = test::TurnedClockwise(store, held[i].frame);
+    ASSERT_TRUE(turned.ok()) << turned.status.detail;
+    owned.frames.push_back(turned.value);
+    held[i].frame = turned.value;
+    held[i].trueRotation = test::RolledClockwise(held[i].trueRotation);
+  }
+  ASSERT_EQ(held[1].frame.width, test::kSolvedRingHeight) << "the premise: a frame was turned";
+
+  FeatureRegistrationEngine engine{store, GetParam()};
+  std::vector<FeatureSet>& sets = owned.sets;
+  std::vector<Quat> truth;
+  for (const SyntheticFrame& frame : held) {
+    const Result<FeatureSet> features = engine.ExtractFeatures(frame.frame);
+    ASSERT_TRUE(features.ok()) << features.status.detail;
+    sets.push_back(features.value);
+    truth.push_back(frame.trueRotation);
+  }
+
+  const Result<GlobalSolution> solved =
+      test::SolveRingThreeDegreesOut(engine, sets, held, dataset.value.lens);
+  ASSERT_TRUE(solved.ok()) << solved.status.detail;
+  EXPECT_TRUE(solved.value.converged);
+  EXPECT_TRUE(solved.value.lensFitted);
+  EXPECT_EQ(solved.value.edgesUsed, kFrames) << "not every pair was accepted";
+
+  const test::RotationScore score = test::ScoreRotations(solved.value.rotations, truth);
+  ASSERT_TRUE(score.valid && score.alignmentIsUnique);
+  std::fprintf(stderr,
+               "[turned] detector=%d edges=%d median=%.4f deg mean=%.4f max=%.4f fx=%+.4f%%\n",
+               static_cast<int>(GetParam()), solved.value.edgesUsed, score.medianDeg,
+               score.meanDeg, score.maxDeg,
+               100.0 * (solved.value.intrinsics.fx / dataset.value.lens.fx - 1.0));
+  EXPECT_LT(test::FacingAwayFromThePriorsDeg(held, score), test::kSolvedRingFacingBoundDeg);
+
+  // Today's run: ORB 0.1071/0.2175, AKAZE 0.0677/0.0872, SIFT 0.0304/0.0555 (median, max), the
+  // focal length within -0.077%, +0.008% and +0.019%; read through one unturned lens, as before
+  // ADR 0082, the medians were 7.0, 6.6 and 7.3 degrees. About twice the unturned ring's, and that
+  // is the frames rather than the reading: a turned frame is 46.8 degrees across where it was 60,
+  // so frames thirty degrees apart share less of the world. Measured the same way, every frame
+  // turned reads 0.0598, 0.0529 and 0.0351, and a ring rendered upright at 480 by 640 with nothing
+  // turned 0.0604 (AKAZE) and 0.0364 (SIFT). Bounds at about one and a half times each.
+  struct Bound {
+    double median, max;
+  };
+  constexpr Bound kBounds[] = {{0.16, 0.33}, {0.10, 0.13}, {0.05, 0.085}};
+  static_assert(std::size(kBounds) == static_cast<size_t>(FeatureDetector::Count));
+  const Bound& bound = kBounds[static_cast<size_t>(GetParam())];
+  EXPECT_LT(score.medianDeg, bound.median);
+  EXPECT_LT(score.maxDeg, bound.max);
+}
+
+/**
  * A focal length out by the margin a phone's reported field of view can be is fitted from the ring,
  * and the ring then solves as though it had been right (ADR 0066).
  *
@@ -519,9 +595,9 @@ TEST_P(Accuracy, AFocalLengthOutIsFittedFromTheRing) {
     sets.push_back(features.value);
     truth.push_back(frame.trueRotation);
   }
-  std::vector<FrameId> ids;
-  for (const SyntheticFrame& frame : dataset.value.frames) ids.push_back(frame.frame.id);
-  const std::vector<FramePrior> priors = test::FramePriorsThreeDegreesOut(ids, truth);
+  std::vector<FrameRef> handles;
+  for (const SyntheticFrame& frame : dataset.value.frames) handles.push_back(frame.frame);
+  const std::vector<FramePrior> priors = test::FramePriorsThreeDegreesOut(handles, truth);
 
   for (const double scale : {0.90, 0.95, 1.05, 1.10}) {
     Intrinsics guess = dataset.value.lens;

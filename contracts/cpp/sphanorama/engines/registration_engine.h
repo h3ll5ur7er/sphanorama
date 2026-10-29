@@ -54,6 +54,11 @@ class IRegistrationEngine {
   // the same reason and puts it to a different use — where its fit of the focal length starts, and
   // the lens its answer is expressed under when there is no fit (ADR 0066) — which is why that one
   // is named `initial` and this one is not.
+  //
+  // **One lens for a capture, read as each frame was held.** A phone turned a quarter hands its
+  // frames back the other way round, and the glass is the same, so each set is read through the
+  // lens turned to its frame's shape (`FeatureSet::width`, `LensForFrame`, ADR 0082); `Refine`
+  // reads each frame's matches the same way, by the shape its prior names.
   // **How it refuses**, which belongs here rather than in an implementation: a caller branching on
   // `StatusCode` can only do so against what the contract promises, and this method is the first in
   // the repository to return `RegistrationFailed` at all.
@@ -66,7 +71,8 @@ class IRegistrationEngine {
   //   code nobody can branch on.
   // - `InvalidArgument` — the inputs could not be read as a pair: an empty feature set, a set this
   //   engine's extractor did not produce (`FeatureSet::extractor`, ADR 0058), a prior that is not a
-  //   usable rotation, a lens that cannot project, a frame whose declared rows do not fit the bytes
+  //   usable rotation, a lens that cannot project or that cannot be read for either set's frame,
+  //   turned or not (`LensForFrame`, ADR 0082), a frame whose declared rows do not fit the bytes
   //   it holds, or two sets whose descriptor rows are different widths.
   // - **`Pin`'s own status, whole** — `code`, `detail` and `component` — when a frame could not be
   //   pinned. So a caller branching on the code sees what the store said, and a human reading the
@@ -158,8 +164,9 @@ class IRegistrationEngine {
   //
   // Refusals: `InvalidArgument` for no priors, an invalid or repeated frame among them, a prior
   // whose confidence is outside [0, 1] or whose orientation is not a rotation while its confidence
-  // claims one, a lens `IsUsableLens` would not accept or whose `focalUncertainty` is not a figure
-  // at all — NaN, or below zero — a pair naming a frame with no prior or the
+  // claims one, a frame whose shape the lens cannot be read for, turned or not (ADR 0082), a lens
+  // `IsUsableLens` would not accept or whose `focalUncertainty` is not a figure at all — NaN, or
+  // below zero — a pair naming a frame with no prior or the
   // same frame twice, or an accepted pair whose rotation is not one — including one never written,
   // which `PairwiseResult` defaults so as to be refused — or whose counts no engine fills in: no
   // inliers, or fewer correspondences than inliers. `FailedPrecondition` when every prior's

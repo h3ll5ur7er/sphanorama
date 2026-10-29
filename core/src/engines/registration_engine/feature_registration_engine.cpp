@@ -373,6 +373,8 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
 
   FeatureSet features;
   features.frame = frame.id;
+  features.width = frame.width;
+  features.height = frame.height;
   features.count = static_cast<int32_t>(order.size());
   features.extractor = ExtractorIdentity(detector_);
 
@@ -1152,6 +1154,15 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
                                "the lens cannot project, so no rotation can be recovered from "
                                "pixels (ADR 0054)");
   }
+  // Each set through the lens as its frame was held: a frame the other way round is the same lens
+  // turned a quarter (ADR 0082).
+  const Intrinsics lensA = LensForFrame(lens, a.width, a.height);
+  const Intrinsics lensB = LensForFrame(lens, b.width, b.height);
+  if (!IsUsableLens(lensA) || !IsUsableLens(lensB)) {
+    return Err<PairwiseResult>(StatusCode::InvalidArgument, kComponent,
+                               "a feature set's frame is another shape than the lens, turned or "
+                               "not, so its pixels have no directions");
+  }
 
   try {
     // Borrowed, not owned: pinned for the call and released by these destructors on every path out,
@@ -1182,11 +1193,11 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
       if (!pinned->ok()) return pinned->status;
     }
 
-    const Result<std::vector<Bearing>> bearingsA = ReadBearings(a, kaSpan.value, lens);
+    const Result<std::vector<Bearing>> bearingsA = ReadBearings(a, kaSpan.value, lensA);
     if (!bearingsA.ok()) {
       return Err<PairwiseResult>(bearingsA.status.code, kComponent, bearingsA.status.detail);
     }
-    const Result<std::vector<Bearing>> bearingsB = ReadBearings(b, kbSpan.value, lens);
+    const Result<std::vector<Bearing>> bearingsB = ReadBearings(b, kbSpan.value, lensB);
     if (!bearingsB.ok()) {
       return Err<PairwiseResult>(bearingsB.status.code, kComponent, bearingsB.status.detail);
     }
@@ -1259,7 +1270,7 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     }
 
     const Result<PairwiseResult> fitted =
-        FitRotation(fromAll, toAll, source, observed, prior, lens);
+        FitRotation(fromAll, toAll, source, observed, prior, lensB);
     if (!fitted.ok()) return fitted;
 
     PairwiseResult answer = fitted.value;
@@ -1369,9 +1380,15 @@ Intrinsics ScaledLens(const Intrinsics& initial, double scale) {
 }
 
 // An edge the focal search scores, with the matches it scores it on.
+// A frame's shape, which says which way round the lens reads its pixels (`LensForFrame`).
+struct Shape {
+  int32_t width = 0, height = 0;
+};
+
 struct ScoredEdge {
   size_t edge = 0;
   std::vector<PixelMatch> matches;
+  Shape a, b;
 };
 
 // Every scored pair refitted from its matches under the scaled lens, then solved as `Refine`
@@ -1392,11 +1409,13 @@ FocalTrial TryFocalScale(double scale, const Intrinsics& initial,
   double squares = 0.0;
   double freedoms = 0.0;
   for (const ScoredEdge& at : scored) {
+    const Intrinsics lensA = LensForFrame(lens, at.a.width, at.a.height);
+    const Intrinsics lensB = LensForFrame(lens, at.b.width, at.b.height);
     std::vector<Vec3> from;
     std::vector<Vec3> to;
     for (const PixelMatch& match : at.matches) {
-      const UnprojectedDirection a = Unproject(lens, Pixel{match.ax, match.ay});
-      const UnprojectedDirection b = Unproject(lens, Pixel{match.bx, match.by});
+      const UnprojectedDirection a = Unproject(lensA, Pixel{match.ax, match.ay});
+      const UnprojectedDirection b = Unproject(lensB, Pixel{match.bx, match.by});
       if (!a.valid || !b.valid) return trial;
       from.push_back(a.direction);
       to.push_back(b.direction);
@@ -1579,6 +1598,8 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
   std::map<uint64_t, int32_t> indexOf;
   std::vector<Quat> anchors;
   anchors.reserve(priors.size());
+  std::vector<Shape> shapes;
+  shapes.reserve(priors.size());
   int32_t priorsUsed = 0;
   for (const FramePrior& prior : priors) {
     if (!prior.frame.valid()) {
@@ -1603,6 +1624,13 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
                                  "the prior for frame " + std::to_string(prior.frame.value) +
                                      " has " + std::string(*defect));
     }
+    // Its pairs' matches are pixels of it, read through the lens as it was held (ADR 0082).
+    if (!IsUsableLens(LensForFrame(initial, prior.width, prior.height))) {
+      return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                 "frame " + std::to_string(prior.frame.value) +
+                                     " is another shape than the lens, turned or not");
+    }
+    shapes.push_back(Shape{prior.width, prior.height});
     const bool anchoredPrior = prior.pose.confidence > 0.0;
     anchors.push_back(anchoredPrior ? prior.pose.orientation : Quat{0, 0, 0, 0});
     if (anchoredPrior) ++priorsUsed;
@@ -1696,7 +1724,9 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
   // `Unproject` takes are not a star about the centre, and a match can lose its direction partway
   // along — so the search below also refuses to answer if any trial could not be scored.
   const Intrinsics lowest = ScaledLens(initial, kFocalScaleLow);
-  const auto directed = [&](float x, float y) { return Unproject(lowest, Pixel{x, y}).valid; };
+  const auto directed = [&](const Shape& shape, float x, float y) {
+    return Unproject(LensForFrame(lowest, shape.width, shape.height), Pixel{x, y}).valid;
+  };
   std::vector<ScoredEdge> scored;
   std::vector<RelativeRotation> scoredEdges;
   bool refittable = true;
@@ -1704,9 +1734,10 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
     if (unplaced[static_cast<size_t>(edges[e].from)] || unplaced[static_cast<size_t>(edges[e].to)]) {
       continue;
     }
-    ScoredEdge at{e, {}};
+    ScoredEdge at{e, {}, shapes[static_cast<size_t>(edges[e].from)],
+                  shapes[static_cast<size_t>(edges[e].to)]};
     for (const PixelMatch& match : sources[e]->inlierMatches) {
-      if (directed(match.ax, match.ay) && directed(match.bx, match.by)) {
+      if (directed(at.a, match.ax, match.ay) && directed(at.b, match.bx, match.by)) {
         at.matches.push_back(match);
       }
     }

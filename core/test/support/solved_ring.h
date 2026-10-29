@@ -43,10 +43,10 @@ inline Result<GlobalSolution> SolveRingThreeDegreesOut(IRegistrationEngine& engi
                                "one feature set a frame, and at least one frame");
   }
   std::vector<Quat> truth;
-  std::vector<FrameId> ids;
+  std::vector<FrameRef> handles;
   for (const SyntheticFrame& frame : frames) {
     truth.push_back(frame.trueRotation);
-    ids.push_back(frame.frame.id);
+    handles.push_back(frame.frame);
   }
   std::vector<PairwiseResult> pairs;
   for (size_t a = 0; a < sets.size(); ++a) {
@@ -60,7 +60,7 @@ inline Result<GlobalSolution> SolveRingThreeDegreesOut(IRegistrationEngine& engi
     }
     pairs.push_back(pair.value);
   }
-  return engine.Refine(pairs, FramePriorsThreeDegreesOut(ids, truth), lens);
+  return engine.Refine(pairs, FramePriorsThreeDegreesOut(handles, truth), lens);
 }
 
 // How far the gauge the solve landed in (`score.alignment`, from scoring it against `frames`'
@@ -69,13 +69,13 @@ inline Result<GlobalSolution> SolveRingThreeDegreesOut(IRegistrationEngine& engi
 inline double FacingAwayFromThePriorsDeg(const std::vector<SyntheticFrame>& frames,
                                          const RotationScore& score) {
   std::vector<Quat> truth;
-  std::vector<FrameId> ids;
+  std::vector<FrameRef> handles;
   for (const SyntheticFrame& frame : frames) {
     truth.push_back(frame.trueRotation);
-    ids.push_back(frame.frame.id);
+    handles.push_back(frame.frame);
   }
   std::vector<Quat> orientations;
-  for (const FramePrior& prior : FramePriorsThreeDegreesOut(ids, truth)) {
+  for (const FramePrior& prior : FramePriorsThreeDegreesOut(handles, truth)) {
     orientations.push_back(prior.pose.orientation);
   }
   const GaugeAlignment agreed = BestGaugeAlignment(orientations, truth);

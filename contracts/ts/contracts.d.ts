@@ -576,6 +576,18 @@ export interface NodeContext {
 export interface FeatureSet {
   frame: FrameId;
   /**
+   * The shape of that frame, which the keypoints are pixels of. It says how the phone was held: a
+   * frame the other way round from the lens is read through the lens turned a quarter
+   * (`LensForFrame`, ADR 0082), so `EstimatePairwise` reads each set through its own.
+   */
+  width: number;
+  /**
+   * The shape of that frame, which the keypoints are pixels of. It says how the phone was held: a
+   * frame the other way round from the lens is read through the lens turned a quarter
+   * (`LensForFrame`, ADR 0082), so `EstimatePairwise` reads each set through its own.
+   */
+  height: number;
+  /**
    * Rows are **best-first**: descending by the detector's own response, ties in the order it found
    * them.
    * The engine sorts rather than trusting the detector, because the detectors do not agree on this
@@ -713,6 +725,18 @@ export interface PairwiseResult {
 export interface FramePrior {
   frame: FrameId;
   pose: PoseSample;
+  /**
+   * The frame's shape, which says how the phone was held, and so which way round the lens reads
+   * the pixels a pair's `inlierMatches` give for it (`LensForFrame`, ADR 0082). Here because the
+   * priors are the frame set: one per frame, where a pair's would be two copies to disagree.
+   */
+  width: number;
+  /**
+   * The frame's shape, which says how the phone was held, and so which way round the lens reads
+   * the pixels a pair's `inlierMatches` give for it (`LensForFrame`, ADR 0082). Here because the
+   * priors are the frame set: one per frame, where a pair's would be two copies to disagree.
+   */
+  height: number;
 }
 
 /**
@@ -1205,7 +1229,9 @@ export interface PanoramaBuildManager {
    * Builds from what the project's capture wrote down: its session document, one frame per cell —
    * the cell's manual pick where one was recorded and the cell still holds it, and otherwise the
    * best-ranked frame the capture wrote down whose pose was measured — and the capture's field of
-   * view at the frames' size (ADR 0070). Frames are paired only where their poses were measured,
+   * view at the frames' size (ADR 0070), the wider angle on the longer edge whichever way round the
+   * capture began. A frame the other way round from the first, the phone turned, is read through
+   * the lens turned with it (ADR 0082). Frames are paired only where their poses were measured,
    * so a cell whose frame was not — a pick of one, or a cell with no other — is left out of the
    * panorama, and the build still completes. What it reads is what the capture last managed to
    * write down: a rewrite that failed leaves the document behind the capture, and a build started
@@ -1217,15 +1243,15 @@ export interface PanoramaBuildManager {
    * this build cannot read, as `ICaptureSessionManager::Resume` answers; `FailedPrecondition` while
    * another build is running, on a store with no spill tier, for a capture with nothing in it, one
    * whose frames the store no longer holds — a tab reloaded without resuming, or a tier a newer
-   * capture emptied, or a document a failed rewrite left naming frames a retake had discarded —
-   * one naming a frame in two cells, one with no measured pose, frames of more than one size, a
-   * field of view that is not a lens, and a recorded pick newer than the document, which an earlier
-   * build's `SetSelection` or an edited store can leave; `Internal` for a recorded pick that is not a candidate at
-   * all; the store's own status, whole, where it could not read the title, the document or a pick,
-   * say which tier it holds, or say where a frame is — none of which says the thing is absent;
-   * `Unsupported` for a cubemap and `InvalidArgument` for an output narrower than two. Starting
-   * after a build has finished releases the finished one's panorama, and if the store will not,
-   * this refuses with the store's status and the finished build stands.
+   * capture emptied, or a document a failed rewrite left naming frames a retake had discarded — one
+   * naming a frame in two cells, one with no measured pose, frames of more than one size either way
+   * round, a field of view that is not a lens, and a recorded pick newer than the document, which
+   * an earlier build's `SetSelection` or an edited store can leave; `Internal` for a recorded pick
+   * that is not a candidate at all; the store's own status, whole, where it could not read the
+   * title, the document or a pick, say which tier it holds, or say where a frame is — none of which
+   * says the thing is absent; `Unsupported` for a cubemap and `InvalidArgument` for an output
+   * narrower than two. Starting after a build has finished releases the finished one's panorama,
+   * and if the store will not, this refuses with the store's status and the finished build stands.
    */
   start(project: ProjectId, spec: BuildSpec): Promise<Result<BuildId>>;
   /**
