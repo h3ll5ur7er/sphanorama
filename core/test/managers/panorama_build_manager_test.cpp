@@ -279,6 +279,7 @@ class UnreadableDocumentStore final : public IProjectStoreAccess {
  public:
   UnreadableDocumentStore(IProjectStoreAccess& real, std::string key) : real_(real), key_(key) {}
   Result<std::vector<ProjectId>> ListProjects() override { return real_.ListProjects(); }
+  Result<ProjectId> IssueProjectId() override { return real_.IssueProjectId(); }
   Result<std::string> ReadDocument(ProjectId project, std::string_view key) override {
     if (key == key_) return Err<std::string>(StatusCode::StorageQuotaExceeded, "test", "unreadable");
     return real_.ReadDocument(project, key);

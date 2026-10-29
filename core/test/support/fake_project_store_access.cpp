@@ -1,5 +1,7 @@
 #include "support/fake_project_store_access.h"
 
+#include <algorithm>
+
 namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "FakeProjectStoreAccess";
@@ -10,6 +12,16 @@ Result<std::vector<ProjectId>> FakeProjectStoreAccess::ListProjects() {
   ids.reserve(projects_.size());
   for (const auto& [id, documents] : projects_) ids.push_back(ProjectId{id});
   return Ok(std::move(ids));
+}
+
+Result<ProjectId> FakeProjectStoreAccess::IssueProjectId() {
+  // One process holds this store, so a counter is never stale. Past what a double holds exactly,
+  // the page would read two projects as one.
+  if (highest_ >= (uint64_t{1} << 53) - 1) {
+    return Err<ProjectId>(StatusCode::FailedPrecondition, kComponent,
+                          "no project id left to issue");
+  }
+  return Ok(ProjectId{++highest_});
 }
 
 Result<std::string> FakeProjectStoreAccess::ReadDocument(ProjectId project, std::string_view key) {
@@ -34,6 +46,7 @@ Status FakeProjectStoreAccess::WriteDocument(ProjectId project, std::string_view
   }
   if (key.empty()) return Fail(StatusCode::InvalidArgument, kComponent, "document key is empty");
   projects_[project.value][std::string(key)] = std::string(value);
+  highest_ = std::max(highest_, project.value);
   ++write_count_;
   return Status::Ok();
 }

@@ -103,5 +103,64 @@ TYPED_TEST(ProjectStoreAccessContract, RejectsAnUnsetProjectOrEmptyKey) {
   EXPECT_EQ(this->store->WriteDocument(kProject, "", "x").code, StatusCode::InvalidArgument);
 }
 
+TYPED_TEST(ProjectStoreAccessContract, AnIssuedIdIsOneNoProjectHolds) {
+  ASSERT_TRUE(this->store->WriteDocument(kProject, "title", "a").ok());
+  ASSERT_TRUE(this->store->WriteDocument(kOther, "title", "b").ok());
+  auto issued = this->store->IssueProjectId();
+  ASSERT_TRUE(issued.ok());
+  EXPECT_TRUE(issued.value.valid());
+  EXPECT_NE(issued.value.value, kProject.value);
+  EXPECT_NE(issued.value.value, kOther.value);
+}
+
+TYPED_TEST(ProjectStoreAccessContract, IdsAscendInTheOrderTheyWereIssued) {
+  // How a page tells the newest capture, which is the only one whose frames the tier holds.
+  auto first = this->store->IssueProjectId();
+  auto second = this->store->IssueProjectId();
+  ASSERT_TRUE(first.ok());
+  ASSERT_TRUE(second.ok());
+  EXPECT_GT(second.value.value, first.value.value);
+}
+
+TYPED_TEST(ProjectStoreAccessContract, IssuingAnIdCreatesNothing) {
+  ASSERT_TRUE(this->store->IssueProjectId().ok());
+  EXPECT_TRUE(this->store->ListProjects().value.empty());
+}
+
+TYPED_TEST(ProjectStoreAccessContract, AnIdIsNotIssuedAgainOnceItsProjectIsDeleted) {
+  // A deleted project's id names nothing on disk, but a document written against it may still
+  // name it somewhere else. Within one opening of the store; the browser's forgets across a reload
+  // what IndexedDB does not hold (ADR 0081).
+  auto first = this->store->IssueProjectId();
+  ASSERT_TRUE(first.ok());
+  ASSERT_TRUE(this->store->WriteDocument(first.value, "title", "a").ok());
+  ASSERT_TRUE(this->store->DeleteProject(first.value).ok());
+  auto second = this->store->IssueProjectId();
+  ASSERT_TRUE(second.ok());
+  EXPECT_GT(second.value.value, first.value.value);
+}
+
+TYPED_TEST(ProjectStoreAccessContract, AnIdIsNotIssuedAtOrBelowOneWrittenWithoutBeingIssued) {
+  // A write creates on demand, so a project can exist under an id this store never issued: one
+  // an older build counted out, or one written before the store held the listing it has now.
+  ASSERT_TRUE(this->store->WriteDocument(ProjectId{40}, "title", "a").ok());
+  ASSERT_TRUE(this->store->DeleteProject(ProjectId{40}).ok());
+  auto issued = this->store->IssueProjectId();
+  ASSERT_TRUE(issued.ok());
+  EXPECT_GT(issued.value.value, 40u);
+}
+
+TYPED_TEST(ProjectStoreAccessContract, NoIdIsIssuedThatADoubleCannotHold) {
+  // Every id crosses to the page as a JavaScript number, where one past 2^53 is the same number
+  // as its neighbour. Refused rather than issued, because two projects under one key is the
+  // overwrite this method exists to prevent.
+  constexpr uint64_t kLargestExact = (uint64_t{1} << 53) - 1;
+  ASSERT_TRUE(this->store->WriteDocument(ProjectId{kLargestExact - 1}, "title", "a").ok());
+  auto last = this->store->IssueProjectId();
+  ASSERT_TRUE(last.ok());
+  EXPECT_EQ(last.value.value, kLargestExact);
+  EXPECT_EQ(this->store->IssueProjectId().status.code, StatusCode::FailedPrecondition);
+}
+
 }  // namespace
 }  // namespace sphanorama

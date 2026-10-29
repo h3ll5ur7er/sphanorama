@@ -75,9 +75,8 @@ describe('hydration', () => {
 
   it('never writes over a store it could not load', async () => {
     // What it could not load may still be there: a capture whose documents are on disk and that
-    // this host, starting empty, cannot see. Project ids restart at 1 against an empty listing, so
-    // persisting behind would put a new capture's title and session over the old one's. Kept
-    // resident instead, which is what "runs without remembering" means (ADR 0078).
+    // this host, starting empty, cannot see, and knows nothing about. Kept resident instead, which
+    // is what "runs without remembering" means (ADR 0078).
     let writes = 0;
     let removals = 0;
     const unreadable: DocumentStore = {
@@ -566,5 +565,142 @@ describe('durability under failure and concurrency', () => {
     await host.flush();
     expect(written.get('1/a')).toBe('1');
     expect(written.get('1/b')).toBe('2');
+  });
+});
+
+describe('issuing a project id', () => {
+  // A tab's documents are a copy taken when it loaded, so the ids it can see say nothing about what
+  // another tab has written since. The id is taken from the clock instead, with random low bits,
+  // and kept above everything this host has held (ADR 0081).
+  const SECOND = 1000;
+
+  it('issues a tab that loaded earlier an id above one another tab issued since', async () => {
+    // The overwrite this exists to close: both tabs load the same documents, the second captures,
+    // and the first, which cannot see that, creates a project of its own. One past the highest
+    // id either could see is the same id in both. The draws are equal, so the clock is what
+    // separates them.
+    const store = fakeStore({ '1/title': 'old' });
+    let clock = 1_000 * SECOND;
+    const options = { now: () => clock, draw: () => 7 };
+    const first = await createDocumentHost(store, options);
+    const second = await createDocumentHost(store, options);
+
+    const theirs = second.issueProjectId();
+    clock += SECOND;
+    const mine = first.issueProjectId();
+    expect(theirs).not.toBeNull();
+    expect(mine).toBeGreaterThan(theirs as number);
+  });
+
+  it('keeps tabs issuing in the same second apart by the draw', async () => {
+    const store = fakeStore();
+    const first = await createDocumentHost(store, { now: () => 5 * SECOND, draw: () => 1 });
+    const second = await createDocumentHost(store, { now: () => 5 * SECOND, draw: () => 2 });
+    expect(first.issueProjectId()).not.toBe(second.issueProjectId());
+  });
+
+  it('keeps tabs apart by the draw when an id they hold is ahead of the clock', async () => {
+    // A project created while the device's clock ran ahead, or before it stepped back, leaves an
+    // id above what the clock now gives. Both tabs loaded it, so one past it is the same id in
+    // both, which is the overwrite again; the draw has to survive the floor.
+    const ahead = 2_000 * SECOND * 2 ** 20;
+    const store = fakeStore({ [`${ahead}/title`]: 'from a fast clock' });
+    const first = await createDocumentHost(store, { now: () => 1_000 * SECOND, draw: () => 1 });
+    const second = await createDocumentHost(store, { now: () => 1_000 * SECOND, draw: () => 2 });
+    const mine = first.issueProjectId() as number;
+    const theirs = second.issueProjectId() as number;
+    expect(mine).toBeGreaterThan(ahead);
+    expect(theirs).toBeGreaterThan(ahead);
+    expect(mine).not.toBe(theirs);
+    // A held id on a second's boundary, and a draw of zero: the next second, not that id again.
+    const third = await createDocumentHost(store, { now: () => 1_000 * SECOND, draw: () => 0 });
+    expect(third.issueProjectId()).toBeGreaterThan(ahead);
+  });
+
+  it('keeps tabs apart by the draw on a clock no id can come from', async () => {
+    const store = fakeStore({ '5/title': 'a' });
+    const first = await createDocumentHost(store, { now: () => 2 ** 60, draw: () => 1 });
+    const second = await createDocumentHost(store, { now: () => 2 ** 60, draw: () => 2 });
+    expect(first.issueProjectId()).not.toBe(second.issueProjectId());
+  });
+
+  it('ascends within a tab, in the same second and when the clock steps back', async () => {
+    // Newest is the largest id, which is how the page picks the capture to offer back.
+    let clock = 1_000 * SECOND;
+    const host = await createDocumentHost(fakeStore(), { now: () => clock, draw: () => 900 });
+    const first = host.issueProjectId() as number;
+    const second = host.issueProjectId() as number;
+    clock -= 3600 * SECOND;
+    const third = host.issueProjectId() as number;
+    expect(second).toBeGreaterThan(first);
+    expect(third).toBeGreaterThan(second);
+  });
+
+  it('is above every id it loaded, written or removed, and never zero', async () => {
+    // A clock at the epoch and a draw of zero would issue zero, which is every id's "unset". Ids an
+    // older build counted out from 1 are below any the clock gives, and still held above here.
+    const host = await createDocumentHost(fakeStore({ '3/title': 'counted' }),
+      { now: () => 0, draw: () => 0 });
+    expect(host.issueProjectId()).toBeGreaterThan(3);
+    const written = 5 * 2 ** 20 + 7;
+    host.write(written, 'title', 'written');
+    host.remove(written);
+    expect(host.issueProjectId()).toBeGreaterThan(written);
+  });
+
+  it('issues no zero from an empty store at the epoch with a draw of zero', async () => {
+    const host = await createDocumentHost(fakeStore(), { now: () => 0, draw: () => 0 });
+    expect(host.issueProjectId()).toBeGreaterThan(0);
+  });
+
+  it('creates nothing', async () => {
+    const host = await createDocumentHost(fakeStore());
+    expect(host.issueProjectId()).toBeGreaterThan(0);
+    expect(host.projectIds()).toEqual([]);
+  });
+
+  it('issues only an id a double holds exactly, and refuses when there is none', async () => {
+    // A clock centuries out is a broken device, and its projects still need ids: issued above the
+    // highest held instead. Past 2^53, two ids are one number, which is the overwrite again.
+    const broken = await createDocumentHost(fakeStore({ '5/title': 'a' }),
+      { now: () => 2 ** 60, draw: () => 0 });
+    expect(broken.issueProjectId()).toBe(2 ** 20);
+    // In the last second a double holds, the next second's ids are past it, so one past what is
+    // held, undrawn; and past that, nothing.
+    const last = Number.MAX_SAFE_INTEGER - 1;
+    const nearly = await createDocumentHost(fakeStore({ [`${last}/title`]: 'a' }));
+    expect(nearly.issueProjectId()).toBe(Number.MAX_SAFE_INTEGER);
+    expect(nearly.issueProjectId()).toBeNull();
+    const full = await createDocumentHost(fakeStore({ [`${Number.MAX_SAFE_INTEGER}/title`]: 'a' }));
+    expect(full.issueProjectId()).toBeNull();
+    // A key past that, which only an edited database holds, is still one the listing reports.
+    const past = await createDocumentHost(fakeStore({ '1000000000000000000/title': 'a' }));
+    expect(past.issueProjectId()).toBeNull();
+  });
+
+  it('draws the low bits at random by default', async () => {
+    // What keeps two tabs in the same second apart, and nothing else here would see it constant.
+    // All twenty bits, too: sixteen draws from 2^20 repeat twice about once in 150 million runs,
+    // and the largest falls below 2^19 once in 65,536; a draw of fewer bits fails one or the other.
+    const store = fakeStore();
+    const low = new Set<number>();
+    for (let tab = 0; tab < 16; tab += 1) {
+      const host = await createDocumentHost(store, { now: () => 7 * SECOND });
+      const drawn = (host.issueProjectId() as number) - 7 * 2 ** 20;
+      expect(drawn).toBeGreaterThanOrEqual(0);
+      expect(drawn).toBeLessThan(2 ** 20);
+      low.add(drawn);
+    }
+    expect(low.size).toBeGreaterThanOrEqual(15);
+    expect(Math.max(...low)).toBeGreaterThanOrEqual(2 ** 19);
+  });
+
+  it('draws from the real clock and a random source by default', async () => {
+    const before = Math.floor(Date.now() / SECOND) * 2 ** 20;
+    const host = await createDocumentHost(fakeStore());
+    const id = host.issueProjectId() as number;
+    expect(Number.isSafeInteger(id)).toBe(true);
+    expect(id).toBeGreaterThanOrEqual(before);
+    expect(id).toBeLessThan(before + 2 * 2 ** 20);
   });
 });

@@ -15,6 +15,7 @@ namespace sphanorama::bridge {
 class BrowserProjectStoreAccess final : public IProjectStoreAccess {
  public:
   Result<std::vector<ProjectId>> ListProjects() override;
+  Result<ProjectId> IssueProjectId() override;
   Result<std::string> ReadDocument(ProjectId project, std::string_view key) override;
   Status WriteDocument(ProjectId project, std::string_view key, std::string_view value) override;
   Status DeleteProject(ProjectId project) override;

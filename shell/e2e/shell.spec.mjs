@@ -3356,6 +3356,74 @@ test('a project written through the core survives a reload', async ({ page }) =>
   }
 });
 
+test('a tab that loaded before another created a project does not create over it', async ({ page, context }) => {
+  // Each tab holds the documents it loaded, so neither sees what the other writes after. Ids
+  // counted one past the highest a tab could see were the same id in both, and the stale tab's
+  // title went over the other's project on disk (ADR 0081).
+  const server = await serve();
+  try {
+    const create = (tab, title) => tab.evaluate(async (name) => {
+      const result = await window.sphanoramaCore.project.create(name);
+      await window.sphanoramaHost.flush();
+      return result.ok ? result.value : null;
+    }, title);
+
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    const second = await context.newPage();
+    await second.goto(server.appUrl);
+    await expect(second.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    const theirs = await create(second, 'theirs');
+    const mine = await create(page, 'mine');
+    expect(theirs).not.toBeNull();
+    expect(mine).not.toBeNull();
+
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    const listed = await page.evaluate(async () => {
+      const result = await window.sphanoramaCore.project.list();
+      return result.ok ? result.value : null;
+    });
+    expect(listed.map((p) => p.title).sort()).toEqual(['mine', 'theirs']);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a store holding the last id a double holds creates no project', async ({ page }) => {
+  // Past 2^53 two ids are one number, so the host issues nothing rather than an id the bridge
+  // would carry as its neighbour, and the core refuses the create (ADR 0081). Seeded from a page
+  // of the same origin outside the app, so it is on disk before the worker loads.
+  const server = await serve();
+  try {
+    await page.goto(new URL('/not-the-app', server.appUrl).href);
+    await page.evaluate(() => new Promise((resolve, reject) => {
+      const request = indexedDB.open('sphanorama', 1);
+      request.onupgradeneeded = () => request.result.createObjectStore('documents');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const transaction = request.result.transaction('documents', 'readwrite');
+        transaction.objectStore('documents').put('last', `${Number.MAX_SAFE_INTEGER}/title`);
+        transaction.oncomplete = () => { request.result.close(); resolve(undefined); };
+        transaction.onerror = () => reject(transaction.error);
+      };
+    }));
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+
+    const refused = await page.evaluate(async () => {
+      const result = await window.sphanoramaCore.project.create('one too many');
+      return result.ok ? null : result.status.code;
+    });
+    expect(refused).toBe('FailedPrecondition');
+    const listed = await page.evaluate(async () => (await window.sphanoramaCore.project.list()).value);
+    expect(listed.map((p) => p.title)).toEqual(['last']);
+  } finally {
+    await server.close();
+  }
+});
+
 test('nothing to come back to means nothing is offered', async ({ page }) => {
   // The other half of the pair below, and the one that keeps the offer meaningful: a page that
   // proposed resuming on every load would train the button out of being read, and the state it

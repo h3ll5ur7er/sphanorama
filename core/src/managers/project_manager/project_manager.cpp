@@ -54,16 +54,10 @@ Result<ProjectId> ProjectManager::Create(std::string_view title) {
     // single screen where a user has to tell them apart.
     return Err<ProjectId>(StatusCode::InvalidArgument, kComponent, "a project needs a title");
   }
-  // Asked of the store, not of a counter. The manager is rebuilt on every page load and the
-  // store is not, so a member that restarts at 1 hands out an id that is already taken — and
-  // WriteDocument, which creates on demand, then overwrites a real project's title instead of
-  // failing. Silent data loss, one reload later.
-  SPH_TRY(auto existing, store_.ListProjects());
-  for (const ProjectId taken : existing) {
-    next_project_ = std::max(next_project_, taken.value + 1);
-  }
-
-  const ProjectId id{next_project_++};
+  // Issued by the store rather than counted here. A listing is what this page loaded, so one past
+  // the highest id in it may be an id another tab has written since, and a write creates on demand:
+  // the title would land on that tab's project (ADR 0081).
+  SPH_TRY(const ProjectId id, store_.IssueProjectId());
   if (auto written = store_.WriteDocument(id, kTitleKey, title); !written.ok()) return written;
   return Ok(id);
 }

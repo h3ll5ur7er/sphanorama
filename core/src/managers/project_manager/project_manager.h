@@ -28,7 +28,6 @@ class ProjectManager final : public IProjectManager {
   bool Exists(ProjectId project);
 
   IProjectStoreAccess& store_;
-  uint64_t next_project_ = 1;
 };
 
 }  // namespace sphanorama
