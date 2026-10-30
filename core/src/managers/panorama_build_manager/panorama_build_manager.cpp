@@ -148,12 +148,25 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
                         "no frame of this capture was taken at a measured pose");
   }
 
-  const int32_t width = build.frames.front().width;
-  const int32_t height = build.frames.front().height;
+  // The angles are the lens's, which is the same glass however the phone is held, so the wider
+  // belongs to the longer edge whichever axis the capture began with it on; and the lens is long
+  // edge across whichever way the first frame was held, so it is one lens for every capture of a
+  // device. A frame held the other way is read through it turned a quarter (ADR 0082).
+  const int32_t longEdge = std::max(build.frames.front().width, build.frames.front().height);
+  const int32_t shortEdge = std::min(build.frames.front().width, build.frames.front().height);
+  const double across = document.spec.horizontalFovDeg;
+  const double up = document.spec.verticalFovDeg;
+  const double wide = across >= up ? across : up;
+  const double narrow = across >= up ? up : across;
+  build.lens = LensFromFieldOfView(wide, narrow, longEdge, shortEdge);
+  if (!IsUsableLens(build.lens)) {
+    return Err<BuildId>(StatusCode::FailedPrecondition, kComponent,
+                        "this capture's field of view is not a lens");
+  }
   for (const FrameRef& frame : build.frames) {
-    if (frame.width != width || frame.height != height) {
+    if (!IsUsableLens(LensForFrame(build.lens, frame.width, frame.height))) {
       return Err<BuildId>(StatusCode::FailedPrecondition, kComponent,
-                          "this capture's frames are not all one size");
+                          "this capture's frames are not all one size, either way round");
     }
     // Asked rather than assumed: a tab reloaded without resuming has a store that never held them.
     if (auto residency = frames_.ResidencyOf(frame); !residency.ok()) {
@@ -163,13 +176,6 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
                           "the store does not hold " + Named("frame", frame.id.value)
                               + " of this capture: " + residency.status.detail);
     }
-  }
-
-  build.lens = LensFromFieldOfView(document.spec.horizontalFovDeg, document.spec.verticalFovDeg,
-                                   width, height);
-  if (!IsUsableLens(build.lens)) {
-    return Err<BuildId>(StatusCode::FailedPrecondition, kComponent,
-                        "this capture's field of view is not a lens");
   }
 
   // Cells overlap where their frames look within the narrower field of view of each other — by
@@ -305,7 +311,8 @@ Status PanoramaBuildManager::Solve(Build& build) {
   std::vector<FramePrior> priors;
   priors.reserve(build.frames.size());
   for (size_t i = 0; i < build.frames.size(); ++i) {
-    priors.push_back(FramePrior{build.frames[i].id, build.poses[i]});
+    priors.push_back(FramePrior{build.frames[i].id, build.poses[i], build.frames[i].width,
+                                build.frames[i].height});
   }
   auto solved = registration_.Refine(build.estimated, priors, build.lens);
   if (!solved.ok()) return solved.status;

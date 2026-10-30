@@ -51,11 +51,13 @@ class ICompositionEngine {
   // learnt by reading — its tier, its pin, its bytes — is asked of it.
   //
   // `InvalidArgument` for frames that are not the solution's in its order, a frame another size
-  // than the solution's lens, a handle naming the id the answer is then given — one the store had
-  // not issued when the call began, which would otherwise be read as the answer — a handle whose
-  // stride is shorter than its row or whose rows run past what the store holds for it, a lens that
-  // cannot project when there is a frame to project, a rotation that is not one, gains that do not
-  // name the frames or are not figures, 65,536 frames or more, and a `maxWidth` under 2;
+  // than the solution's lens and than that lens turned a quarter, or turned under a lens that
+  // cannot turn (`LensForFrame`, ADR 0082), a handle naming the id the answer is then given — one
+  // the store had not issued when the call began, which would otherwise be read as the answer — a
+  // handle whose stride is shorter than its row or whose rows run past what the store holds for
+  // it, a lens that cannot project when there is a frame to project, a rotation that is not one,
+  // gains that do not name the frames or are not figures, 65,536 frames or more, and a `maxWidth`
+  // under 2;
   // `Unsupported` for a frame that is not `RGBA8`; `Internal` for an answer the store describes as
   // another format or shape than was asked; the store's own status when it cannot say a frame's
   // tier, pin it, release it or put it back, or allocate the answer — which for any other id the

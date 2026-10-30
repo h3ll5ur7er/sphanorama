@@ -384,17 +384,17 @@ What is left, and what has landed since:
   the store would not load or is failing to save, and stops once a persist goes through
   (ADR 0079). A store whose site data is cleared says so from the clear for the rest of the
   page, since what was on disk before the clear is gone and nothing reconnects.
-- **A capture whose phone was turned partway through — open.** `Begin` takes the field-of-view
-  pair from the camera as the phone is held then, and the page names the wide angle onto whichever
-  axis is long at that moment; the spec keeps that pair for the life of the capture, and since
-  ADR 0077 across every resume too. The frames follow the phone as each burst is grabbed, and the
-  build pairs the stored angles with the frames' own size. So bursts taken both ways round are
-  refused by `PanoramaBuildManager::Start` as "not all one size", after the capture has been written
-  down as complete, and a capture taken wholly the other way round builds with pixels about 1.9
-  times non-square, which the single focal scale `Refine` fits (ADR 0066) cannot correct. Nothing
-  compares a frame's shape with the spec's. Found in review of the PR that made the spec the only
-  record of it; what to do (lock the orientation, store the angles against the sensor's long and
-  short edges, or swap them per frame) is undecided.
+- **A capture whose phone was turned partway through — built; its plan is open.** The build reads
+  the stored field-of-view pair against the sensor's edges, the wider on the longer edge, and every
+  engine reads each frame through the lens turned to that frame's shape (ADR 0082). So bursts taken
+  both ways round build, and a capture taken wholly the other way round builds with square pixels.
+  The photograph ring with half its frames turned builds to a preview within a mean of 1.35 to 2.13
+  bytes of the photograph, against 1.23 to 1.56 unturned: a turned frame shares less of the world
+  with its neighbours, and ORB and AKAZE register worse across a quarter turn. Still open: the plan
+  is laid for the phone as held at `Begin`, so a frame taken turned covers its cell narrower one
+  way, thinning the planned overlap, and the overlay draws the cell with the axes the capture began
+  with. That the pose turns with the frame (ADR 0017) is what the build relies on, and no phone has
+  been measured turned mid-capture.
 - **A tier generation, so another project's document cannot outlive its pixels — done.** The gap
   ADR 0034 left open was narrow and silent: `Begin` empties the tier and the new capture reissues
   identities from 1, so a session document belonging to a *different* project named frames that

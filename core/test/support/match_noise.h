@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <numbers>
@@ -11,9 +12,14 @@ namespace sphanorama::test {
 
 // Every coordinate of every match moved by Gaussian noise of `sigma` pixels. By Box-Muller over the
 // engine's raw draws rather than `std::normal_distribution`, whose output the standard leaves to
-// each library, so the same seed is the same noise on every toolchain.
+// each library, so the same seed is the same noise on every toolchain. Kept inside frames of
+// `lens`'s shape, since no detector finds a keypoint past its frame's edge and `Refine` refuses a
+// match that lies there (ADR 0082); so a ring whose frames are not all one way round cannot be
+// given noise here.
 inline std::vector<PairwiseResult> WithNoise(std::vector<PairwiseResult> pairs, double sigma,
-                                             uint32_t seed) {
+                                             uint32_t seed, const Intrinsics& lens) {
+  const int32_t width = lens.width;
+  const int32_t height = lens.height;
   std::mt19937 draws(seed);
   const auto uniform = [&] { return (static_cast<double>(draws()) + 0.5) / 4294967296.0; };
   const auto gauss = [&] {
@@ -22,10 +28,11 @@ inline std::vector<PairwiseResult> WithNoise(std::vector<PairwiseResult> pairs, 
   };
   for (PairwiseResult& pair : pairs) {
     for (PixelMatch& match : pair.inlierMatches) {
-      match.ax += gauss();
-      match.ay += gauss();
-      match.bx += gauss();
-      match.by += gauss();
+      const float w = static_cast<float>(width), h = static_cast<float>(height);
+      match.ax = std::clamp(match.ax + gauss(), 0.0f, w);
+      match.ay = std::clamp(match.ay + gauss(), 0.0f, h);
+      match.bx = std::clamp(match.bx + gauss(), 0.0f, w);
+      match.by = std::clamp(match.by + gauss(), 0.0f, h);
     }
   }
   return pairs;

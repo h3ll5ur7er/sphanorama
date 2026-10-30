@@ -45,13 +45,21 @@ TEST(WrongPriors, APairPriorIsTheTrueStepThreeDegreesOutAboutX) {
 
 TEST(WrongPriors, EveryFramePriorIsThreeDegreesOutInAWayOfItsOwn) {
   const std::vector<Quat> ring = ARing();
-  std::vector<FrameId> ids;
-  for (size_t i = 0; i < ring.size(); ++i) ids.push_back(FrameId{100 + i});
+  std::vector<FrameRef> ids;
+  for (size_t i = 0; i < ring.size(); ++i) {
+    FrameRef frame;
+    frame.id = FrameId{100 + i};
+    frame.width = 640 + static_cast<int32_t>(i);
+    frame.height = 480;
+    ids.push_back(frame);
+  }
   const std::vector<FramePrior> priors = FramePriorsThreeDegreesOut(ids, ring);
   ASSERT_EQ(priors.size(), ring.size());
   std::vector<Quat> orientations;
   for (size_t i = 0; i < priors.size(); ++i) {
-    EXPECT_EQ(priors[i].frame, ids[i]) << i;
+    EXPECT_EQ(priors[i].frame, ids[i].id) << i;
+    EXPECT_EQ(priors[i].width, ids[i].width) << i;
+    EXPECT_EQ(priors[i].height, 480) << i;
     EXPECT_EQ(priors[i].pose.confidence, 1.0) << i;
     EXPECT_NEAR(AngleBetween(priors[i].pose.orientation, ring[i]) * kDegPerRad, 3.0, 1e-6) << i;
     orientations.push_back(priors[i].pose.orientation);
@@ -79,9 +87,8 @@ TEST(WrongPriors, EveryFramePriorIsThreeDegreesOutInAWayOfItsOwn) {
 
 TEST(WrongPriors, ListsOfTwoLengthsAnswerNoPriors) {
   const std::vector<Quat> ring = ARing();
-  EXPECT_TRUE(FramePriorsThreeDegreesOut({FrameId{1}, FrameId{2}}, ring).empty());
-  std::vector<FrameId> more;
-  for (size_t i = 0; i <= ring.size(); ++i) more.push_back(FrameId{1 + i});
+  EXPECT_TRUE(FramePriorsThreeDegreesOut(std::vector<FrameRef>(2), ring).empty());
+  std::vector<FrameRef> more(ring.size() + 1);
   EXPECT_TRUE(FramePriorsThreeDegreesOut(more, ring).empty());
   EXPECT_TRUE(FramePriorsThreeDegreesOut(more, {}).empty());
 }

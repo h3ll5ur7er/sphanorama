@@ -1117,5 +1117,125 @@ TEST(Unproject, ImageYRunsDownAndCameraYRunsUp) {
   EXPECT_LT(centre.direction.z, 0.0) << "the optical centre does not look along -Z";
 }
 
+// ------------------------------------------------------------------ a lens as a frame was held
+
+// Radial distortion only, and fx and fy apart: the lens a frame turned a quarter can still be
+// read through, and one on which a turn that swapped the wrong pair would land somewhere else.
+Intrinsics RadialPhone() {
+  Intrinsics lens = Phone();
+  lens.k1 = -0.28;
+  lens.k2 = 0.12;
+  lens.k3 = -0.02;
+  return lens;
+}
+
+TEST(LensForFrame, AFrameOfTheLensesOwnShapeIsReadThroughTheLensItself) {
+  const Intrinsics lens = Distorted();
+  const Intrinsics held = LensForFrame(lens, lens.width, lens.height);
+  EXPECT_EQ(held.fx, lens.fx);
+  EXPECT_EQ(held.fy, lens.fy);
+  EXPECT_EQ(held.cx, lens.cx);
+  EXPECT_EQ(held.cy, lens.cy);
+  EXPECT_EQ(held.p1, lens.p1);
+  EXPECT_EQ(held.p2, lens.p2);
+  EXPECT_EQ(held.width, lens.width);
+  EXPECT_EQ(held.height, lens.height);
+}
+
+TEST(LensForFrame, ADirectionLandsWhereTheTurnedFrameHoldsThePixelItLandedOnBefore) {
+  // A phone turned a quarter about the way it looks: the camera's right becomes its down, or its
+  // up, and the frame comes back the other way round. Whichever way it turned, a direction seen
+  // through the turned lens lands on the turned frame's copy of the pixel it landed on before.
+  const Intrinsics lens = RadialPhone();
+  const Intrinsics turned = LensForFrame(lens, lens.height, lens.width);
+  ASSERT_TRUE(IsUsableLens(turned));
+  const double w = lens.width, h = lens.height;
+  for (const Vec3& d :
+       {OffAxis(20, 0), OffAxis(-15, 1), Vec3{0.3, -0.2, -1}, Vec3{-0.4, 0.5, -1}}) {
+    const ProjectedPixel before = Project(lens, d);
+    ASSERT_TRUE(before.valid);
+    // Turned clockwise: right is down, up is right, and the old top-left is the new top-right.
+    const ProjectedPixel clockwise = Project(turned, Vec3{d.y, -d.x, d.z});
+    ASSERT_TRUE(clockwise.valid);
+    EXPECT_NEAR(clockwise.pixel.x, h - before.pixel.y, 1e-9);
+    EXPECT_NEAR(clockwise.pixel.y, before.pixel.x, 1e-9);
+    const ProjectedPixel anticlockwise = Project(turned, Vec3{-d.y, d.x, d.z});
+    ASSERT_TRUE(anticlockwise.valid);
+    EXPECT_NEAR(anticlockwise.pixel.x, before.pixel.y, 1e-9);
+    EXPECT_NEAR(anticlockwise.pixel.y, w - before.pixel.x, 1e-9);
+  }
+}
+
+TEST(LensForFrame, TurningTwiceIsTheLensItself) {
+  const Intrinsics lens = RadialPhone();
+  const Intrinsics back = LensForFrame(LensForFrame(lens, lens.height, lens.width), lens.width,
+                                       lens.height);
+  EXPECT_EQ(back.fx, lens.fx);
+  EXPECT_EQ(back.fy, lens.fy);
+  EXPECT_EQ(back.cx, lens.cx);
+  EXPECT_EQ(back.cy, lens.cy);
+  EXPECT_EQ(back.k1, lens.k1);
+}
+
+TEST(LensForFrame, AFrameOfNeitherShapeHasNoLens) {
+  const Intrinsics lens = Phone();
+  EXPECT_FALSE(IsUsableLens(LensForFrame(lens, 640, 480)));
+  EXPECT_FALSE(IsUsableLens(LensForFrame(lens, lens.width, lens.width)));
+  EXPECT_FALSE(IsUsableLens(LensForFrame(lens, 0, 0)));
+  EXPECT_FALSE(IsUsableLens(LensForFrame(Intrinsics{}, 0, 0)));
+}
+
+TEST(LensForFrame, ATurnThatDependsOnWhichWayThePhoneTurnedIsRefused) {
+  // A centre off the middle of the frame lands somewhere different for a clockwise turn than for
+  // an anticlockwise one, and so does tangential distortion. The frame's shape cannot say which
+  // way it turned, so a lens that needs to know has no reading for it.
+  // Each coordinate of the centre and each tangential term alone, so none stands in for another.
+  Intrinsics offCentre = Phone();
+  offCentre.cx += 3;
+  EXPECT_FALSE(IsUsableLens(LensForFrame(offCentre, offCentre.height, offCentre.width)));
+  EXPECT_TRUE(IsUsableLens(LensForFrame(offCentre, offCentre.width, offCentre.height)));
+  Intrinsics down = Phone();
+  down.cy += 3;
+  EXPECT_FALSE(IsUsableLens(LensForFrame(down, down.height, down.width)));
+  for (const bool first : {true, false}) {
+    Intrinsics tangential = RadialPhone();
+    (first ? tangential.p1 : tangential.p2) = 0.001;
+    EXPECT_FALSE(IsUsableLens(LensForFrame(tangential, tangential.height, tangential.width)))
+        << (first ? "p1" : "p2");
+  }
+  // So does a rolling shutter: the turned frame reads out along what the lens calls its columns.
+  Intrinsics rolling = Phone();
+  rolling.rollingShutterLineTimeNs = 10000;
+  EXPECT_FALSE(IsUsableLens(LensForFrame(rolling, rolling.height, rolling.width)));
+}
+
+TEST(LensForFrame, ACentreTheArithmeticLeftAnUlpFromTheMiddleStillTurns) {
+  // A kept lens is rescaled to the frames it is handed (`KeptLensFor`), and its centre can land a
+  // rounding away from the middle: from 1280 by 960, 1288 by 966 gives 483.00000000000006. That is
+  // a centred lens, and refusing it would refuse every turned frame under it.
+  Intrinsics lens = LensFromFieldOfView(66.0, 52.2, 1288, 966);
+  lens.cy = std::nextafter(lens.cy, kInf);
+  ASSERT_NE(lens.cy, 483.0) << "the premise: the centre is not the exact middle";
+  EXPECT_TRUE(IsUsableLens(LensForFrame(lens, 966, 1288)));
+  // And no further: a centre a hundredth of a pixel off reads differently turned each way.
+  lens.cy = 483.01;
+  EXPECT_FALSE(IsUsableLens(LensForFrame(lens, 966, 1288)));
+}
+
+TEST(LensForFrame, WhatTheLensSaysOfItselfTurnsWithIt) {
+  Intrinsics lens = Phone();
+  lens.estimated = true;
+  lens.focalUncertainty = 0.004;
+  const Intrinsics turned = LensForFrame(lens, lens.height, lens.width);
+  EXPECT_TRUE(turned.estimated);
+  EXPECT_EQ(turned.focalUncertainty, 0.004);
+}
+
+TEST(LensForFrame, AnUnusableLensHasNoFrame) {
+  Intrinsics lens = Phone();
+  lens.fx = kNaN;
+  EXPECT_FALSE(IsUsableLens(LensForFrame(lens, lens.width, lens.height)));
+}
+
 }  // namespace
 }  // namespace sphanorama

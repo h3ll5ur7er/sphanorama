@@ -90,12 +90,14 @@ std::vector<PairwiseResult> RingPairs(const std::vector<Quat>& truth) {
 }
 
 // A prior a working capture would hold: an anchored reading, which is what `ArmBurst` requires
-// before it fires (ADR 0044).
+// before it fires (ADR 0044), for a frame of the shape every lens here starts from.
 FramePrior Prior(int i, const Quat& orientation) {
   FramePrior prior;
   prior.frame = Frame(i);
   prior.pose.orientation = orientation;
   prior.pose.confidence = 1.0;
+  prior.width = 640;
+  prior.height = 480;
   return prior;
 }
 
@@ -103,7 +105,18 @@ FramePrior Prior(int i, const Quat& orientation) {
 FramePrior NoPrior(int i) {
   FramePrior prior;
   prior.frame = Frame(i);
+  prior.width = 640;
+  prior.height = 480;
   return prior;
+}
+
+// The same priors for frames `lens`'s shape, for a test whose lens is not the one they start from.
+std::vector<FramePrior> ShapedFor(std::vector<FramePrior> priors, const Intrinsics& lens) {
+  for (FramePrior& prior : priors) {
+    prior.width = lens.width;
+    prior.height = lens.height;
+  }
+  return priors;
 }
 
 // Priors each three degrees out about an axis of their own, which is how far a fused phone
@@ -574,17 +587,19 @@ Intrinsics Scaled(Intrinsics lens, double scale) {
 //
 // The pair's own rotation is left half a degree out, as one fitted under another lens would be,
 // so an answer that kept it rather than refitting from the matches cannot pass for one that did.
-PairwiseResult Matched(int a, int b, const std::vector<Quat>& truth, const Intrinsics& lens) {
+// Frame `a` seen through `lensA` and `b` through `lensB`, for frames held different ways round.
+PairwiseResult Matched(int a, int b, const std::vector<Quat>& truth, const Intrinsics& lensA,
+                       const Intrinsics& lensB) {
   PairwiseResult pair = Pair(a, b, truth);
   const Quat exact = pair.relativeRotation;
   for (int row = 1; row < 12; ++row) {
     for (int column = 1; column < 16; ++column) {
-      const Pixel from{lens.width * column / 16.0, lens.height * row / 12.0};
-      const UnprojectedDirection direction = Unproject(lens, from);
+      const Pixel from{lensA.width * column / 16.0, lensA.height * row / 12.0};
+      const UnprojectedDirection direction = Unproject(lensA, from);
       if (!direction.valid) continue;
-      const ProjectedPixel to = Project(lens, Rotate(exact, direction.direction));
-      if (!to.valid || to.pixel.x < 0 || to.pixel.y < 0 || to.pixel.x >= lens.width ||
-          to.pixel.y >= lens.height) {
+      const ProjectedPixel to = Project(lensB, Rotate(exact, direction.direction));
+      if (!to.valid || to.pixel.x < 0 || to.pixel.y < 0 || to.pixel.x >= lensB.width ||
+          to.pixel.y >= lensB.height) {
         continue;
       }
       pair.inlierMatches.push_back(
@@ -596,6 +611,10 @@ PairwiseResult Matched(int a, int b, const std::vector<Quat>& truth, const Intri
   pair.correspondences = pair.inliers + 20;
   pair.relativeRotation = Normalize(Multiply(exact, FromAxisAngle(Vec3{1, 0, 0}, 0.5 / kDegPerRad)));
   return pair;
+}
+
+PairwiseResult Matched(int a, int b, const std::vector<Quat>& truth, const Intrinsics& lens) {
+  return Matched(a, b, truth, lens, lens);
 }
 
 std::vector<PairwiseResult> MatchedRing(const std::vector<Quat>& truth, const Intrinsics& lens) {
@@ -724,6 +743,127 @@ TEST_F(Refine, AFocalLengthOutIsFittedFromTheRing) {
     EXPECT_TRUE(solved.value.lensFitted) << scale;
     EXPECT_NEAR(solved.value.intrinsics.fx / lens.fx, 1.0, 3e-5) << scale;
   }
+}
+
+/**
+ * A ring with every other frame taken with the phone turned a quarter, so those frames came back
+ * the other way round (ADR 0082). Their matches are pixels of the turned frame, read through the
+ * lens turned with it: read through the lens as handed in, the focal lengths swap and the centre
+ * moves, and nothing fits. The lens is taller than it is wide, so a reading that swapped nothing
+ * fits neither focal length.
+ */
+TEST_F(Refine, AFrameTurnedAQuarterIsReadThroughTheLensTurnedWithIt) {
+  Intrinsics lens = TrueLens();
+  lens.fy = 540;
+  // Spelled out rather than asked of `LensForFrame`, so a turn that reads the matches wrong cannot
+  // also make them.
+  Intrinsics turned = lens;
+  turned.fx = lens.fy;
+  turned.fy = lens.fx;
+  turned.cx = lens.cy;
+  turned.cy = lens.cx;
+  turned.width = lens.height;
+  turned.height = lens.width;
+  std::vector<Quat> truth = Ring();
+  const Quat quarter = FromAxisAngle(Vec3{0, 0, 1}, std::numbers::pi / 2.0);
+  for (size_t i = 1; i < truth.size(); i += 2) truth[i] = Normalize(Multiply(truth[i], quarter));
+  const auto lensOf = [&](int i) { return i % 2 == 1 ? turned : lens; };
+  std::vector<PairwiseResult> pairs;
+  for (int i = 0; i < kFrames; ++i) {
+    const int next = (i + 1) % kFrames;
+    pairs.push_back(Matched(i, next, truth, lensOf(i), lensOf(next)));
+    ASSERT_GE(pairs.back().inlierMatches.size(), 20u) << i;
+  }
+  std::vector<FramePrior> priors = PriorsOut(truth);
+  for (size_t i = 1; i < priors.size(); i += 2) {
+    priors[i].width = turned.width;
+    priors[i].height = turned.height;
+  }
+
+  for (const double scale : {0.92, 1.08}) {
+    const Result<GlobalSolution> solved = engine_.Refine(pairs, priors, Scaled(lens, scale));
+    ASSERT_TRUE(solved.ok()) << solved.status.detail;
+    EXPECT_TRUE(solved.value.lensFitted) << scale;
+    EXPECT_NEAR(solved.value.intrinsics.fx / lens.fx, 1.0, 3e-5) << scale;
+    EXPECT_NEAR(solved.value.intrinsics.fy / lens.fy, 1.0, 3e-5) << scale;
+    EXPECT_EQ(solved.value.intrinsics.width, lens.width) << "the answer is the lens handed in";
+    const test::RotationScore shape = test::ScoreRotations(solved.value.rotations, truth);
+    ASSERT_TRUE(shape.valid);
+    EXPECT_LT(shape.maxDeg, 0.01) << scale;
+  }
+
+  // And a match is kept for the search only where it has a direction at the shortest focal length
+  // tried, read as its frame was held. Under a barrel lens folding at 0.86 of that focal length, a
+  // pixel near the top of a turned frame is 0.98 from its centre and has none; read as though the
+  // frame were not turned, it is 0.77 from where the centre would be, and would be kept, and the
+  // search's shortest trial would then fail on it, leaving the lens unfitted.
+  Intrinsics barrel = TrueLens();
+  barrel.k1 = -0.2;
+  Intrinsics barrelTurned = barrel;
+  barrelTurned.cx = barrel.cy;
+  barrelTurned.cy = barrel.cx;
+  barrelTurned.width = barrel.height;
+  barrelTurned.height = barrel.width;
+  const auto barrelOf = [&](int i) { return i % 2 == 1 ? barrelTurned : barrel; };
+  std::vector<PairwiseResult> barrelPairs;
+  for (int i = 0; i < kFrames; ++i) {
+    const int next = (i + 1) % kFrames;
+    barrelPairs.push_back(Matched(i, next, truth, barrelOf(i), barrelOf(next)));
+  }
+  ASSERT_EQ(barrelPairs[1].a, Frame(1)) << "the premise: frame 1 is the turned one";
+  barrelPairs[1].inlierMatches.push_back(PixelMatch{240.0f, 5.0f, 320.0f, 240.0f});
+  barrelPairs[1].inliers += 1;
+  barrelPairs[1].correspondences += 1;
+  const Result<GlobalSolution> folded = engine_.Refine(barrelPairs, priors, Scaled(barrel, 0.92));
+  ASSERT_TRUE(folded.ok()) << folded.status.detail;
+  EXPECT_TRUE(folded.value.lensFitted);
+  EXPECT_NEAR(folded.value.intrinsics.fx / barrel.fx, 1.0, 3e-5);
+}
+
+/**
+ * A frame whose shape is neither the lens's nor the lens's turned a quarter has pixels the lens
+ * cannot read, so its pairs' matches mean nothing; and so does one turned under a lens that reads
+ * differently turned one way than the other, which the frame's shape cannot say.
+ */
+TEST_F(Refine, AFrameTheLensCannotBeReadThroughIsRefused) {
+  const std::vector<Quat> truth = Ring();
+  const std::vector<PairwiseResult> pairs = RingPairs(truth);
+  const std::vector<FramePrior> priors = PriorsOut(truth);
+  ASSERT_TRUE(engine_.Refine(pairs, priors, TrueLens()).ok()) << "the premise";
+  const auto refusedSaying = [&](std::vector<FramePrior> shaped, const Intrinsics& lens,
+                                 const char* why) {
+    const Result<GlobalSolution> solved = engine_.Refine(pairs, shaped, lens);
+    EXPECT_EQ(solved.status.code, StatusCode::InvalidArgument) << why;
+    EXPECT_NE(solved.status.detail.find("another shape than the lens"), std::string::npos)
+        << why << ": " << solved.status.detail;
+  };
+  std::vector<FramePrior> unshaped = priors;
+  unshaped[3].width = 0;
+  unshaped[3].height = 0;
+  refusedSaying(unshaped, TrueLens(), "a frame with no shape");
+  std::vector<FramePrior> other = priors;
+  other[3].width = 800;
+  refusedSaying(other, TrueLens(), "a frame of another shape");
+  std::vector<FramePrior> turnedFrame = priors;
+  turnedFrame[3].width = 480;
+  turnedFrame[3].height = 640;
+  ASSERT_TRUE(engine_.Refine(pairs, turnedFrame, TrueLens()).ok()) << "the premise: it turns";
+  Intrinsics rolling = TrueLens();
+  rolling.rollingShutterLineTimeNs = 15000;
+  refusedSaying(turnedFrame, rolling, "a turned frame under a rolling shutter");
+  Intrinsics offCentre = TrueLens();
+  offCentre.cx = 330;
+  refusedSaying(turnedFrame, offCentre, "a turned frame under an off-centre lens");
+
+  // And a shape the lens reads that is not the one its matches were measured in: a frame declared
+  // turned whose matches run past the turned frame's edge would be read the wrong way round, and
+  // solved, degrees out.
+  const std::vector<PairwiseResult> matched = MatchedRing(truth, TrueLens());
+  ASSERT_TRUE(engine_.Refine(matched, priors, TrueLens()).ok()) << "the premise";
+  const Result<GlobalSolution> misdeclared = engine_.Refine(matched, turnedFrame, TrueLens());
+  EXPECT_EQ(misdeclared.status.code, StatusCode::InvalidArgument);
+  EXPECT_NE(misdeclared.status.detail.find("outside the frame"), std::string::npos)
+      << misdeclared.status.detail;
 }
 
 /**
@@ -928,7 +1068,7 @@ TEST_F(Refine, ALoopTooSmallToSeeThroughTheNoiseIsNotAFit) {
           std::tuple{shapes.gridPairs, shapes.grid, 2.0, false, "a grid, at 2 px"},
           std::tuple{shapes.ring, shapes.truth, 0.8, true, "a ring"}}) {
       const Result<GlobalSolution> solved =
-          engine_.Refine(test::WithNoise(pairs, sigma, seed), PriorsOut(poses), lens);
+          engine_.Refine(test::WithNoise(pairs, sigma, seed, TrueLens()), PriorsOut(poses), lens);
       ASSERT_TRUE(solved.ok()) << why << ": " << solved.status.detail;
       EXPECT_EQ(solved.value.lensFitted, fits) << why << ", seed " << seed;
       if (fits) {
@@ -954,11 +1094,11 @@ TEST_F(Refine, ANoisyThinPairIsWeighedByItsOwnNoise) {
   const NoisyShapes shapes;
   const Intrinsics lens = TrueLens();
   const auto withThin = [&](size_t count, double sigma, uint32_t seed) {
-    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.ring, 0.8, seed);
+    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.ring, 0.8, seed, TrueLens());
     PairwiseResult thin = shapes.ring[0];
     thin.inlierMatches.resize(count);
     thin.inliers = static_cast<int32_t>(count);
-    pairs[0] = test::WithNoise({thin}, sigma, seed + 1000)[0];
+    pairs[0] = test::WithNoise({thin}, sigma, seed + 1000, TrueLens())[0];
     return pairs;
   };
   double squares = 0.0;
@@ -983,7 +1123,7 @@ TEST_F(Refine, ANoisyThinPairIsWeighedByItsOwnNoise) {
   // these seeds its own residual read so low that, taken alone, it put the least eight of its
   // spreads out.
   for (const uint32_t seed : {18u, 100u}) {
-    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.ring, 0.8, seed);
+    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.ring, 0.8, seed, TrueLens());
     pairs[0].inlierMatches.resize(3);
     pairs[0].inliers = 3;
     const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(shapes.truth), lens);
@@ -1005,7 +1145,7 @@ TEST_F(Refine, APairMeasuredBothWaysIsNotTwiceAsSure) {
   const NoisyShapes shapes;
   const Intrinsics lens = TrueLens();
   for (const uint32_t seed : {1u, 2u, 3u, 4u, 5u, 6u}) {
-    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.gridPairs, 1.5, seed);
+    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.gridPairs, 1.5, seed, TrueLens());
     const Result<GlobalSolution> once = engine_.Refine(pairs, PriorsOut(shapes.grid), lens);
     ASSERT_TRUE(once.ok()) << once.status.detail;
     ASSERT_FALSE(once.value.lensFitted) << "the premise: once is too loose, seed " << seed;
@@ -1077,7 +1217,8 @@ TEST_F(Refine, TheSpreadReportedIsTheLeastsOwnScatter) {
   for (const auto& row : rows) {
     for (uint32_t seed = 1; seed <= 20; ++seed) {
       const Result<GlobalSolution> solved = engine_.Refine(
-          test::WithNoise(row.pairs, row.sigma, seed), PriorsOut(row.poses), Scaled(lens, row.scale));
+          test::WithNoise(row.pairs, row.sigma, seed, TrueLens()), PriorsOut(row.poses),
+          Scaled(lens, row.scale));
       ASSERT_TRUE(solved.ok()) << row.why << ": " << solved.status.detail;
       const GlobalSolution& solution = solved.value;
       ASSERT_TRUE(std::isfinite(solution.focalSpread)) << row.why << ", seed " << seed;
@@ -1138,7 +1279,8 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
                                                Matched(2, 0, shapes.truth, distorted)};
     for (const uint32_t seed : {0u, 1u, 2u, 3u}) {
       for (const auto& pairs : {skipping, triangle}) {
-        const std::vector<PairwiseResult> noisy = seed == 0 ? pairs : test::WithNoise(pairs, 0.8, seed);
+        const std::vector<PairwiseResult> noisy =
+            seed == 0 ? pairs : test::WithNoise(pairs, 0.8, seed, TrueLens());
         const Result<GlobalSolution> solved = engine_.Refine(noisy, PriorsOut(shapes.truth), lens);
         ASSERT_TRUE(solved.ok()) << solved.status.detail;
         EXPECT_FALSE(solved.value.lensFitted) << k1 << ", seed " << seed;
@@ -1157,7 +1299,8 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
     chords.pop_back();
     for (int32_t i = 0; i + 2 < 12; ++i) chords.push_back(Matched(i, i + 2, shapes.truth, distorted));
     for (const uint32_t seed : {0u, 1u, 2u, 3u}) {
-      const std::vector<PairwiseResult> noisy = seed == 0 ? chords : test::WithNoise(chords, 0.4, seed);
+      const std::vector<PairwiseResult> noisy =
+          seed == 0 ? chords : test::WithNoise(chords, 0.4, seed, TrueLens());
       const Result<GlobalSolution> solved = engine_.Refine(noisy, PriorsOut(shapes.truth), lens);
       ASSERT_TRUE(solved.ok()) << solved.status.detail;
       EXPECT_FALSE(solved.value.lensFitted) << "chords, " << k1 << ", seed " << seed;
@@ -1185,8 +1328,10 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
     chords.pop_back();
     for (int32_t i = 0; i + 2 < 12; ++i) chords.push_back(Matched(i, i + 2, shapes.truth, distorted));
     for (const uint32_t seed : {0u, 1u, 2u}) {
-      const std::vector<PairwiseResult> noisy = seed == 0 ? chords : test::WithNoise(chords, 0.4, seed);
-      const Result<GlobalSolution> solved = engine_.Refine(noisy, PriorsOut(shapes.truth), doubled);
+      const std::vector<PairwiseResult> noisy =
+          seed == 0 ? chords : test::WithNoise(chords, 0.4, seed, doubled);
+      const Result<GlobalSolution> solved =
+          engine_.Refine(noisy, ShapedFor(PriorsOut(shapes.truth), doubled), doubled);
       ASSERT_TRUE(solved.ok()) << solved.status.detail;
       EXPECT_FALSE(solved.value.lensFitted) << "chords at 1280, " << k1 << ", seed " << seed;
       EXPECT_LT(solved.value.focalSpread, 0.002) << "chords at 1280, " << k1 << ", seed " << seed;
@@ -1209,8 +1354,9 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
   // And a lens 8% out stands too: 400 seeds of the skipping ring passed it through.
   for (const uint32_t seed : {1u, 2u, 3u, 4u, 5u, 6u}) {
     for (const double scale : {0.92, 1.08}) {
-      const Result<GlobalSolution> solved = engine_.Refine(test::WithNoise(shapes.skipping, 0.8, seed),
-                                                           PriorsOut(shapes.truth), Scaled(lens, scale));
+      const Result<GlobalSolution> solved =
+          engine_.Refine(test::WithNoise(shapes.skipping, 0.8, seed, TrueLens()),
+                         PriorsOut(shapes.truth), Scaled(lens, scale));
       ASSERT_TRUE(solved.ok()) << solved.status.detail;
       EXPECT_FALSE(solved.value.lensFitted) << scale << ", seed " << seed;
       EXPECT_EQ(solved.value.intrinsics.fx, Scaled(lens, scale).fx) << scale << ", seed " << seed;
@@ -1290,7 +1436,7 @@ TEST_F(Refine, TheModelErrorIsHowFarALensMisreadMovesTheLeast) {
              {std::tuple{MatchedRing(shapes.truth, distorted), shapes.truth, "a ring"},
               std::tuple{grid, shapes.grid, "a grid"}}) {
           const Result<GlobalSolution> solved =
-              engine_.Refine(pairs, PriorsOut(poses), Scaled(lens, scale));
+              engine_.Refine(pairs, ShapedFor(PriorsOut(poses), lens), Scaled(lens, scale));
           ASSERT_TRUE(solved.ok()) << which << ", " << why << ", k1 " << k1 << ": " << solved.status.detail;
           ASSERT_TRUE(solved.value.lensFitted) << which << ", " << why << ", k1 " << k1 << ", scale " << scale;
           const double moved = std::abs(std::log(solved.value.intrinsics.fx / lens.fx));
@@ -1315,7 +1461,7 @@ TEST_F(Refine, AFitIsTakenOnlyWhereItIsSurerThanTheLensItReplaces) {
   const NoisyShapes shapes;
   const Intrinsics guess = TrueLens();
   ASSERT_TRUE(std::isinf(guess.focalUncertainty)) << "the premise: a lens by default is a guess";
-  const std::vector<PairwiseResult> pairs = test::WithNoise(shapes.gridPairs, 0.8, 1);
+  const std::vector<PairwiseResult> pairs = test::WithNoise(shapes.gridPairs, 0.8, 1, TrueLens());
 
   const Result<GlobalSolution> overGuess = engine_.Refine(pairs, PriorsOut(shapes.grid), guess);
   ASSERT_TRUE(overGuess.ok()) << overGuess.status.detail;
@@ -1388,7 +1534,8 @@ TEST_F(Refine, NoiseAndModelErrorEachWithinTheThresholdCanBeOverItTogether) {
   const NoisyShapes shapes;
   const Intrinsics lens = TrueLens();
   const Result<GlobalSolution> over =
-      engine_.Refine(test::WithNoise(shapes.gridPairs, 1.08, 1), PriorsOut(shapes.grid), lens);
+      engine_.Refine(test::WithNoise(shapes.gridPairs, 1.08, 1, TrueLens()),
+                     PriorsOut(shapes.grid), lens);
   ASSERT_TRUE(over.ok()) << over.status.detail;
   ASSERT_LT(over.value.focalSpread, 0.002) << "the premise: the noise alone is within it";
   ASSERT_LT(over.value.focalModelError, 0.002) << "the premise: the model error alone is within it";
@@ -1398,7 +1545,8 @@ TEST_F(Refine, NoiseAndModelErrorEachWithinTheThresholdCanBeOverItTogether) {
   EXPECT_EQ(over.value.focalScale, 0.0);
 
   const Result<GlobalSolution> under =
-      engine_.Refine(test::WithNoise(shapes.gridPairs, 1.08, 2), PriorsOut(shapes.grid), lens);
+      engine_.Refine(test::WithNoise(shapes.gridPairs, 1.08, 2, TrueLens()),
+                     PriorsOut(shapes.grid), lens);
   ASSERT_TRUE(under.ok()) << under.status.detail;
   EXPECT_LT(std::hypot(under.value.focalSpread, under.value.focalModelError), 0.002);
   EXPECT_TRUE(under.value.lensFitted);

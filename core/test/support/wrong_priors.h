@@ -21,10 +21,10 @@ inline Quat PairPriorThreeDegreesOut(const Quat& a, const Quat& b) {
 }
 
 // A prior for every frame, each three degrees out about an axis of its own, so the priors cannot
-// agree on a wrong shape. Anchored, as every burst-captured frame's is (ADR 0044). Lists of two
-// lengths answer none rather than the shorter, so a caller that mismatched them solves nothing
-// instead of a ring missing its last frames.
-inline std::vector<FramePrior> FramePriorsThreeDegreesOut(const std::vector<FrameId>& frames,
+// agree on a wrong shape. Anchored, as every burst-captured frame's is (ADR 0044), and each with
+// its frame's shape. Lists of two lengths answer none rather than the shorter, so a caller that
+// mismatched them solves nothing instead of a ring missing its last frames.
+inline std::vector<FramePrior> FramePriorsThreeDegreesOut(const std::vector<FrameRef>& frames,
                                                           const std::vector<Quat>& truth) {
   std::vector<FramePrior> priors;
   if (frames.size() != truth.size()) return priors;
@@ -32,7 +32,9 @@ inline std::vector<FramePrior> FramePriorsThreeDegreesOut(const std::vector<Fram
     const double at = static_cast<double>(i);
     const Vec3 axis{std::sin(at), std::cos(at), std::sin(2.0 * at)};
     FramePrior prior;
-    prior.frame = frames[i];
+    prior.frame = frames[i].id;
+    prior.width = frames[i].width;
+    prior.height = frames[i].height;
     prior.pose.orientation =
         Normalize(Multiply(truth[i], FromAxisAngle(axis, 3.0 * std::numbers::pi / 180.0)));
     prior.pose.confidence = 1.0;

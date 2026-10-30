@@ -373,6 +373,8 @@ Result<FeatureSet> FeatureRegistrationEngine::Extract(const FrameRef& frame) {
 
   FeatureSet features;
   features.frame = frame.id;
+  features.width = frame.width;
+  features.height = frame.height;
   features.count = static_cast<int32_t>(order.size());
   features.extractor = ExtractorIdentity(detector_);
 
@@ -547,10 +549,11 @@ class BorrowedFrame {
  * OpenCV keypoint coordinates through unchanged, and the two conventions differ by half a pixel in
  * each axis — `camera_model.h` states it exactly, as the `cx`/`cy` shift it is. So every bearing
  * this engine computes is the bearing of a point **translated by (-0.5, -0.5) pixels**: a constant
- * offset, absorbed by the optical centre rather than by the focal length, and not a radial one.
- * It reads outward from the axis across the top-left of the frame and *inward* across the
- * bottom-right — measured on a 66x50 lens, 0.700 px outward at keypoint (0, 0) and 0.700 px inward
- * at (319, 239).
+ * offset, absorbed by the optical centre rather than by the focal length, and not a radial one —
+ * while every frame is held one way round. A frame held a quarter turn from another reads it in
+ * another direction of the lens's axes, and nothing absorbs that (ADR 0082). It reads outward from
+ * the axis across the top-left of the frame and *inward* across the bottom-right — measured on a
+ * 66x50 lens, 0.700 px outward at keypoint (0, 0) and 0.700 px inward at (319, 239).
  *
  * That is a systematic error in the measurement rather than a reachability question, and it is the
  * larger half of what this paragraph found. It is not corrected here: doing so moves every
@@ -814,6 +817,12 @@ Result<std::vector<Bearing>> ReadBearings(const FeatureSet& set, std::span<uint8
     std::memcpy(xy, rows.data() + static_cast<size_t>(row) * static_cast<size_t>(pitch),
                 sizeof(xy));
     const Pixel pixel{static_cast<double>(xy[0]), static_cast<double>(xy[1])};
+    // The shape the set names decides which way round the lens reads it (ADR 0082), so a keypoint
+    // past that frame's edge was found in another frame, read the wrong way round.
+    if (!(pixel.x >= 0.0 && pixel.x <= set.width && pixel.y >= 0.0 && pixel.y <= set.height)) {
+      return Err<std::vector<Bearing>>(StatusCode::InvalidArgument, kComponent,
+                                       "a keypoint lies outside the frame its set names");
+    }
     const UnprojectedDirection unprojected = Unproject(lens, pixel);
     // Kept in place whether or not it is usable, so this vector stays parallel to the descriptor
     // rows the matcher will index it with. See `Bearing`.
@@ -1152,6 +1161,15 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
                                "the lens cannot project, so no rotation can be recovered from "
                                "pixels (ADR 0054)");
   }
+  // Each set through the lens as its frame was held: a frame the other way round is the same lens
+  // turned a quarter (ADR 0082).
+  const Intrinsics lensA = LensForFrame(lens, a.width, a.height);
+  const Intrinsics lensB = LensForFrame(lens, b.width, b.height);
+  if (!IsUsableLens(lensA) || !IsUsableLens(lensB)) {
+    return Err<PairwiseResult>(StatusCode::InvalidArgument, kComponent,
+                               "a feature set's frame is another shape than the lens, turned or "
+                               "not, so its pixels have no directions");
+  }
 
   try {
     // Borrowed, not owned: pinned for the call and released by these destructors on every path out,
@@ -1182,11 +1200,11 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
       if (!pinned->ok()) return pinned->status;
     }
 
-    const Result<std::vector<Bearing>> bearingsA = ReadBearings(a, kaSpan.value, lens);
+    const Result<std::vector<Bearing>> bearingsA = ReadBearings(a, kaSpan.value, lensA);
     if (!bearingsA.ok()) {
       return Err<PairwiseResult>(bearingsA.status.code, kComponent, bearingsA.status.detail);
     }
-    const Result<std::vector<Bearing>> bearingsB = ReadBearings(b, kbSpan.value, lens);
+    const Result<std::vector<Bearing>> bearingsB = ReadBearings(b, kbSpan.value, lensB);
     if (!bearingsB.ok()) {
       return Err<PairwiseResult>(bearingsB.status.code, kComponent, bearingsB.status.detail);
     }
@@ -1259,7 +1277,7 @@ Result<PairwiseResult> FeatureRegistrationEngine::EstimatePairwise(const Feature
     }
 
     const Result<PairwiseResult> fitted =
-        FitRotation(fromAll, toAll, source, observed, prior, lens);
+        FitRotation(fromAll, toAll, source, observed, prior, lensB);
     if (!fitted.ok()) return fitted;
 
     PairwiseResult answer = fitted.value;
@@ -1368,10 +1386,21 @@ Intrinsics ScaledLens(const Intrinsics& initial, double scale) {
   return lens;
 }
 
+// A frame's shape, which says which way round the lens reads its pixels (`LensForFrame`).
+struct Shape {
+  int32_t width = 0, height = 0;
+
+  bool Holds(double x, double y) const {
+    return x >= 0.0 && x <= static_cast<double>(width) && y >= 0.0 &&
+           y <= static_cast<double>(height);
+  }
+};
+
 // An edge the focal search scores, with the matches it scores it on.
 struct ScoredEdge {
   size_t edge = 0;
   std::vector<PixelMatch> matches;
+  Shape a, b;
 };
 
 // Every scored pair refitted from its matches under the scaled lens, then solved as `Refine`
@@ -1392,11 +1421,13 @@ FocalTrial TryFocalScale(double scale, const Intrinsics& initial,
   double squares = 0.0;
   double freedoms = 0.0;
   for (const ScoredEdge& at : scored) {
+    const Intrinsics lensA = LensForFrame(lens, at.a.width, at.a.height);
+    const Intrinsics lensB = LensForFrame(lens, at.b.width, at.b.height);
     std::vector<Vec3> from;
     std::vector<Vec3> to;
     for (const PixelMatch& match : at.matches) {
-      const UnprojectedDirection a = Unproject(lens, Pixel{match.ax, match.ay});
-      const UnprojectedDirection b = Unproject(lens, Pixel{match.bx, match.by});
+      const UnprojectedDirection a = Unproject(lensA, Pixel{match.ax, match.ay});
+      const UnprojectedDirection b = Unproject(lensB, Pixel{match.bx, match.by});
       if (!a.valid || !b.valid) return trial;
       from.push_back(a.direction);
       to.push_back(b.direction);
@@ -1574,11 +1605,14 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
                                "the lens given has no focal uncertainty to weigh a fit against");
   }
   // Indexed with `int32_t` because the solver is. Past that the index wraps and the solver refuses
-  // the size — as it does 2^31 accepted pairs — which comes back as `Internal`: a `FramePrior` is 88 bytes on a 64-bit build, so that
-  // needs 189 GB of priors, and wasm32 cannot address it at all.
+  // the size — as it does 2^31 accepted pairs — which comes back as `Internal`: a `FramePrior` is
+  // 96 bytes on a 64-bit build, so that needs 206 GB of priors, and wasm32 cannot address it
+  // at all.
   std::map<uint64_t, int32_t> indexOf;
   std::vector<Quat> anchors;
   anchors.reserve(priors.size());
+  std::vector<Shape> shapes;
+  shapes.reserve(priors.size());
   int32_t priorsUsed = 0;
   for (const FramePrior& prior : priors) {
     if (!prior.frame.valid()) {
@@ -1603,6 +1637,13 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
                                  "the prior for frame " + std::to_string(prior.frame.value) +
                                      " has " + std::string(*defect));
     }
+    // Its pairs' matches are pixels of it, read through the lens as it was held (ADR 0082).
+    if (!IsUsableLens(LensForFrame(initial, prior.width, prior.height))) {
+      return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                 "frame " + std::to_string(prior.frame.value) +
+                                     " is another shape than the lens, turned or not");
+    }
+    shapes.push_back(Shape{prior.width, prior.height});
     const bool anchoredPrior = prior.pose.confidence > 0.0;
     anchors.push_back(anchoredPrior ? prior.pose.orientation : Quat{0, 0, 0, 0});
     if (anchoredPrior) ++priorsUsed;
@@ -1651,6 +1692,14 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
           return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                      "an accepted pair carries matches that are not pixels");
         }
+        // The prior names the shape the match is read by (ADR 0082), so one past that frame's
+        // edge was measured in another, and would be read the wrong way round.
+        if (!shapes[static_cast<size_t>(from->second)].Holds(match.ax, match.ay) ||
+            !shapes[static_cast<size_t>(to->second)].Holds(match.bx, match.by)) {
+          return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                     "an accepted pair carries matches outside the frame its "
+                                     "prior names");
+        }
       }
     }
     sources.push_back(&pair);
@@ -1696,7 +1745,9 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
   // `Unproject` takes are not a star about the centre, and a match can lose its direction partway
   // along — so the search below also refuses to answer if any trial could not be scored.
   const Intrinsics lowest = ScaledLens(initial, kFocalScaleLow);
-  const auto directed = [&](float x, float y) { return Unproject(lowest, Pixel{x, y}).valid; };
+  const auto directed = [&](const Shape& shape, float x, float y) {
+    return Unproject(LensForFrame(lowest, shape.width, shape.height), Pixel{x, y}).valid;
+  };
   std::vector<ScoredEdge> scored;
   std::vector<RelativeRotation> scoredEdges;
   bool refittable = true;
@@ -1704,9 +1755,10 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
     if (unplaced[static_cast<size_t>(edges[e].from)] || unplaced[static_cast<size_t>(edges[e].to)]) {
       continue;
     }
-    ScoredEdge at{e, {}};
+    ScoredEdge at{e, {}, shapes[static_cast<size_t>(edges[e].from)],
+                  shapes[static_cast<size_t>(edges[e].to)]};
     for (const PixelMatch& match : sources[e]->inlierMatches) {
-      if (directed(match.ax, match.ay) && directed(match.bx, match.by)) {
+      if (directed(at.a, match.ax, match.ay) && directed(at.b, match.bx, match.by)) {
         at.matches.push_back(match);
       }
     }

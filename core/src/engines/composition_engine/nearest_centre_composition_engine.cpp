@@ -165,6 +165,9 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
   if (count > 0 && !IsUsableLens(lens)) {
     return Err<FrameRef>(StatusCode::InvalidArgument, kComponent, "the lens cannot project");
   }
+  // Each frame through the lens as it was held: a frame the other way round is the same lens
+  // turned a quarter (`LensForFrame`).
+  std::vector<Intrinsics> lenses(count);
   for (size_t i = 0; i < count; ++i) {
     if (!(frames[i].id == solution.frames[i])) {
       return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
@@ -176,9 +179,10 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
     if (frames[i].format != PixelFormat::RGBA8) {
       return Err<FrameRef>(StatusCode::Unsupported, kComponent, "a frame is not RGBA8");
     }
-    if (frames[i].width != lens.width || frames[i].height != lens.height) {
+    lenses[i] = LensForFrame(lens, frames[i].width, frames[i].height);
+    if (!IsUsableLens(lenses[i])) {
       return Err<FrameRef>(StatusCode::InvalidArgument, kComponent,
-                           "a frame is another size than the lens");
+                           "a frame is another size than the lens, turned or not");
     }
     // Knowable from the handle, so asked before a spilled frame is faulted in to be turned away.
     if (frames[i].stride < static_cast<int64_t>(frames[i].width) * kChannels) {
@@ -261,9 +265,9 @@ Result<FrameRef> NearestCentreCompositionEngine::RenderPreview(const GlobalSolut
     return EquirectDirection(Pixel{x + 0.5, y + 0.5}, width, height);
   };
   auto landing = [&](size_t i, const Vec3& direction) -> std::optional<Pixel> {
-    const ProjectedPixel projected = Project(lens, Rotate(toCamera[i], direction));
+    const ProjectedPixel projected = Project(lenses[i], Rotate(toCamera[i], direction));
     if (!projected.valid || projected.pixel.x < 0.0 || projected.pixel.y < 0.0 ||
-        projected.pixel.x > lens.width || projected.pixel.y > lens.height) {
+        projected.pixel.x > lenses[i].width || projected.pixel.y > lenses[i].height) {
       return std::nullopt;
     }
     return projected.pixel;

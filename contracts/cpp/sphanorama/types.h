@@ -600,6 +600,10 @@ struct NodeContext {
 // A `count` of zero means no frames were allocated and there is nothing to forget.
 struct FeatureSet {
   FrameId frame;
+  // The shape of that frame, which the keypoints are pixels of. It says how the phone was held: a
+  // frame the other way round from the lens is read through the lens turned a quarter
+  // (`LensForFrame`, ADR 0082), so `EstimatePairwise` reads each set through its own.
+  int32_t width = 0, height = 0;
   // Rows are **best-first**: descending by the detector's own response, ties in the order it found
   // them.
   //
@@ -724,6 +728,10 @@ struct PairwiseResult {
 struct FramePrior {
   FrameId frame;
   PoseSample pose;
+  // The frame's shape, which says how the phone was held, and so which way round the lens reads
+  // the pixels a pair's `inlierMatches` give for it (`LensForFrame`, ADR 0082). Here because the
+  // priors are the frame set: one per frame, where a pair's would be two copies to disagree.
+  int32_t width = 0, height = 0;
 };
 
 // One consistent set of absolute rotations for the frames of a capture, and how far to trust it.
