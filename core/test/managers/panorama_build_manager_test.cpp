@@ -513,7 +513,8 @@ TEST_F(PanoramaBuildManagerTest, StartRefusesAFieldOfViewThatIsNotALens) {
   WriteDocument();
   // Either angle, so the one read as the wider cannot carry the other past the check.
   for (const auto& [horizontal, vertical] :
-       {std::pair{190.0, kVerticalFovDeg}, std::pair{kHorizontalFovDeg, 190.0}}) {
+       {std::pair{190.0, kVerticalFovDeg}, std::pair{kHorizontalFovDeg, 190.0},
+        std::pair{-5.0, kVerticalFovDeg}, std::pair{kHorizontalFovDeg, -5.0}}) {
     document_.spec.horizontalFovDeg = horizontal;
     document_.spec.verticalFovDeg = vertical;
     ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey,

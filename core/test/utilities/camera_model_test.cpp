@@ -1189,12 +1189,20 @@ TEST(LensForFrame, ATurnThatDependsOnWhichWayThePhoneTurnedIsRefused) {
   // A centre off the middle of the frame lands somewhere different for a clockwise turn than for
   // an anticlockwise one, and so does tangential distortion. The frame's shape cannot say which
   // way it turned, so a lens that needs to know has no reading for it.
+  // Each coordinate of the centre and each tangential term alone, so none stands in for another.
   Intrinsics offCentre = Phone();
   offCentre.cx += 3;
   EXPECT_FALSE(IsUsableLens(LensForFrame(offCentre, offCentre.height, offCentre.width)));
   EXPECT_TRUE(IsUsableLens(LensForFrame(offCentre, offCentre.width, offCentre.height)));
-  const Intrinsics tangential = Distorted();
-  EXPECT_FALSE(IsUsableLens(LensForFrame(tangential, tangential.height, tangential.width)));
+  Intrinsics down = Phone();
+  down.cy += 3;
+  EXPECT_FALSE(IsUsableLens(LensForFrame(down, down.height, down.width)));
+  for (const bool first : {true, false}) {
+    Intrinsics tangential = RadialPhone();
+    (first ? tangential.p1 : tangential.p2) = 0.001;
+    EXPECT_FALSE(IsUsableLens(LensForFrame(tangential, tangential.height, tangential.width)))
+        << (first ? "p1" : "p2");
+  }
   // So does a rolling shutter: the turned frame reads out along what the lens calls its columns.
   Intrinsics rolling = Phone();
   rolling.rollingShutterLineTimeNs = 10000;

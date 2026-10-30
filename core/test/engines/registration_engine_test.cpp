@@ -314,6 +314,31 @@ TEST_P(Extraction, FindsFeaturesOnTexturedContent) {
   ForgetOutputs(features.value);
 }
 
+TEST_P(Extraction, ASetSaysTheShapeOfTheFrameItWasFoundIn) {
+  // Not square, so a set that swapped the two would say the frame was held the other way round,
+  // and be read through the lens turned (ADR 0082).
+  FeatureRegistrationEngine engine = Engine();
+  const Result<FrameRef> allocated = store.Allocate(kWidth, kHeight / 2, PixelFormat::RGBA8);
+  ASSERT_TRUE(allocated.ok()) << allocated.status.detail;
+  const Result<std::span<uint8_t>> bytes = store.Pin(allocated.value);
+  ASSERT_TRUE(bytes.ok());
+  for (int32_t y = 0; y < allocated.value.height; ++y) {
+    for (int32_t x = 0; x < allocated.value.width; ++x) {
+      uint8_t* pixel = bytes.value.data() + static_cast<size_t>(y) * allocated.value.stride +
+                       static_cast<size_t>(x) * 4;
+      pixel[0] = pixel[1] = pixel[2] = TexturedLuma(x, y);
+      pixel[3] = 255;
+    }
+  }
+  ASSERT_TRUE(store.Release(allocated.value).ok());
+  const Result<FeatureSet> features = engine.ExtractFeatures(allocated.value);
+  ASSERT_TRUE(features.ok()) << features.status.detail;
+  EXPECT_EQ(features.value.width, kWidth);
+  EXPECT_EQ(features.value.height, kHeight / 2);
+  if (features.value.count > 0) ForgetOutputs(features.value);
+  EXPECT_TRUE(store.Forget(allocated.value).ok());
+}
+
 TEST_P(Extraction, FindsNothingOnAFlatFrame) {
   // The invariant that separates "found features" from "returned a number". A frame with no
   // gradient anywhere has nothing to find, and a detector reporting features on it is reporting

@@ -272,9 +272,11 @@ TEST_P(PanoramaBuildAccuracy, ACaptureWithThePhoneTurnedPartwayThroughDrawsThePh
   // degrees of the world rather than 36, and the two pairs where the phone turned are held a
   // quarter turn apart, which costs ORB and AKAZE (ADR 0082). Read through one unturned lens, as
   // before, the build failed: its frames were not all one size. Still inside the 2.84 a tenth of a
-  // degree composes at.
-  constexpr double kTurnedMeanErrorBound = 2.6;
-  EXPECT_LE(built.meanError, kTurnedMeanErrorBound);
+  // degree composes at. Per detector, since one bound for all three was ORB's and passed a build
+  // that read every frame the first frame's way round at 2.56 (ORB) where the others failed at 37.
+  constexpr double kTurnedMeanErrorBound[] = {2.4, 2.05, 1.6};
+  static_assert(std::size(kTurnedMeanErrorBound) == static_cast<size_t>(FeatureDetector::Count));
+  EXPECT_LE(built.meanError, kTurnedMeanErrorBound[static_cast<size_t>(GetParam())]);
   EXPECT_TRUE(manager.Cancel(build.value).ok());
 }
 
