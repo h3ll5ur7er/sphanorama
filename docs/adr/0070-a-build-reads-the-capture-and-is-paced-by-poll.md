@@ -1,7 +1,7 @@
 # 0070 — A build reads the capture's document, and is paced one step per `Poll`
 
 **Status:** accepted; amended by [0082](0082-a-lens-is-read-as-each-frame-was-held.md), under which
-a frame of the first's size turned is read through the lens turned with it
+the lens is long edge across and each frame is read through it as that frame was held
 
 ## Context
 

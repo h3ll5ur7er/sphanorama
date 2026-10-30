@@ -50,8 +50,9 @@ angles against the sensor's long and short edges; or swap the pair per frame. Th
   - A frame whose shape the lens cannot be read for is `InvalidArgument` in all three, a shape of
     zero included. So is a keypoint or a match outside the frame its set or its prior names: a
     shape is a second copy of a fact the pixels also carry, and a shape the lens reads that is not
-    the frame's would read every pixel the wrong way round. Declared turned, a ring's matches
-    solved seven degrees out and called the fit precise.
+    the frame's would read every pixel the wrong way round. A ring with every other frame turned,
+    declared unturned, solved six degrees out; an unturned frame declared turned put the worst frame
+    eleven out. Both called the fit precise.
 - **The stored spec does not change.** Its pair still names the axes the plan was laid on, which
   the planner and the page's overlay read. The build reads the same two numbers as a long edge and
   a short one, so no document format moves.
@@ -77,13 +78,23 @@ angles against the sensor's long and short edges; or swap the pair per frame. Th
   | every other frame turned | 28° | 0.107 | 0.068 | 0.030 |
   | every frame turned | 20° | 0.060 | 0.053 | 0.035 |
 
-  Median errors in degrees. With every other frame turned the focal length is still fitted to within
-  0.08%; read through one unturned lens, the medians were about seven degrees.
+  Median errors in degrees, each row a test in `registration_accuracy_test.cpp`. With every other
+  frame turned the focal length is still fitted to within 0.08%; read through one unturned lens, the
+  medians were about seven degrees.
   - **Registering across a quarter turn costs ORB and AKAZE**, and the overlap is not what does it.
     With every other frame turned every pair is between frames held a quarter turn apart, and those
     rings share more of the world than every frame turned yet register worse for both, while SIFT
-    does not. Why is not measured. A capture turned partway through has such pairs only where it
-    turned, and a turned frame shares less of the world with each neighbour wherever it is.
+    does not. A capture turned partway through has such pairs only where it turned, and a turned
+    frame shares less of the world with each neighbour wherever it is.
+  - **For AKAZE the cost is the half-pixel convention ADR 0061 measured and kept.** Keypoints are
+    read half a pixel up and to the left of where the lens's convention puts them. Within one way
+    round that offset is the same in every frame and the optical centre absorbs it; between frames
+    held differently it points different ways in the lens's axes, and nothing absorbs it. With the
+    correction applied to `ReadBearings`, measured and not applied here, AKAZE's ring with every
+    other frame turned reads 0.036 against the unturned ring's 0.035. ORB keeps a cost, 0.121
+    against 0.040, and SIFT reads 0.034 against 0.030. The correction moves every published figure,
+    which is ADR 0061's reason for keeping it, and this one more than the rest; the turned rings are
+    entries in the list of what it moves.
   - The reading itself is exact: a turned frame composes byte for byte as it did unturned, and
     exact matches between frames held either way solve to within a hundredth of a degree.
 - **The pose is assumed to turn with the frame.**
@@ -106,7 +117,10 @@ angles against the sensor's long and short edges; or swap the pair per frame. Th
   refused a frame of another shape as a crop. Both are the same glass under this decision: the key
   is the shape's long edge to its short, and a frame of the kept shape turned is read through
   `LensForFrame` rather than refused. Nothing writes a kept lens yet, so this is decided for the
-  writer; `AmendKeptLens` still refuses a turned shape until then.
+  writer, which reads the kept lens at the size of the build's lens, long edge across, never
+  turned. Until then `AmendKeptLens` refuses a turned shape, and `KeptLensFor` answers one with
+  `FailedPrecondition`, the code ADR 0067 discards the kept document on; a writer asking for it
+  turned would lose a good lens.
 - **Every caller now says each frame's shape.** A `FramePrior` or `FeatureSet` left at zero is
   refused rather than read as the lens's shape. Both are mirrored into the TypeScript contract and
   neither crosses the boundary.

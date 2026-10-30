@@ -39,7 +39,8 @@ Result<KeptLens> AmendKeptLens(const KeptLens& kept, const GlobalSolution& captu
 // the noise and model error kept rather than read from the copy the lens carries. `NotFound` where
 // nothing is kept, so the caller starts from its guess; `FailedPrecondition` for a kept lens
 // `AmendKeptLens` would refuse, or one of another shape than the frame — the document is read by its
-// frame's shape, so that is the document disagreeing with its own key — which are the stored
+// frame's shape, so that is the document disagreeing with its own key; under ADR 0082 the key is
+// that shape long edge across, and a caller asks at that size, never turned — which are the stored
 // document's fault and the one refusal its caller discards the document on; `InvalidArgument` for a
 // frame with no size, which is the call's, and for a kept lens that cannot project at that size,
 // which only a lens at the edge of the doubles reaches and which still serves its own size and every

@@ -1068,7 +1068,7 @@ TEST_F(Refine, ALoopTooSmallToSeeThroughTheNoiseIsNotAFit) {
           std::tuple{shapes.gridPairs, shapes.grid, 2.0, false, "a grid, at 2 px"},
           std::tuple{shapes.ring, shapes.truth, 0.8, true, "a ring"}}) {
       const Result<GlobalSolution> solved =
-          engine_.Refine(test::WithNoise(pairs, sigma, seed), PriorsOut(poses), lens);
+          engine_.Refine(test::WithNoise(pairs, sigma, seed, TrueLens()), PriorsOut(poses), lens);
       ASSERT_TRUE(solved.ok()) << why << ": " << solved.status.detail;
       EXPECT_EQ(solved.value.lensFitted, fits) << why << ", seed " << seed;
       if (fits) {
@@ -1094,11 +1094,11 @@ TEST_F(Refine, ANoisyThinPairIsWeighedByItsOwnNoise) {
   const NoisyShapes shapes;
   const Intrinsics lens = TrueLens();
   const auto withThin = [&](size_t count, double sigma, uint32_t seed) {
-    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.ring, 0.8, seed);
+    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.ring, 0.8, seed, TrueLens());
     PairwiseResult thin = shapes.ring[0];
     thin.inlierMatches.resize(count);
     thin.inliers = static_cast<int32_t>(count);
-    pairs[0] = test::WithNoise({thin}, sigma, seed + 1000)[0];
+    pairs[0] = test::WithNoise({thin}, sigma, seed + 1000, TrueLens())[0];
     return pairs;
   };
   double squares = 0.0;
@@ -1123,7 +1123,7 @@ TEST_F(Refine, ANoisyThinPairIsWeighedByItsOwnNoise) {
   // these seeds its own residual read so low that, taken alone, it put the least eight of its
   // spreads out.
   for (const uint32_t seed : {18u, 100u}) {
-    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.ring, 0.8, seed);
+    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.ring, 0.8, seed, TrueLens());
     pairs[0].inlierMatches.resize(3);
     pairs[0].inliers = 3;
     const Result<GlobalSolution> solved = engine_.Refine(pairs, PriorsOut(shapes.truth), lens);
@@ -1145,7 +1145,7 @@ TEST_F(Refine, APairMeasuredBothWaysIsNotTwiceAsSure) {
   const NoisyShapes shapes;
   const Intrinsics lens = TrueLens();
   for (const uint32_t seed : {1u, 2u, 3u, 4u, 5u, 6u}) {
-    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.gridPairs, 1.5, seed);
+    std::vector<PairwiseResult> pairs = test::WithNoise(shapes.gridPairs, 1.5, seed, TrueLens());
     const Result<GlobalSolution> once = engine_.Refine(pairs, PriorsOut(shapes.grid), lens);
     ASSERT_TRUE(once.ok()) << once.status.detail;
     ASSERT_FALSE(once.value.lensFitted) << "the premise: once is too loose, seed " << seed;
@@ -1217,7 +1217,8 @@ TEST_F(Refine, TheSpreadReportedIsTheLeastsOwnScatter) {
   for (const auto& row : rows) {
     for (uint32_t seed = 1; seed <= 20; ++seed) {
       const Result<GlobalSolution> solved = engine_.Refine(
-          test::WithNoise(row.pairs, row.sigma, seed), PriorsOut(row.poses), Scaled(lens, row.scale));
+          test::WithNoise(row.pairs, row.sigma, seed, TrueLens()), PriorsOut(row.poses),
+          Scaled(lens, row.scale));
       ASSERT_TRUE(solved.ok()) << row.why << ": " << solved.status.detail;
       const GlobalSolution& solution = solved.value;
       ASSERT_TRUE(std::isfinite(solution.focalSpread)) << row.why << ", seed " << seed;
@@ -1278,7 +1279,8 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
                                                Matched(2, 0, shapes.truth, distorted)};
     for (const uint32_t seed : {0u, 1u, 2u, 3u}) {
       for (const auto& pairs : {skipping, triangle}) {
-        const std::vector<PairwiseResult> noisy = seed == 0 ? pairs : test::WithNoise(pairs, 0.8, seed);
+        const std::vector<PairwiseResult> noisy =
+            seed == 0 ? pairs : test::WithNoise(pairs, 0.8, seed, TrueLens());
         const Result<GlobalSolution> solved = engine_.Refine(noisy, PriorsOut(shapes.truth), lens);
         ASSERT_TRUE(solved.ok()) << solved.status.detail;
         EXPECT_FALSE(solved.value.lensFitted) << k1 << ", seed " << seed;
@@ -1297,7 +1299,8 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
     chords.pop_back();
     for (int32_t i = 0; i + 2 < 12; ++i) chords.push_back(Matched(i, i + 2, shapes.truth, distorted));
     for (const uint32_t seed : {0u, 1u, 2u, 3u}) {
-      const std::vector<PairwiseResult> noisy = seed == 0 ? chords : test::WithNoise(chords, 0.4, seed);
+      const std::vector<PairwiseResult> noisy =
+          seed == 0 ? chords : test::WithNoise(chords, 0.4, seed, TrueLens());
       const Result<GlobalSolution> solved = engine_.Refine(noisy, PriorsOut(shapes.truth), lens);
       ASSERT_TRUE(solved.ok()) << solved.status.detail;
       EXPECT_FALSE(solved.value.lensFitted) << "chords, " << k1 << ", seed " << seed;
@@ -1326,7 +1329,7 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
     for (int32_t i = 0; i + 2 < 12; ++i) chords.push_back(Matched(i, i + 2, shapes.truth, distorted));
     for (const uint32_t seed : {0u, 1u, 2u}) {
       const std::vector<PairwiseResult> noisy =
-          seed == 0 ? chords : test::WithNoise(chords, 0.4, seed, doubled.width, doubled.height);
+          seed == 0 ? chords : test::WithNoise(chords, 0.4, seed, doubled);
       const Result<GlobalSolution> solved =
           engine_.Refine(noisy, ShapedFor(PriorsOut(shapes.truth), doubled), doubled);
       ASSERT_TRUE(solved.ok()) << solved.status.detail;
@@ -1351,8 +1354,9 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
   // And a lens 8% out stands too: 400 seeds of the skipping ring passed it through.
   for (const uint32_t seed : {1u, 2u, 3u, 4u, 5u, 6u}) {
     for (const double scale : {0.92, 1.08}) {
-      const Result<GlobalSolution> solved = engine_.Refine(test::WithNoise(shapes.skipping, 0.8, seed),
-                                                           PriorsOut(shapes.truth), Scaled(lens, scale));
+      const Result<GlobalSolution> solved =
+          engine_.Refine(test::WithNoise(shapes.skipping, 0.8, seed, TrueLens()),
+                         PriorsOut(shapes.truth), Scaled(lens, scale));
       ASSERT_TRUE(solved.ok()) << solved.status.detail;
       EXPECT_FALSE(solved.value.lensFitted) << scale << ", seed " << seed;
       EXPECT_EQ(solved.value.intrinsics.fx, Scaled(lens, scale).fx) << scale << ", seed " << seed;
@@ -1457,7 +1461,7 @@ TEST_F(Refine, AFitIsTakenOnlyWhereItIsSurerThanTheLensItReplaces) {
   const NoisyShapes shapes;
   const Intrinsics guess = TrueLens();
   ASSERT_TRUE(std::isinf(guess.focalUncertainty)) << "the premise: a lens by default is a guess";
-  const std::vector<PairwiseResult> pairs = test::WithNoise(shapes.gridPairs, 0.8, 1);
+  const std::vector<PairwiseResult> pairs = test::WithNoise(shapes.gridPairs, 0.8, 1, TrueLens());
 
   const Result<GlobalSolution> overGuess = engine_.Refine(pairs, PriorsOut(shapes.grid), guess);
   ASSERT_TRUE(overGuess.ok()) << overGuess.status.detail;
@@ -1530,7 +1534,8 @@ TEST_F(Refine, NoiseAndModelErrorEachWithinTheThresholdCanBeOverItTogether) {
   const NoisyShapes shapes;
   const Intrinsics lens = TrueLens();
   const Result<GlobalSolution> over =
-      engine_.Refine(test::WithNoise(shapes.gridPairs, 1.08, 1), PriorsOut(shapes.grid), lens);
+      engine_.Refine(test::WithNoise(shapes.gridPairs, 1.08, 1, TrueLens()),
+                     PriorsOut(shapes.grid), lens);
   ASSERT_TRUE(over.ok()) << over.status.detail;
   ASSERT_LT(over.value.focalSpread, 0.002) << "the premise: the noise alone is within it";
   ASSERT_LT(over.value.focalModelError, 0.002) << "the premise: the model error alone is within it";
@@ -1540,7 +1545,8 @@ TEST_F(Refine, NoiseAndModelErrorEachWithinTheThresholdCanBeOverItTogether) {
   EXPECT_EQ(over.value.focalScale, 0.0);
 
   const Result<GlobalSolution> under =
-      engine_.Refine(test::WithNoise(shapes.gridPairs, 1.08, 2), PriorsOut(shapes.grid), lens);
+      engine_.Refine(test::WithNoise(shapes.gridPairs, 1.08, 2, TrueLens()),
+                     PriorsOut(shapes.grid), lens);
   ASSERT_TRUE(under.ok()) << under.status.detail;
   EXPECT_LT(std::hypot(under.value.focalSpread, under.value.focalModelError), 0.002);
   EXPECT_TRUE(under.value.lensFitted);

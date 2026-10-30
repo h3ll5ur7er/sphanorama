@@ -1229,14 +1229,13 @@ export interface PanoramaBuildManager {
    * Builds from what the project's capture wrote down: its session document, one frame per cell —
    * the cell's manual pick where one was recorded and the cell still holds it, and otherwise the
    * best-ranked frame the capture wrote down whose pose was measured — and the capture's field of
-   * view at the frames' size (ADR 0070), the wider angle on the longer edge whichever way round the
-   * capture began. A frame the other way round from the first, the phone turned, is read through
-   * the lens turned with it (ADR 0082). Frames are paired only where their poses were measured,
-   * so a cell whose frame was not — a pick of one, or a cell with no other — is left out of the
-   * panorama, and the build still completes. What it reads is what the capture last managed to
-   * write down: a rewrite that failed leaves the document behind the capture, and a build started
-   * meanwhile uses the older ranking — refused only where a recorded pick is newer than it, which
-   * an earlier build's `SetSelection` or an edited store can leave.
+   * view at the frames' long and short edges, the wider angle across the longer (ADR 0070), each
+   * frame read through it as that frame was held (ADR 0082). Frames are paired only where their
+   * poses were measured, so a cell whose frame was not — a pick of one, or a cell with no other —
+   * is left out of the panorama, and the build still completes. What it reads is what the capture
+   * last managed to write down: a rewrite that failed leaves the document behind the capture, and a
+   * build started meanwhile uses the older ranking — refused only where a recorded pick is newer
+   * than it, which an earlier build's `SetSelection` or an edited store can leave.
    * Only the checks happen here. The work is done by `Poll`, one step a call — a frame's features,
    * a pair, the solve, the preview — so that no call holds the core's one thread for a whole build.
    * `NotFound` for a project that does not exist or holds no capture; `Unsupported` for a document

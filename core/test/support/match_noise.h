@@ -13,11 +13,13 @@ namespace sphanorama::test {
 // Every coordinate of every match moved by Gaussian noise of `sigma` pixels. By Box-Muller over the
 // engine's raw draws rather than `std::normal_distribution`, whose output the standard leaves to
 // each library, so the same seed is the same noise on every toolchain. Kept inside frames of
-// `width` by `height`, since no detector finds a keypoint past its frame's edge and `Refine`
-// refuses a match that lies there (ADR 0082).
+// `lens`'s shape, since no detector finds a keypoint past its frame's edge and `Refine` refuses a
+// match that lies there (ADR 0082); so a ring whose frames are not all one way round cannot be
+// given noise here.
 inline std::vector<PairwiseResult> WithNoise(std::vector<PairwiseResult> pairs, double sigma,
-                                             uint32_t seed, int32_t width = 640,
-                                             int32_t height = 480) {
+                                             uint32_t seed, const Intrinsics& lens) {
+  const int32_t width = lens.width;
+  const int32_t height = lens.height;
   std::mt19937 draws(seed);
   const auto uniform = [&] { return (static_cast<double>(draws()) + 0.5) / 4294967296.0; };
   const auto gauss = [&] {

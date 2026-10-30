@@ -544,7 +544,7 @@ TEST_F(PanoramaBuildManagerTest, TheWiderAngleIsTheLongerEdgesWhicheverWayTheCap
 }
 
 // A phone turned partway through hands its later frames back the other way round. The lens is
-// the first frame's way round, the solve is told each frame's shape, and the build completes.
+// long edge across, the solve is told each frame's shape, and the build completes.
 TEST_F(PanoramaBuildManagerTest, ACaptureWithThePhoneTurnedPartwayThroughBuilds) {
   for (int i = 0; i < 12; ++i) {
     const bool turned = i >= 5;

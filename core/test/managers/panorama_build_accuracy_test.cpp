@@ -270,9 +270,10 @@ TEST_P(PanoramaBuildAccuracy, ACaptureWithThePhoneTurnedPartwayThroughDrawsThePh
   // 1.370 and 1.234; with the true poses as priors 2.075, 1.738 and 1.386, so what is left is the
   // pairs. A turned frame is 50 degrees across where it was 66, so turned neighbours share 20
   // degrees of the world rather than 36, and the two pairs where the phone turned are held a
-  // quarter turn apart, which costs ORB and AKAZE (ADR 0082). Read through one unturned lens, as
-  // before, the build failed: its frames were not all one size. Still inside the 2.84 a tenth of a
-  // degree composes at. Per detector, since one bound for all three was ORB's and passed a build
+  // quarter turn apart, which the half-pixel convention costs ORB and AKAZE (ADR 0061, ADR 0082;
+  // entry 11 of the catalogue in `registration_accuracy_test.cpp`). Read through one unturned lens,
+  // as before, the build failed: its frames were not all one size. Still inside the 2.84 a tenth of
+  // a degree composes at. Per detector, since one bound for all three was ORB's and passed a build
   // that read every frame the first frame's way round at 2.56 (ORB) where the others failed at 37.
   constexpr double kTurnedMeanErrorBound[] = {2.4, 2.05, 1.6};
   static_assert(std::size(kTurnedMeanErrorBound) == static_cast<size_t>(FeatureDetector::Count));
