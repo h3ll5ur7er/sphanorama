@@ -142,7 +142,7 @@ class Runtime {
   CaptureSessionManager capture_session_{planner_, pose_, quality_, preview_, camera_,
                                          motion_, frames_, projects_, clock_};
   PanoramaBuildManager panorama_build_{registration_, composition_, frames_, projects_};
-  ProjectManager project_{projects_};
+  ProjectManager project_{projects_, frames_};
 };
 
 }  // namespace sphanorama::bridge

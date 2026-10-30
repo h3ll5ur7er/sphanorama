@@ -1,5 +1,6 @@
 #include "managers/project_manager/project_manager.h"
 
+#include <optional>
 #include <string>
 
 #include "utilities/session_document.h"
@@ -10,7 +11,8 @@ constexpr const char* kComponent = "ProjectManager";
 constexpr const char* kTitleKey = "title";
 }  // namespace
 
-ProjectManager::ProjectManager(IProjectStoreAccess& store) : store_(store) {}
+ProjectManager::ProjectManager(IProjectStoreAccess& store, IFrameStoreAccess& frames)
+    : store_(store), frames_(frames) {}
 
 bool ProjectManager::Exists(ProjectId project) {
   return store_.ReadDocument(project, kTitleKey).ok();
@@ -21,6 +23,8 @@ Result<std::vector<ProjectSummary>> ProjectManager::List() {
 
   std::vector<ProjectSummary> summaries;
   summaries.reserve(ids.size());
+  // Asked once a session needs placing, so a listing with none does not depend on the tier.
+  std::optional<uint64_t> tier;
   for (const ProjectId id : ids) {
     ProjectSummary summary;
     summary.id = id;
@@ -43,6 +47,19 @@ Result<std::vector<ProjectSummary>> ProjectManager::List() {
           "cannot tell whether a project has a session to resume: " + session.status.detail);
     }
     summary.hasSession = session.ok();
+    SessionDocument stored;
+    if (session.ok() && DecodeSessionDocument(session.value, stored)) {
+      if (!tier.has_value()) {
+        auto generation = frames_.TierGeneration();
+        if (!generation.ok()) {
+          return Err<std::vector<ProjectSummary>>(
+              generation.status.code, kComponent,
+              "cannot tell which captures this tier holds: " + generation.status.detail);
+        }
+        tier = generation.value;
+      }
+      summary.sessionInAnotherTier = stored.generation != *tier;
+    }
     summaries.push_back(std::move(summary));
   }
   return Ok(std::move(summaries));

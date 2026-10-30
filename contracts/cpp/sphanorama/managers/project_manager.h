@@ -23,7 +23,9 @@ class IProjectManager {
   // Only a document that is not there is "no session". A read that failed any other way fails the
   // listing with the store's status, because a summary saying there is none is what keeps a
   // capture from being offered back, and the page's other press empties the tier holding its
-  // frames (ADR 0078).
+  // frames (ADR 0078). So does a tier that cannot say which capture it holds, when a session needs
+  // placing against it: a listing that answered "not elsewhere" for it would offer a capture
+  // `Resume` refuses (ADR 0083).
   virtual Result<std::vector<ProjectSummary>> List() = 0;
   virtual Result<ProjectId> Create(std::string_view title) = 0;
   virtual Status Delete(ProjectId project) = 0;

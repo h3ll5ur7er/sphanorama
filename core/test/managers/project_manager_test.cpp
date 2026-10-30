@@ -9,8 +9,10 @@
 #include <vector>
 
 #include "managers/project_manager/project_manager.h"
+#include "resource_access/frame_store_access/memory_frame_store_access.h"
 #include "support/fake_export_access.h"
 #include "support/fake_project_store_access.h"
+#include "support/fake_spill_sink.h"
 #include "utilities/session_document.h"
 
 namespace sphanorama {
@@ -69,16 +71,18 @@ class IssuingProjectStoreAccess final : public IProjectStoreAccess {
 class Projects : public ::testing::Test {
  protected:
   void SetUp() override {
-    manager = std::make_unique<ProjectManager>(store);
+    manager = std::make_unique<ProjectManager>(store, frames);
   }
-  // A project holding a capture whose counter stands at `next`. A pick names a candidate a capture
-  // issued, so every test that records one needs a capture to have issued it.
-  Result<ProjectId> Captured(const char* title, uint64_t next = 100) {
+  // A project holding a capture whose counter stands at `next`, taken into the tier whose token is
+  // `tier`. A pick names a candidate a capture issued, so every test that records one needs a
+  // capture to have issued it.
+  Result<ProjectId> Captured(const char* title, uint64_t next = 100, uint64_t tier = 1) {
     auto created = manager->Create(title);
     EXPECT_TRUE(created.ok());
     SessionDocument stored;
     stored.session = 1;
     stored.nextCandidate = next;
+    stored.generation = tier;
     // A plan has a cell at least, and a document without one is refused (ADR 0077).
     CoverageNode cell;
     cell.id = NodeId{1};
@@ -92,6 +96,8 @@ class Projects : public ::testing::Test {
   }
 
   FakeProjectStoreAccess store;
+  FakeSpillSink sink;
+  MemoryFrameStoreAccess frames{1 << 20, &sink};
   FakeExportAccess exporter;
   std::unique_ptr<ProjectManager> manager;
 };
@@ -151,7 +157,7 @@ TEST_F(Projects, AListingThatCannotTellWhetherThereIsASessionSaysSo) {
   // Two codes, so an answer of the manager's own choosing cannot pass for the store's.
   for (const StatusCode code : {StatusCode::StorageQuotaExceeded, StatusCode::CodecFailure}) {
     UnreadableProjectStoreAccess unreadable(store, "session", code);
-    ProjectManager listing(unreadable);
+    ProjectManager listing(unreadable, frames);
     auto listed = listing.List();
     EXPECT_FALSE(listed.ok())
         << "a project whose session could not be read was listed as having none";
@@ -160,7 +166,7 @@ TEST_F(Projects, AListingThatCannotTellWhetherThereIsASessionSaysSo) {
 
   // And absence is still absence.
   UnreadableProjectStoreAccess absent(store, "session", StatusCode::NotFound);
-  ProjectManager listingAbsent(absent);
+  ProjectManager listingAbsent(absent, frames);
   auto none = listingAbsent.List();
   ASSERT_TRUE(none.ok()) << none.status.detail;
   EXPECT_FALSE(none.value.front().hasSession);
@@ -179,8 +185,78 @@ TEST_F(Projects, TheSessionFlagIsReadOffTheStoreEveryTime) {
 
   // And a manager that never saw it written agrees, which is the case that actually happens: the
   // page that resumes is a new process reading a store that outlived the last one.
-  ProjectManager reloaded(store);
+  ProjectManager reloaded(store, frames);
   EXPECT_TRUE(reloaded.List().value.front().hasSession);
+}
+
+// Only one tier is resident, and a tab beside the one holding it captures into a tier of its own
+// (ADR 0063), which can have the larger id. Offered, it was refused for naming another tier, and
+// offered again on every load, while the capture this tier holds was never offered (ADR 0083).
+TEST_F(Projects, ASessionCapturedIntoAnotherTierIsListedAsSo) {
+  auto here = Captured("here", 100, 1);
+  auto beside = Captured("beside", 100, 7);
+  ASSERT_TRUE(here.ok());
+  ASSERT_TRUE(beside.ok());
+
+  auto listed = manager->List();
+  ASSERT_TRUE(listed.ok()) << listed.status.detail;
+  ASSERT_EQ(listed.value.size(), 2u);
+  for (const ProjectSummary& summary : listed.value) {
+    EXPECT_TRUE(summary.hasSession) << "project " << summary.id.value;
+    EXPECT_EQ(summary.sessionInAnotherTier, summary.id.value == beside.value.value)
+        << "project " << summary.id.value;
+  }
+
+  // Asked of the tier on every listing: a new capture empties it under a token of its own, and
+  // then the capture it held is the one in another tier.
+  ASSERT_TRUE(sink.Clear().ok());
+  listed = manager->List();
+  ASSERT_TRUE(listed.ok()) << listed.status.detail;
+  for (const ProjectSummary& summary : listed.value) {
+    EXPECT_TRUE(summary.sessionInAnotherTier) << "project " << summary.id.value;
+  }
+}
+
+// Zero is a store with no tier at all, and a document written there matches it (ADR 0035).
+TEST_F(Projects, ASessionWithoutATierIsInTheTierOfAStoreWithoutOne) {
+  MemoryFrameStoreAccess tierless{1 << 20};
+  ProjectManager listing(store, tierless);
+  ASSERT_TRUE(Captured("tierless", 100, 0).ok());
+  ASSERT_TRUE(Captured("tiered", 100, 1).ok());
+  auto listed = listing.List();
+  ASSERT_TRUE(listed.ok()) << listed.status.detail;
+  ASSERT_EQ(listed.value.size(), 2u);
+  for (const ProjectSummary& summary : listed.value) {
+    EXPECT_EQ(summary.sessionInAnotherTier, summary.title == "tiered") << summary.title;
+  }
+}
+
+// A document this build cannot read cannot say which tier it names. It stays on offer, so the
+// refusal can say it is kept for a build that can read it (ADR 0039).
+TEST_F(Projects, ASessionThisBuildCannotReadIsNotSaidToBeElsewhere) {
+  auto created = manager->Create("unreadable");
+  ASSERT_TRUE(created.ok());
+  ASSERT_TRUE(store.WriteDocument(created.value, "session", "sphanorama-session 1\n").ok());
+  auto listed = manager->List();
+  ASSERT_TRUE(listed.ok()) << listed.status.detail;
+  EXPECT_TRUE(listed.value.front().hasSession);
+  EXPECT_FALSE(listed.value.front().sessionInAnotherTier);
+}
+
+// A tier that cannot say which capture it holds cannot say which session is elsewhere, and a
+// listing that answered "none is" would offer one `Resume` refuses, as before. The listing fails
+// instead, as it does for a session it could not read (ADR 0078); a listing with no session to
+// place does not need the tier, and does not ask it.
+TEST_F(Projects, ATierThatCannotSayFailsAListingThatNeedsIt) {
+  sink.FailGenerations(true);
+  ASSERT_TRUE(manager->Create("nothing captured").ok());
+  auto empty = manager->List();
+  ASSERT_TRUE(empty.ok()) << empty.status.detail;
+
+  ASSERT_TRUE(Captured("captured").ok());
+  auto listed = manager->List();
+  EXPECT_FALSE(listed.ok());
+  EXPECT_EQ(listed.status.code, StatusCode::Unsupported) << listed.status.detail;
 }
 
 TEST_F(Projects, DeletingRemovesItFromTheListing) {
@@ -257,7 +333,7 @@ TEST_F(Projects, AReadThatFailedIsNotACellNobodyHasChosenFor) {
   ASSERT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).ok());
 
   UnreadableProjectStoreAccess broken{store, "selection/3", StatusCode::Internal};
-  ProjectManager reader{broken};
+  ProjectManager reader{broken, frames};
   auto chosen = reader.GetSelection(created.value, NodeId{3});
   EXPECT_FALSE(chosen.ok()) << "a store that could not answer was read as an unchosen cell";
   EXPECT_EQ(chosen.status.code, StatusCode::Internal);
@@ -372,7 +448,7 @@ TEST_F(Projects, APickInAProjectNothingWasCapturedInIsRefused) {
 TEST_F(Projects, APickAgainstACaptureThatCannotBeReadIsRefused) {
   auto created = Captured("kitchen");
   UnreadableProjectStoreAccess broken{store, kSessionDocumentKey, StatusCode::Internal};
-  ProjectManager picker{broken};
+  ProjectManager picker{broken, frames};
   EXPECT_EQ(picker.SetSelection(created.value, NodeId{3}, CandidateId{7}).code,
             StatusCode::Internal);
 
@@ -411,7 +487,7 @@ TEST_F(Projects, IdsDoNotCollideWithProjectsThatOutlivedTheManager) {
   ASSERT_TRUE(first.ok());
   ASSERT_TRUE(second.ok());
 
-  ProjectManager reloaded(store);
+  ProjectManager reloaded(store, frames);
   auto third = reloaded.Create("balcony");
   ASSERT_TRUE(third.ok());
   EXPECT_NE(third.value.value, first.value.value);
@@ -428,7 +504,7 @@ TEST_F(Projects, ANewProjectTakesTheIdTheStoreIssues) {
   // (ADR 0081). Above every id the store holds, so a manager that counted would not get here.
   ASSERT_TRUE(store.WriteDocument(ProjectId{3}, "title", "theirs").ok());
   IssuingProjectStoreAccess issuing(store, Ok(ProjectId{2}));
-  ProjectManager tab(issuing);
+  ProjectManager tab(issuing, frames);
 
   auto created = tab.Create("mine");
   ASSERT_TRUE(created.ok());
@@ -440,7 +516,7 @@ TEST_F(Projects, ANewProjectTakesTheIdTheStoreIssues) {
 TEST_F(Projects, AStoreThatIssuesNoIdCreatesNoProject) {
   IssuingProjectStoreAccess issuing(
       store, Err<ProjectId>(StatusCode::FailedPrecondition, "test", "no id left"));
-  ProjectManager tab(issuing);
+  ProjectManager tab(issuing, frames);
 
   EXPECT_EQ(tab.Create("mine").status.code, StatusCode::FailedPrecondition);
   EXPECT_EQ(store.WriteCount(), 0);

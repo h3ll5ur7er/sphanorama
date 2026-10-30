@@ -7,7 +7,8 @@ import type { ProjectId, ProjectSummary } from '../../../../contracts/ts/contrac
 import { describeResumeRefusal, resumableProject, startOffer } from './resume';
 import { describeFailure } from './status';
 
-function project(id: number, hasSession: boolean, title = `sphere ${id}`): ProjectSummary {
+function project(id: number, hasSession: boolean, title = `sphere ${id}`,
+                 sessionInAnotherTier = false): ProjectSummary {
   return {
     id: id as ProjectId,
     title,
@@ -16,7 +17,12 @@ function project(id: number, hasSession: boolean, title = `sphere ${id}`): Proje
     nodesSatisfied: 0,
     hasBuild: false,
     hasSession,
+    sessionInAnotherTier,
   };
+}
+
+function elsewhere(id: number): ProjectSummary {
+  return project(id, true, `sphere ${id}`, true);
 }
 
 describe('resumableProject', () => {
@@ -44,6 +50,20 @@ describe('resumableProject', () => {
     // newest *with a session* — would answer "nothing to resume" for a capture that is still
     // there in full.
     expect(resumableProject([project(4, true), project(9, false)])).toBe(4);
+  });
+
+  it('offers the newest capture this tier holds, not a newer one in another tab\'s', () => {
+    // A tab beside the one holding the resident tier captures into a tier of its own (ADR 0063),
+    // and its capture can have the larger id. `Resume` refuses that one, and a refusal for the tier
+    // keeps the offer up (ADR 0039), so offering it hid the capture this tier holds on every load
+    // (ADR 0083).
+    expect(resumableProject([project(4, true), elsewhere(9)])).toBe(4);
+    expect(resumableProject([elsewhere(9), project(4, true), project(2, true)])).toBe(4);
+  });
+
+  it('offers nothing when every capture is in another tier', () => {
+    // A new capture here empties this tier, which holds none of them, so nothing is lost by it.
+    expect(resumableProject([elsewhere(3), elsewhere(9)])).toBeNull();
   });
 });
 

@@ -2,7 +2,9 @@
 
 **Status:** accepted; amended by [0078](0078-a-failed-read-is-not-an-absent-session.md), which reads
 only `NotFound` as no session, and by [0081](0081-the-store-issues-project-ids.md), under which the
-store issues ids that still ascend with creation
+store issues ids that still ascend with creation, and by
+[0083](0083-the-offer-is-the-newest-capture-this-tier-holds.md), under which the capture offered is
+the newest one this page's tier holds
 
 ## Context
 

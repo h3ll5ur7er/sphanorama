@@ -26,11 +26,16 @@ import { describeFailure } from './status';
  * empties it, so an older session's document would come back naming frames the tier no longer
  * has (ADR 0034). One unfinished sphere is also the case this is for — resuming means standing in
  * the same spot again, which is a phone call, not tomorrow.
+ *
+ * And the newest in *this page's* tier. A tab beside the one holding the resident tier captures
+ * into one of its own (ADR 0063), so its capture can be newer and still be one this page cannot
+ * give back; offered, it was refused, and offered again on every load, in front of the capture
+ * this tier does hold (ADR 0083).
  */
 export function resumableProject(projects: readonly ProjectSummary[]): ProjectId | null {
   let newest: ProjectSummary | null = null;
   for (const project of projects) {
-    if (!project.hasSession) continue;
+    if (!project.hasSession || project.sessionInAnotherTier) continue;
     if (newest === null || (project.id as number) > (newest.id as number)) newest = project;
   }
   return newest === null ? null : newest.id;

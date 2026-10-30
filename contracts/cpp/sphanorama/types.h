@@ -930,6 +930,15 @@ struct ProjectSummary {
   // offer one — a successful attempt opens the camera and starts tracking, so probing commits to
   // a resume nobody asked for (ADR 0036).
   bool hasSession = false;
+  // Whether that session's document names a spill tier other than the one this store holds, so
+  // that `Resume` would refuse it (ADR 0035). Only one tier is resident at a time, and a tab
+  // beside the one holding it captures into a tier of its own (ADR 0063); this is how a page
+  // offers the capture its own tier can give back rather than the newest anywhere (ADR 0083).
+  //
+  // False where there is no session, and for a document this build cannot read, which cannot
+  // say which tier it names: that one stays on offer, so its refusal can say it is kept for a
+  // build that can read it (ADR 0039).
+  bool sessionInAnotherTier = false;
 };
 
 struct ExportSpec {
