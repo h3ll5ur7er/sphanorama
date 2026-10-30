@@ -17,7 +17,9 @@ class IRegistrationEngine {
   // `EstimatePairwise`'s refusal of a foreign set satisfiable: a caller may pair only sets that came
   // from the same engine. Promised here rather than left to the field's own comment, because an
   // implementation could otherwise honour the letter of both methods, return the default identity
-  // from this one, and refuse every pair built from its own sets.
+  // from this one, and refuse every pair built from its own sets. **And the frame's width and
+  // height**, for the same reason: `EstimatePairwise` reads a set through the lens turned to that
+  // shape and refuses one it cannot read, a shape of zero included (ADR 0082).
   //
   // The frame handed in is left alone, except that reading it pins it — and pinning faults a
   // spilled frame back into the heap and leaves it resident, which is a cost a caller working

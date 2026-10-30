@@ -519,7 +519,12 @@ TEST_F(PanoramaBuildManagerTest, StartRefusesAFieldOfViewThatIsNotALens) {
     document_.spec.verticalFovDeg = vertical;
     ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey,
                                         EncodeSessionDocument(document_)).ok());
-    EXPECT_EQ(manager_.Start(kProject, BuildSpec{}).status.code, StatusCode::FailedPrecondition)
+    // The detail too: the size check reads every frame through this lens, so it refuses an angle
+    // that is not a lens with the same code, and would hide this check's absence.
+    const Result<BuildId> started = manager_.Start(kProject, BuildSpec{});
+    EXPECT_EQ(started.status.code, StatusCode::FailedPrecondition)
+        << horizontal << " by " << vertical;
+    EXPECT_EQ(started.status.detail, "this capture's field of view is not a lens")
         << horizontal << " by " << vertical;
   }
 }

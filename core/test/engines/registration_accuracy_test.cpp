@@ -577,9 +577,10 @@ TEST_P(Accuracy, ARingTakenWithThePhoneTurnedEveryOtherFrameSolvesAsTheUnturnedO
 // Today's run: ORB 0.0598/0.1529, AKAZE 0.0529/0.0662, SIFT 0.0351/0.0473. Better than the ring
 // above for ORB and AKAZE on less of the world, which is the measurement ADR 0082 reads as
 // registering across a quarter turn costing those two; not SIFT. Bounds at about one and a half
-// times each.
+// times each, except AKAZE's, which sit below the ring above's figures so that the claim is held:
+// at one and a half times they would have passed that ring too.
 TEST_P(Accuracy, ARingTakenWithThePhoneTurnedThroughoutSolvesAsTheUnturnedOneDoes) {
-  constexpr TurnedBound kBounds[] = {{0.09, 0.23}, {0.08, 0.10}, {0.053, 0.071}};
+  constexpr TurnedBound kBounds[] = {{0.09, 0.23}, {0.06, 0.08}, {0.053, 0.071}};
   SolveTurnedRing(GetParam(), 0, 1, "turned-all", kBounds);
 }
 
