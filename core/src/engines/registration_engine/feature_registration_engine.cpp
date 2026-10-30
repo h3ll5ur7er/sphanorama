@@ -549,10 +549,11 @@ class BorrowedFrame {
  * OpenCV keypoint coordinates through unchanged, and the two conventions differ by half a pixel in
  * each axis — `camera_model.h` states it exactly, as the `cx`/`cy` shift it is. So every bearing
  * this engine computes is the bearing of a point **translated by (-0.5, -0.5) pixels**: a constant
- * offset, absorbed by the optical centre rather than by the focal length, and not a radial one.
- * It reads outward from the axis across the top-left of the frame and *inward* across the
- * bottom-right — measured on a 66x50 lens, 0.700 px outward at keypoint (0, 0) and 0.700 px inward
- * at (319, 239).
+ * offset, absorbed by the optical centre rather than by the focal length, and not a radial one —
+ * while every frame is held one way round. A frame held a quarter turn from another reads it in
+ * another direction of the lens's axes, and nothing absorbs that (ADR 0082). It reads outward from
+ * the axis across the top-left of the frame and *inward* across the bottom-right — measured on a
+ * 66x50 lens, 0.700 px outward at keypoint (0, 0) and 0.700 px inward at (319, 239).
  *
  * That is a systematic error in the measurement rather than a reachability question, and it is the
  * larger half of what this paragraph found. It is not corrected here: doing so moves every
