@@ -76,6 +76,11 @@ export interface RemoteCore extends CoreRuntime {
    */
   canSpill(): boolean;
   /**
+   * Whether that tier is the resident pair, the one a reload resumes from, rather than a tier of
+   * the worker's own (ADR 0063).
+   */
+  holdsResidentTier(): boolean;
+  /**
    * Why the worker's document store would not load, or null. The core then lists nothing and fails
    * nothing, since its store runs from memory, so only this says a capture may be waiting
    * (ADR 0078).
@@ -249,6 +254,7 @@ export async function connectCore(worker: WorkerLike, coreUrl: string,
       releaseLocks = handler;
     },
     canSpill: () => booted.spill,
+    holdsResidentTier: () => booted.resident,
     storageError: () => booted.storageError ?? null,
   };
 

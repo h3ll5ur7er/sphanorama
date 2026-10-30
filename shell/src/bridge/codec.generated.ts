@@ -438,6 +438,7 @@ export function encodeProjectSummary(out: Writer, value: C.ProjectSummary): void
   out.bool(value.hasBuild);
   out.bool(value.hasSession);
   out.bool(value.sessionInAnotherTier);
+  out.bool(value.sessionUnreadable);
 }
 
 export function decodeProjectSummary(input: Reader): C.ProjectSummary {
@@ -450,6 +451,7 @@ export function decodeProjectSummary(input: Reader): C.ProjectSummary {
     hasBuild: input.bool(),
     hasSession: input.bool(),
     sessionInAnotherTier: input.bool(),
+    sessionUnreadable: input.bool(),
   };
 }
 

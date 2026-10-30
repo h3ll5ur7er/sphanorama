@@ -31,14 +31,24 @@ import { describeFailure } from './status';
  * into one of its own (ADR 0063), so its capture can be newer and still be one this page cannot
  * give back; offered, it was refused, and offered again on every load, in front of the capture
  * this tier does hold (ADR 0083).
+ *
+ * A capture this build cannot read comes last, offered only where no readable one is: its refusal
+ * withdraws the offer and leaves a new capture, which would empty the tier a readable one is in.
  */
 export function resumableProject(projects: readonly ProjectSummary[]): ProjectId | null {
   let newest: ProjectSummary | null = null;
+  let newestUnreadable: ProjectSummary | null = null;
   for (const project of projects) {
     if (!project.hasSession || project.sessionInAnotherTier) continue;
-    if (newest === null || (project.id as number) > (newest.id as number)) newest = project;
+    if (project.sessionUnreadable) {
+      if (newestUnreadable === null || (project.id as number) > (newestUnreadable.id as number)) {
+        newestUnreadable = project;
+      }
+    } else if (newest === null || (project.id as number) > (newest.id as number)) {
+      newest = project;
+    }
   }
-  return newest === null ? null : newest.id;
+  return (newest ?? newestUnreadable)?.id ?? null;
 }
 
 /**
@@ -125,8 +135,15 @@ export function describeResumeRefusal(status: Status): ResumeRefusal {
  * waiting invites the press that would erase it. The new capture stays on offer, since a store
  * that keeps failing must not lock the user out of capturing anything, and the line says what it
  * would cost (ADR 0078).
+ *
+ * `onFallbackTier` is a page whose worker took a tier of its own rather than the resident one: a
+ * second tab, or one opened while the last tab's worker was still letting go (ADR 0063). There a
+ * capture in another tier may be the resident tier's, still on disk and offered by a reload with
+ * the other tab closed, so the line says one is waiting. On the resident tier a capture in another
+ * tier is a fallback tier's, which nobody holds again, and nothing is said (ADR 0083).
  */
-export function startOffer(listed: Result<ProjectSummary[]>, storageError: string | null): {
+export function startOffer(listed: Result<ProjectSummary[]>, storageError: string | null,
+                           onFallbackTier: boolean): {
   resume: ProjectId | null;
   message: string;
 } {
@@ -152,6 +169,15 @@ export function startOffer(listed: Result<ProjectSummary[]>, storageError: strin
     };
   }
   const resume = resumableProject(listed.value);
+  if (resume === null && onFallbackTier
+      && listed.value.some((project) => project.hasSession && project.sessionInAnotherTier)) {
+    return {
+      resume,
+      message:
+        'core ready — a capture is waiting in storage another tab of this app is holding: close ' +
+        'it and reload to resume, or enable the camera to start a new one here',
+    };
+  }
   return {
     resume,
     message: resume === null

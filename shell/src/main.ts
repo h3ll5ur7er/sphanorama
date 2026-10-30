@@ -1692,7 +1692,9 @@ async function main() {
     // project has a session to return to is a fact about the project, and finding it out by
     // *trying* would start the very capture the user has not chosen yet (ADR 0036).
     const storageError = remote.storageError();
-    const { resume, message } = startOffer(await reportFacade(core, storageError), storageError);
+    const onFallbackTier = remote.canSpill() && !remote.holdsResidentTier();
+    const { resume, message } =
+      startOffer(await reportFacade(core, storageError), storageError, onFallbackTier);
     resumeButton.hidden = resume === null;
     stage.textContent = message;
     // Known from the boot, so neither offer is made to a core that cannot read this page's motion.

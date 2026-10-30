@@ -86,6 +86,21 @@ describe('the document store\'s load', () => {
   });
 });
 
+describe('the spill tier\'s residency', () => {
+  it('reaches the page as the worker said it', async () => {
+    // What tells the page a capture in another tier may be the resident tier's, still on disk
+    // (ADR 0083).
+    for (const resident of [true, false]) {
+      const w = fakeWorker();
+      const connecting = connectCore(w.worker, 'https://example.test/core.js', unclaimed);
+      await Promise.resolve();
+      w.reply({ kind: 'booted', seq: w.seqOf('boot'), methods: [], spill: true, resident });
+      const { remote } = await connecting;
+      expect(remote.holdsResidentTier()).toBe(resident);
+    }
+  });
+});
+
 describe('connecting', () => {
   it('passes the core URL across, because only the page knows the base path', async () => {
     const w = fakeWorker();

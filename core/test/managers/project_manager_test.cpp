@@ -76,7 +76,8 @@ class Projects : public ::testing::Test {
   // A project holding a capture whose counter stands at `next`, taken into the tier whose token is
   // `tier`. A pick names a candidate a capture issued, so every test that records one needs a
   // capture to have issued it.
-  Result<ProjectId> Captured(const char* title, uint64_t next = 100, uint64_t tier = 1) {
+  Result<ProjectId> Captured(const char* title, uint64_t next = 100, uint64_t tier = 1,
+                             bool withFrame = false) {
     auto created = manager->Create(title);
     EXPECT_TRUE(created.ok());
     SessionDocument stored;
@@ -88,6 +89,18 @@ class Projects : public ::testing::Test {
     cell.id = NodeId{1};
     cell.acceptanceConeDeg = stored.spec.acceptanceConeDeg;
     stored.nodes.push_back(cell);
+    if (withFrame) {
+      Candidate frame;
+      frame.id = CandidateId{1};
+      frame.node = cell.id;
+      frame.frame.id = FrameId{1};
+      frame.frame.buffer = BufferId{1};
+      frame.frame.format = PixelFormat::RGBA8;
+      frame.frame.width = 64;
+      frame.frame.height = 48;
+      frame.frame.stride = 64 * 4;
+      stored.candidates.push_back(frame);
+    }
     const std::string text = EncodeSessionDocument(stored);
     SessionDocument decoded;
     EXPECT_TRUE(DecodeSessionDocument(text, decoded));
@@ -217,17 +230,28 @@ TEST_F(Projects, ASessionCapturedIntoAnotherTierIsListedAsSo) {
   }
 }
 
-// Zero is a store with no tier at all, and a document written there matches it (ADR 0035).
-TEST_F(Projects, ASessionWithoutATierIsInTheTierOfAStoreWithoutOne) {
+// Zero is a store with no tier at all, and a document written there matches it (ADR 0035) while
+// it names no frame. One that names a frame is elsewhere: zero does not vouch for an identity, and
+// a store with no tier adopts none, so `Resume` would refuse it.
+TEST_F(Projects, ASessionWithoutATierIsInTheTierOfAStoreWithoutOneUntilItNamesAFrame) {
   MemoryFrameStoreAccess tierless{1 << 20};
   ProjectManager listing(store, tierless);
   ASSERT_TRUE(Captured("tierless", 100, 0).ok());
+  ASSERT_TRUE(Captured("tierless with a frame", 100, 0, true).ok());
   ASSERT_TRUE(Captured("tiered", 100, 1).ok());
   auto listed = listing.List();
   ASSERT_TRUE(listed.ok()) << listed.status.detail;
-  ASSERT_EQ(listed.value.size(), 2u);
+  ASSERT_EQ(listed.value.size(), 3u);
   for (const ProjectSummary& summary : listed.value) {
-    EXPECT_EQ(summary.sessionInAnotherTier, summary.title == "tiered") << summary.title;
+    EXPECT_EQ(summary.sessionInAnotherTier, summary.title != "tierless") << summary.title;
+  }
+
+  // And the other way: a document written without a tier, read on a store that has one, is
+  // elsewhere whether or not it names a frame (ADR 0035).
+  listed = manager->List();
+  ASSERT_TRUE(listed.ok()) << listed.status.detail;
+  for (const ProjectSummary& summary : listed.value) {
+    EXPECT_EQ(summary.sessionInAnotherTier, summary.title != "tiered") << summary.title;
   }
 }
 
@@ -241,6 +265,16 @@ TEST_F(Projects, ASessionThisBuildCannotReadIsNotSaidToBeElsewhere) {
   ASSERT_TRUE(listed.ok()) << listed.status.detail;
   EXPECT_TRUE(listed.value.front().hasSession);
   EXPECT_FALSE(listed.value.front().sessionInAnotherTier);
+  // Said, so the page can rank it after any capture it can give back.
+  EXPECT_TRUE(listed.value.front().sessionUnreadable);
+
+  // And only it: a readable session is not.
+  ASSERT_TRUE(Captured("readable").ok());
+  listed = manager->List();
+  ASSERT_TRUE(listed.ok()) << listed.status.detail;
+  for (const ProjectSummary& summary : listed.value) {
+    EXPECT_EQ(summary.sessionUnreadable, summary.title == "unreadable") << summary.title;
+  }
 }
 
 // A tier that cannot say which capture it holds cannot say which session is elsewhere, and a
@@ -252,11 +286,21 @@ TEST_F(Projects, ATierThatCannotSayFailsAListingThatNeedsIt) {
   ASSERT_TRUE(manager->Create("nothing captured").ok());
   auto empty = manager->List();
   ASSERT_TRUE(empty.ok()) << empty.status.detail;
+  // Nor does a session this build cannot read, which is placed against no tier.
+  auto unreadable = manager->Create("unreadable");
+  ASSERT_TRUE(unreadable.ok());
+  ASSERT_TRUE(store.WriteDocument(unreadable.value, "session", "sphanorama-session 1\n").ok());
+  auto unplaced = manager->List();
+  ASSERT_TRUE(unplaced.ok()) << unplaced.status.detail;
 
   ASSERT_TRUE(Captured("captured").ok());
-  auto listed = manager->List();
-  EXPECT_FALSE(listed.ok());
-  EXPECT_EQ(listed.status.code, StatusCode::Unsupported) << listed.status.detail;
+  // Two codes, so an answer of the manager's own choosing cannot pass for the tier's.
+  for (const StatusCode code : {StatusCode::Unsupported, StatusCode::Internal}) {
+    sink.FailGenerations(true, code);
+    auto listed = manager->List();
+    EXPECT_FALSE(listed.ok());
+    EXPECT_EQ(listed.status.code, code) << listed.status.detail;
+  }
 }
 
 TEST_F(Projects, DeletingRemovesItFromTheListing) {

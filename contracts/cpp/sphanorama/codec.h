@@ -483,6 +483,7 @@ inline void Encode(Writer& out, const ProjectSummary& value) {
   out.PutBool(value.hasBuild);
   out.PutBool(value.hasSession);
   out.PutBool(value.sessionInAnotherTier);
+  out.PutBool(value.sessionUnreadable);
 }
 
 inline bool Decode(Reader& in, ProjectSummary& value) {
@@ -494,6 +495,7 @@ inline bool Decode(Reader& in, ProjectSummary& value) {
   value.hasBuild = in.GetBool();
   value.hasSession = in.GetBool();
   value.sessionInAnotherTier = in.GetBool();
+  value.sessionUnreadable = in.GetBool();
   return in.ok();
 }
 

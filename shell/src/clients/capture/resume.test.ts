@@ -8,7 +8,7 @@ import { describeResumeRefusal, resumableProject, startOffer } from './resume';
 import { describeFailure } from './status';
 
 function project(id: number, hasSession: boolean, title = `sphere ${id}`,
-                 sessionInAnotherTier = false): ProjectSummary {
+                 sessionInAnotherTier = false, sessionUnreadable = false): ProjectSummary {
   return {
     id: id as ProjectId,
     title,
@@ -18,11 +18,16 @@ function project(id: number, hasSession: boolean, title = `sphere ${id}`,
     hasBuild: false,
     hasSession,
     sessionInAnotherTier,
+    sessionUnreadable,
   };
 }
 
 function elsewhere(id: number): ProjectSummary {
   return project(id, true, `sphere ${id}`, true);
+}
+
+function unreadable(id: number): ProjectSummary {
+  return project(id, true, `sphere ${id}`, false, true);
 }
 
 describe('resumableProject', () => {
@@ -64,6 +69,15 @@ describe('resumableProject', () => {
   it('offers nothing when every capture is in another tier', () => {
     // A new capture here empties this tier, which holds none of them, so nothing is lost by it.
     expect(resumableProject([elsewhere(3), elsewhere(9)])).toBeNull();
+  });
+
+  it('offers a capture this build cannot read only where no readable one is', () => {
+    // Offered, it is refused as `Unsupported` and the offer is withdrawn, leaving a new capture,
+    // which empties the tier a readable capture is in (ADR 0083). Offered alone, its refusal says
+    // it is kept for a build that can read it (ADR 0039).
+    expect(resumableProject([project(4, true), unreadable(9)])).toBe(4);
+    expect(resumableProject([unreadable(9), elsewhere(12)])).toBe(9);
+    expect(resumableProject([unreadable(3), unreadable(9)])).toBe(9);
   });
 });
 
@@ -163,15 +177,43 @@ describe('describeResumeRefusal', () => {
 
 describe('startOffer', () => {
   it('offers the newest capture with a session, and says both ways on', () => {
-    const offer = startOffer({ ok: true, value: [project(1, true), project(3, true)] }, null);
+    const listed = { ok: true as const, value: [project(1, true), project(3, true)] };
+    const offer = startOffer(listed, null, false);
     expect(offer.resume).toBe(3);
     expect(offer.message).toBe(
       'core ready — resume the last capture, or enable the camera to start a new one',
     );
   });
 
+  it('says a capture is waiting where this page holds a tier of its own', () => {
+    // A page that did not get the resident tier — a second tab, or a tab opened while the last
+    // one's worker was still letting go of it (ADR 0063) — sees the resident tier's capture as in
+    // another tier, and is not offered it. It is still on disk, and a reload with the other tab
+    // closed offers it, so the line says so rather than that there is nothing (ADR 0083).
+    const waiting = [project(1, false), elsewhere(3)];
+    const fallback = startOffer({ ok: true, value: waiting }, null, true);
+    expect(fallback.resume).toBeNull();
+    expect(fallback.message).toContain('a capture is waiting');
+    expect(fallback.message).toContain('reload');
+    expect(fallback.message).not.toContain('enable the camera to continue');
+
+    // On the resident tier a capture in another tier is a fallback tier's, which nobody will
+    // ever hold again, so there is nothing to say about it.
+    const resident = startOffer({ ok: true, value: waiting }, null, false);
+    expect(resident.message).toBe('core ready — enable the camera to continue');
+    // Nor where the fallback page has nothing in another tier.
+    const nothing = startOffer({ ok: true, value: [project(1, false)] }, null, true);
+    expect(nothing.message).toBe('core ready — enable the camera to continue');
+    // And an offer is an offer, whichever tier the page holds.
+    const offered = startOffer({ ok: true, value: [project(2, true), elsewhere(3)] }, null, true);
+    expect(offered.resume).toBe(2);
+    expect(offered.message).toBe(
+      'core ready — resume the last capture, or enable the camera to start a new one',
+    );
+  });
+
   it('offers a new capture alone when nothing was captured into', () => {
-    const offer = startOffer({ ok: true, value: [project(1, false)] }, null);
+    const offer = startOffer({ ok: true, value: [project(1, false)] }, null, false);
     expect(offer.resume).toBeNull();
     expect(offer.message).toBe('core ready — enable the camera to continue');
   });
@@ -183,7 +225,7 @@ describe('startOffer', () => {
     const status = {
       code: 'StorageQuotaExceeded', component: 'ProjectManager', detail: 'full',
     } as const;
-    const offer = startOffer({ ok: false, status }, null);
+    const offer = startOffer({ ok: false, status }, null, false);
     expect(offer.resume).toBeNull();
     expect(offer.message).toContain('could not tell whether a capture is waiting');
     // Named the way every other failure on the page is, not as a raw code.
@@ -196,7 +238,7 @@ describe('startOffer', () => {
   it('does not read a store that could not be loaded as one with nothing in it', () => {
     // The worker's document store starts empty when its database will not open, so the listing
     // succeeds with nothing in it while a capture may be waiting on disk (ADR 0078).
-    const offer = startOffer({ ok: true, value: [] }, 'VersionError: the database is newer');
+    const offer = startOffer({ ok: true, value: [] }, 'VersionError: the database is newer', false);
     expect(offer.resume).toBeNull();
     expect(offer.message).toContain('could not tell whether a capture is waiting');
     // And what a new capture would be, as well as what it would cost: nothing is written down.

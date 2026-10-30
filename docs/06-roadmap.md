@@ -379,7 +379,9 @@ What is left, and what has landed since:
   offered again on every load (ADR 0039), while the capture the tier holds was never offered and a
   new one cleared it. Each project summary now says whether its session is in another tier, and
   the page skips those (ADR 0083). An end-to-end test offers and resumes the capture this tier
-  holds over a newer one from another tier.
+  holds over a newer one from another tier. A page that lost the race for the resident tier says a
+  capture is waiting that a reload with the other tab closed can resume, and a document this build
+  cannot read is offered only where no readable capture is.
 - **A store that stops saving mid-session says so — done.** The document host tracks whether
   persisting is failing now, the worker pushes each change, and the page says "not saving" while
   the store would not load or is failing to save, and stops once a persist goes through

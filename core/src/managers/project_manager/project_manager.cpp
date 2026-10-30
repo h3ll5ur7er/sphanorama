@@ -48,7 +48,8 @@ Result<std::vector<ProjectSummary>> ProjectManager::List() {
     }
     summary.hasSession = session.ok();
     SessionDocument stored;
-    if (session.ok() && DecodeSessionDocument(session.value, stored)) {
+    summary.sessionUnreadable = session.ok() && !DecodeSessionDocument(session.value, stored);
+    if (session.ok() && !summary.sessionUnreadable) {
       if (!tier.has_value()) {
         auto generation = frames_.TierGeneration();
         if (!generation.ok()) {
@@ -58,7 +59,9 @@ Result<std::vector<ProjectSummary>> ProjectManager::List() {
         }
         tier = generation.value;
       }
-      summary.sessionInAnotherTier = stored.generation != *tier;
+      // Zero matches zero, and still gives no frame back: a store with no tier adopts none.
+      summary.sessionInAnotherTier =
+          stored.generation != *tier || (*tier == 0 && !stored.candidates.empty());
     }
     summaries.push_back(std::move(summary));
   }
