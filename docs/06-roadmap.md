@@ -388,12 +388,13 @@ What is left, and what has landed since:
   the stored field-of-view pair against the sensor's edges, the wider on the longer edge, and every
   engine reads each frame through the lens turned to that frame's shape (ADR 0082). So bursts taken
   both ways round build, and a capture taken wholly the other way round builds with square pixels.
-  The photograph ring with half its frames turned builds to a preview within 1.35 to 2.13 of the
-  photograph, against 1.23 to 1.56 unturned, because a turned frame shares less of the world with
-  its neighbours. Still open: the plan is laid for the phone as held at `Begin`, so a frame taken
-  turned covers its cell narrower one way, thinning the planned overlap, and the overlay draws the
-  cell with the axes the capture began with. That the pose turns with the frame (ADR 0017) is what
-  the build relies on, and no phone has been measured turned mid-capture.
+  The photograph ring with half its frames turned builds to a preview within a mean of 1.35 to 2.13
+  bytes of the photograph, against 1.23 to 1.56 unturned: a turned frame shares less of the world
+  with its neighbours, and ORB and AKAZE register worse across a quarter turn. Still open: the plan
+  is laid for the phone as held at `Begin`, so a frame taken turned covers its cell narrower one
+  way, thinning the planned overlap, and the overlay draws the cell with the axes the capture began
+  with. That the pose turns with the frame (ADR 0017) is what the build relies on, and no phone has
+  been measured turned mid-capture.
 - **A tier generation, so another project's document cannot outlive its pixels — done.** The gap
   ADR 0034 left open was narrow and silent: `Begin` empties the tier and the new capture reissues
   identities from 1, so a session document belonging to a *different* project named frames that

@@ -66,6 +66,15 @@ bool IsUsableLens(const Intrinsics& lens);
 Intrinsics LensFromFieldOfView(double horizontalFovDeg, double verticalFovDeg, int32_t width,
                                int32_t height);
 
+// The lens a frame of `width` by `height` was taken through: `lens` when the frame is its shape,
+// and `lens` turned a quarter when the frame is its shape turned, since a phone turned about the
+// way it looks hands back its frames the other way round and its lens is the same glass. Which way
+// it turned the frame's shape cannot say, so only a lens that reads the same either way turns: its
+// centre in the middle of its frame, to a millionth of a pixel, no tangential distortion and no
+// rolling shutter. Anything
+// else, and a frame of neither shape, answers a lens `IsUsableLens` refuses.
+Intrinsics LensForFrame(const Intrinsics& lens, int32_t width, int32_t height);
+
 // The field of view these intrinsics imply, in degrees: the angle from the optical centre out to
 // one edge plus the angle out to the other, measured by asking the model where those edges look —
 // so distortion counts, and a barrelled lens reports the wider angle it genuinely sees.
@@ -85,14 +94,6 @@ Intrinsics LensFromFieldOfView(double horizontalFovDeg, double verticalFovDeg, i
 //
 // Answers 0 for an unusable lens, which is the contract's word for "will not say" (types.h) and
 // the same silence `RingsCoveragePlannerEngine::Plan` already refuses to tessellate.
-// The lens a frame of `width` by `height` was taken through: `lens` when the frame is its shape,
-// and `lens` turned a quarter when the frame is its shape turned, since a phone turned about the
-// way it looks hands back its frames the other way round and its lens is the same glass. Which way
-// it turned the frame's shape cannot say, so only a lens that reads the same either way turns: its
-// centre in the middle of its frame, no tangential distortion and no rolling shutter. Anything
-// else, and a frame of neither shape, answers a lens `IsUsableLens` refuses.
-Intrinsics LensForFrame(const Intrinsics& lens, int32_t width, int32_t height);
-
 double HorizontalFovDeg(const Intrinsics& lens);
 double VerticalFovDeg(const Intrinsics& lens);
 

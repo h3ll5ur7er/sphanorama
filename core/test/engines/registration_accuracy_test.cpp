@@ -550,11 +550,10 @@ TEST_P(Accuracy, ARingTakenWithThePhoneTurnedEveryOtherFrameSolvesAsTheUnturnedO
 
   // Today's run: ORB 0.1071/0.2175, AKAZE 0.0677/0.0872, SIFT 0.0304/0.0555 (median, max), the
   // focal length within -0.077%, +0.008% and +0.019%; read through one unturned lens, as before
-  // ADR 0082, the medians were 7.0, 6.6 and 7.3 degrees. About twice the unturned ring's, and that
-  // is the frames rather than the reading: a turned frame is 46.8 degrees across where it was 60,
-  // so frames thirty degrees apart share less of the world. Measured the same way, every frame
-  // turned reads 0.0598, 0.0529 and 0.0351, and a ring rendered upright at 480 by 640 with nothing
-  // turned 0.0604 (AKAZE) and 0.0364 (SIFT). Bounds at about one and a half times each.
+  // ADR 0082, the medians were 7.0, 6.6 and 7.3 degrees. Worse than the unturned ring, and worse
+  // for ORB and AKAZE than every frame turned (0.0598, 0.0529, 0.0351), though neighbours here
+  // share 28 degrees of the world and there 20: every pair here is between frames held a quarter
+  // turn apart, which costs those two detectors. Bounds at about one and a half times each.
   struct Bound {
     double median, max;
   };

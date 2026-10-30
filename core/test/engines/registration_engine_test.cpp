@@ -1424,6 +1424,21 @@ TEST_P(Extraction, EveryBoundsGuardRefusesRatherThanReadingPastTheFrame) {
     EXPECT_NE(pair.status.detail.find("another shape than the lens"), std::string::npos)
         << pair.status.detail;
   }
+  // **A set whose keypoints lie outside the frame it names**: a shape the lens reads, but not the
+  // frame the keypoints were found in, which would read every one of them the wrong way round.
+  {
+    FeatureSet smaller = a.value;
+    smaller.width = kWidth / 2;
+    smaller.height = kHeight / 2;
+    FeatureSet smallerB = b.value;
+    smallerB.width = kWidth / 2;
+    smallerB.height = kHeight / 2;
+    const Result<PairwiseResult> pair =
+        engine.EstimatePairwise(smaller, smallerB, Quat{1, 0, 0, 0}, Lens(kWidth / 2));
+    EXPECT_FALSE(pair.ok());
+    EXPECT_NE(pair.status.detail.find("outside the frame"), std::string::npos)
+        << pair.status.detail;
+  }
   // **A keypoint stride narrower than one row.** Eight bytes is a row — `FeatureSet::keypoints`
   // spells that out in the contract — so seven describes a frame whose rows overlap, which no store
   // produces and a caller can certainly claim.

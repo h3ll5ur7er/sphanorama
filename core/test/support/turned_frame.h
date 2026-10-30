@@ -8,8 +8,9 @@
 
 namespace sphanorama::test {
 
-// A frame as a phone turned a quarter clockwise about the way it looks would have handed it back:
-// the old left edge is the new top, so the new pixel (i, j) is the old pixel (j, height - 1 - i).
+// A frame whose picture is turned a quarter clockwise, as a phone turned a quarter about the way it
+// looks hands it back: the old left edge is the new top, so the new pixel (i, j) is the old pixel
+// (j, height - 1 - i).
 // A packed format only. The answer is a new allocation in `store` and belongs to the caller.
 inline Result<FrameRef> TurnedClockwise(IFrameStoreAccess& store, const FrameRef& frame) {
   const int32_t bytes = BytesPerPixel(frame.format);
@@ -45,8 +46,8 @@ inline Result<FrameRef> TurnedClockwise(IFrameStoreAccess& store, const FrameRef
   return turned;
 }
 
-// The device-to-world rotation of that turned frame: its camera's right is the old down, which is
-// a quarter turn about the camera's forward axis, -Z, composed on the camera's side.
+// The device-to-world rotation of that turned frame: its right is the old up and its down the old
+// right, a quarter turn about the camera's forward axis, -Z, composed on the camera's side.
 inline Quat RolledClockwise(const Quat& rotation) {
   return Normalize(Multiply(rotation, FromAxisAngle(Vec3{0.0, 0.0, 1.0}, std::numbers::pi / 2.0)));
 }

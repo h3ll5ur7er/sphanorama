@@ -149,16 +149,16 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
   }
 
   // The angles are the lens's, which is the same glass however the phone is held, so the wider
-  // belongs to the longer edge whichever axis the capture began with it on; and a frame the other
-  // way round from the first is read through it turned a quarter (ADR 0082).
-  const int32_t width = build.frames.front().width;
-  const int32_t height = build.frames.front().height;
+  // belongs to the longer edge whichever axis the capture began with it on; and the lens is long
+  // edge across whichever way the first frame was held, so it is one lens for every capture of a
+  // device. A frame held the other way is read through it turned a quarter (ADR 0082).
+  const int32_t longEdge = std::max(build.frames.front().width, build.frames.front().height);
+  const int32_t shortEdge = std::min(build.frames.front().width, build.frames.front().height);
   const double across = document.spec.horizontalFovDeg;
   const double up = document.spec.verticalFovDeg;
   const double wide = across >= up ? across : up;
   const double narrow = across >= up ? up : across;
-  build.lens = width >= height ? LensFromFieldOfView(wide, narrow, width, height)
-                               : LensFromFieldOfView(narrow, wide, width, height);
+  build.lens = LensFromFieldOfView(wide, narrow, longEdge, shortEdge);
   if (!IsUsableLens(build.lens)) {
     return Err<BuildId>(StatusCode::FailedPrecondition, kComponent,
                         "this capture's field of view is not a lens");

@@ -1201,6 +1201,19 @@ TEST(LensForFrame, ATurnThatDependsOnWhichWayThePhoneTurnedIsRefused) {
   EXPECT_FALSE(IsUsableLens(LensForFrame(rolling, rolling.height, rolling.width)));
 }
 
+TEST(LensForFrame, ACentreTheArithmeticLeftAnUlpFromTheMiddleStillTurns) {
+  // A kept lens is rescaled to the frames it is handed (`KeptLensFor`), and its centre can land a
+  // rounding away from the middle: from 1280 by 960, 1288 by 966 gives 483.00000000000006. That is
+  // a centred lens, and refusing it would refuse every turned frame under it.
+  Intrinsics lens = LensFromFieldOfView(66.0, 52.2, 1288, 966);
+  lens.cy = std::nextafter(lens.cy, kInf);
+  ASSERT_NE(lens.cy, 483.0) << "the premise: the centre is not the exact middle";
+  EXPECT_TRUE(IsUsableLens(LensForFrame(lens, 966, 1288)));
+  // And no further: a centre a hundredth of a pixel off reads differently turned each way.
+  lens.cy = 483.01;
+  EXPECT_FALSE(IsUsableLens(LensForFrame(lens, 966, 1288)));
+}
+
 TEST(LensForFrame, WhatTheLensSaysOfItselfTurnsWithIt) {
   Intrinsics lens = Phone();
   lens.estimated = true;

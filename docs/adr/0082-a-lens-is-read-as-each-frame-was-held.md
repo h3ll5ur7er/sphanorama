@@ -1,6 +1,8 @@
 # 0082 — A lens is read as each frame was held
 
-**Status:** accepted
+**Status:** accepted; amends [0070](0070-a-build-reads-the-capture-and-is-paced-by-poll.md), whose
+frames had to be one size, and [0067](0067-a-device-keeps-its-lens-and-a-fit-must-beat-it.md),
+whose kept lens is keyed by the frames' orientation
 
 ## Context
 
@@ -13,8 +15,9 @@ returns its frames the other way round.
 The build paired the stored angles with the frames' own size, one lens for every frame. So a capture
 with bursts taken both ways round was refused by `PanoramaBuildManager::Start` as "not all one
 size", after it had been written down as complete. A capture taken wholly the other way round
-from how it began built with pixels about 1.9 times non-square, which the single focal scale
-`Refine` fits (ADR 0066) cannot correct.
+from how it began built with pixels non-square by the square of the frame's aspect, 1.78 for 4:3
+and 3.16 for 16:9, since the page's lens has square pixels. The single focal scale `Refine` fits
+(ADR 0066) cannot correct that.
 
 Three answers were put to the maintainer: lock the screen's orientation for a capture; store the
 angles against the sensor's long and short edges; or swap the pair per frame. The second was chosen.
@@ -28,12 +31,15 @@ angles against the sensor's long and short edges; or swap the pair per frame. Th
     and size swapped.
   - For anything else it answers a lens `IsUsableLens` refuses.
   - The shape cannot say which way the phone turned, so only a lens that reads the same either way
-    turns: its centre exactly in the middle of its frame, no tangential distortion and no rolling
-    shutter. Every lens the app makes is one: `LensFromFieldOfView`, and `Refine`'s fit of it,
-    which scales only the focal lengths.
+    turns: its centre in the middle of its frame to a millionth of a pixel, no tangential
+    distortion and no rolling shutter. Every lens the app makes is one: `LensFromFieldOfView`,
+    `Refine`'s fit of it, which scales only the focal lengths, and `KeptLensFor`'s rescaling of a
+    kept one, whose centre can land a rounding off the middle (1288 by 966 from 1280 by 960 gives
+    483.00000000000006), which is why the middle is not asked for exactly.
 - **The build reads the stored pair against the sensor's edges.** The wider angle goes on the
-  longer edge of the first frame, whichever axis the capture began with it on. Every frame must be
-  that shape or that shape turned, or `Start` refuses.
+  longer edge, whichever axis the capture began with it on, and the capture's lens is long edge
+  across whichever way its first frame was held, so `Refine` fits one lens for every capture of a
+  device. Every frame must be the first frame's shape or that shape turned, or `Start` refuses.
 - **Every engine reads each frame through the lens turned to it.**
   - `FeatureSet` gains the shape of the frame its keypoints are pixels of, filled by
     `ExtractFeatures`, and `EstimatePairwise` reads each set through its own lens.
@@ -42,7 +48,10 @@ angles against the sensor's long and short edges; or swap the pair per frame. Th
     would be two copies to disagree.
   - `RenderPreview` reads the shape of each `FrameRef` it is handed.
   - A frame whose shape the lens cannot be read for is `InvalidArgument` in all three, a shape of
-    zero included.
+    zero included. So is a keypoint or a match outside the frame its set or its prior names: a
+    shape is a second copy of a fact the pixels also carry, and a shape the lens reads that is not
+    the frame's would read every pixel the wrong way round. Declared turned, a ring's matches
+    solved seven degrees out and called the fit precise.
 - **The stored spec does not change.** Its pair still names the axes the plan was laid on, which
   the planner and the page's overlay read. The build reads the same two numbers as a long edge and
   a short one, so no document format moves.
@@ -59,15 +68,24 @@ angles against the sensor's long and short edges; or swap the pair per frame. Th
   | SIFT     | 1.35           | 1.23          |
 
   Before this change, `Start` refused that capture.
-- **A turned ring registers, worse than the unturned one, and the cause is the frames.** With every
-  other frame turned, the median errors are 0.107 (ORB), 0.068 (AKAZE) and 0.030 (SIFT) degrees,
-  against the unturned ring's 0.046, 0.029 and 0.014, and the focal length is still fitted to
-  within 0.08%. Read through one unturned lens, the medians were about seven degrees.
-  - A turned 640×480 frame is 46.8 degrees across where it was 60, so neighbours thirty degrees
-    apart share 16.8 degrees of the world rather than 30.
-  - Every frame turned measures 0.060, 0.053 and 0.035. A ring rendered upright at 480×640 with
-    nothing turned measures 0.060 (AKAZE) and 0.036 (SIFT), so the turn itself adds nothing.
-  - A turned frame composes byte for byte as it did unturned.
+- **A turned ring registers, worse than the unturned one.** The ring is rendered through a lens 66
+  by 50 degrees, so a turned frame is 50 degrees across where it was 66.
+
+  | Ring | Overlap of neighbours | ORB | AKAZE | SIFT |
+  |------|----------------------:|----:|------:|-----:|
+  | unturned | 36° | 0.046 | 0.029 | 0.014 |
+  | every other frame turned | 28° | 0.107 | 0.068 | 0.030 |
+  | every frame turned | 20° | 0.060 | 0.053 | 0.035 |
+
+  Median errors in degrees. With every other frame turned the focal length is still fitted to within
+  0.08%; read through one unturned lens, the medians were about seven degrees.
+  - **Registering across a quarter turn costs ORB and AKAZE**, and the overlap is not what does it.
+    With every other frame turned every pair is between frames held a quarter turn apart, and those
+    rings share more of the world than every frame turned yet register worse for both, while SIFT
+    does not. Why is not measured. A capture turned partway through has such pairs only where it
+    turned, and a turned frame shares less of the world with each neighbour wherever it is.
+  - The reading itself is exact: a turned frame composes byte for byte as it did unturned, and
+    exact matches between frames held either way solve to within a hundredth of a degree.
 - **The pose is assumed to turn with the frame.**
   - The page reports the viewfinder's attitude, the screen's rotation applied (ADR 0017), and that
     is what makes a turned frame's pose the turned one.
@@ -75,12 +93,20 @@ angles against the sensor's long and short edges; or swap the pair per frame. Th
   - Nothing has measured a phone turned partway through a capture.
 - **The plan is still laid for the phone as held at `Begin`, and that stays open.** A frame taken
   turned covers its cell narrower one way and wider the other. So the overlap planned between
-  cells thins along one axis, and the overlay draws each cell's footprint with the axes the
-  capture began with.
+  cells thins along one axis. And the page's sighting reads the stored pair onto the axes the
+  capture began with, for each cell's footprint and for where its marker is drawn and whether it is
+  on screen: on a 4:3 phone, turned, a cell at the screen's right edge is drawn 0.875 of the way
+  across.
 - **Some lenses cannot read a turned frame**, and `Refine`, `EstimatePairwise` and `RenderPreview`
   refuse it under them: a lens whose centre is off the middle, or that has tangential distortion or
   a rolling shutter. None is made today. A lens with fitted decentring or tangential distortion
   would need the direction of the turn, which the pose's roll carries and the shape does not.
+- **A kept lens is one lens either way round.** ADR 0067 keyed a device's kept lens by the grabbed
+  frames' shape with their orientation kept, so a phone turned between captures kept two, and
+  refused a frame of another shape as a crop. Both are the same glass under this decision: the key
+  is the shape's long edge to its short, and a frame of the kept shape turned is read through
+  `LensForFrame` rather than refused. Nothing writes a kept lens yet, so this is decided for the
+  writer; `AmendKeptLens` still refuses a turned shape until then.
 - **Every caller now says each frame's shape.** A `FramePrior` or `FeatureSet` left at zero is
   refused rather than read as the lens's shape. Both are mirrored into the TypeScript contract and
   neither crosses the boundary.

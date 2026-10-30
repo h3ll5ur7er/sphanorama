@@ -509,9 +509,9 @@ TEST_F(NearestCentreComposition, AFrameTurnedAQuarterColoursWhatItColouredUnturn
   Look(FromAzimuthElevation(70.0, -5.0), Rgb{200, 10, 10});
   const Preview unturned = Render(256);
 
-  // Turned clockwise: the old left edge is the new top, so the new pixel (i, j) is the old pixel
-  // (j, height - 1 - i), and the camera's right is its down -- a roll a quarter turn about its
-  // forward axis, which is -Z.
+  // The picture turned clockwise: the old left edge is the new top, so the new pixel (i, j) is the
+  // old pixel (j, height - 1 - i), and the new right is the old up -- a roll a quarter turn about
+  // the camera's forward axis, which is -Z.
   frames[0] = Paint(PixelFormat::RGBA8,
                     [&](int32_t i, int32_t j) { return pattern(j, kHeight - 1 - i); }, kHeight,
                     kWidth);

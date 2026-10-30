@@ -267,11 +267,12 @@ TEST_P(PanoramaBuildAccuracy, ACaptureWithThePhoneTurnedPartwayThroughDrawsThePh
               built.meanError);
   EXPECT_EQ(built.equatorCovered, 1.0);
   // Today's run: 2.130 (ORB), 1.781 (AKAZE) and 1.347 (SIFT), against the unturned ring's 1.559,
-  // 1.370 and 1.234; at the true poses 2.075, 1.738 and 1.386, so what is left is the pairs. A
-  // turned frame is 46.8 degrees across where it was 60, so neighbours thirty degrees apart share a
-  // strip of 16.8 rather than 30, and register on less. Read through one unturned lens, as before
-  // ADR 0082, the build failed: its frames were not all one size. Still inside the 2.84 a tenth of
-  // a degree composes at.
+  // 1.370 and 1.234; with the true poses as priors 2.075, 1.738 and 1.386, so what is left is the
+  // pairs. A turned frame is 50 degrees across where it was 66, so turned neighbours share 20
+  // degrees of the world rather than 36, and the two pairs where the phone turned are held a
+  // quarter turn apart, which costs ORB and AKAZE (ADR 0082). Read through one unturned lens, as
+  // before, the build failed: its frames were not all one size. Still inside the 2.84 a tenth of a
+  // degree composes at.
   constexpr double kTurnedMeanErrorBound = 2.6;
   EXPECT_LE(built.meanError, kTurnedMeanErrorBound);
   EXPECT_TRUE(manager.Cancel(build.value).ok());

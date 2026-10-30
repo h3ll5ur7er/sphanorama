@@ -72,8 +72,9 @@ class IRegistrationEngine {
   // - `InvalidArgument` — the inputs could not be read as a pair: an empty feature set, a set this
   //   engine's extractor did not produce (`FeatureSet::extractor`, ADR 0058), a prior that is not a
   //   usable rotation, a lens that cannot project or that cannot be read for either set's frame,
-  //   turned or not (`LensForFrame`, ADR 0082), a frame whose declared rows do not fit the bytes
-  //   it holds, or two sets whose descriptor rows are different widths.
+  //   turned or not (`LensForFrame`, ADR 0082), a keypoint outside the frame its set names, a
+  //   frame whose declared rows do not fit the bytes it holds, or two sets whose descriptor rows
+  //   are different widths.
   // - **`Pin`'s own status, whole** — `code`, `detail` and `component` — when a frame could not be
   //   pinned. So a caller branching on the code sees what the store said, and a human reading the
   //   component sees the store that said it rather than the engine that was asking.
@@ -172,7 +173,7 @@ class IRegistrationEngine {
   // inliers, or fewer correspondences than inliers. `FailedPrecondition` when every prior's
   // confidence is zero, because then nothing says which way the reconstruction faces.
   // An accepted pair whose `inlierMatches` are not empty and are not as many as its `inliers`, or
-  // are not all finite pixels, is `InvalidArgument` too.
+  // are not all finite pixels inside the frames their priors name, is `InvalidArgument` too.
   // `Unsupported` from `NullRegistrationEngine`, which has no pairs to solve with. `Internal` for a
   // refusal from the solver these checks did not anticipate, which nothing short of 2^31 priors or
   // accepted pairs reaches today, and for anything the implementation's own machinery throws — the

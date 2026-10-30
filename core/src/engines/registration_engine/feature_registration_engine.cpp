@@ -816,6 +816,12 @@ Result<std::vector<Bearing>> ReadBearings(const FeatureSet& set, std::span<uint8
     std::memcpy(xy, rows.data() + static_cast<size_t>(row) * static_cast<size_t>(pitch),
                 sizeof(xy));
     const Pixel pixel{static_cast<double>(xy[0]), static_cast<double>(xy[1])};
+    // The shape the set names decides which way round the lens reads it (ADR 0082), so a keypoint
+    // past that frame's edge was found in another frame, read the wrong way round.
+    if (!(pixel.x >= 0.0 && pixel.x <= set.width && pixel.y >= 0.0 && pixel.y <= set.height)) {
+      return Err<std::vector<Bearing>>(StatusCode::InvalidArgument, kComponent,
+                                       "a keypoint lies outside the frame its set names");
+    }
     const UnprojectedDirection unprojected = Unproject(lens, pixel);
     // Kept in place whether or not it is usable, so this vector stays parallel to the descriptor
     // rows the matcher will index it with. See `Bearing`.
@@ -1379,12 +1385,17 @@ Intrinsics ScaledLens(const Intrinsics& initial, double scale) {
   return lens;
 }
 
-// An edge the focal search scores, with the matches it scores it on.
 // A frame's shape, which says which way round the lens reads its pixels (`LensForFrame`).
 struct Shape {
   int32_t width = 0, height = 0;
+
+  bool Holds(double x, double y) const {
+    return x >= 0.0 && x <= static_cast<double>(width) && y >= 0.0 &&
+           y <= static_cast<double>(height);
+  }
 };
 
+// An edge the focal search scores, with the matches it scores it on.
 struct ScoredEdge {
   size_t edge = 0;
   std::vector<PixelMatch> matches;
@@ -1678,6 +1689,14 @@ Result<GlobalSolution> FeatureRegistrationEngine::Solve(std::span<const Pairwise
             !std::isfinite(match.by)) {
           return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
                                      "an accepted pair carries matches that are not pixels");
+        }
+        // The prior names the shape the match is read by (ADR 0082), so one past that frame's
+        // edge was measured in another, and would be read the wrong way round.
+        if (!shapes[static_cast<size_t>(from->second)].Holds(match.ax, match.ay) ||
+            !shapes[static_cast<size_t>(to->second)].Holds(match.bx, match.by)) {
+          return Err<GlobalSolution>(StatusCode::InvalidArgument, kComponent,
+                                     "an accepted pair carries matches outside the frame its "
+                                     "prior names");
         }
       }
     }

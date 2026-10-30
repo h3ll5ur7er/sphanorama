@@ -525,7 +525,8 @@ TEST_F(PanoramaBuildManagerTest, StartRefusesAFieldOfViewThatIsNotALens) {
 
 // The angles are the lens's, and a lens is the same glass however the phone is held: the wider
 // belongs to the frame's longer edge. A capture begun upright and grabbed on its side read them
-// onto the axes they were named for, and built with pixels 1.9 times non-square (ADR 0082).
+// onto the axes they were named for, and built with non-square pixels: 1.86 times here, and the
+// square of the aspect, 1.78 at 4:3, under the page's square-pixel lens (ADR 0082).
 TEST_F(PanoramaBuildManagerTest, TheWiderAngleIsTheLongerEdgesWhicheverWayTheCaptureBegan) {
   CaptureRing(12);
   document_.spec.horizontalFovDeg = kVerticalFovDeg;
@@ -566,6 +567,30 @@ TEST_F(PanoramaBuildManagerTest, ACaptureWithThePhoneTurnedPartwayThroughBuilds)
     EXPECT_EQ(registration_.refinedPriors[i].width, document_.candidates[i].frame.width) << i;
     EXPECT_EQ(registration_.refinedPriors[i].height, document_.candidates[i].frame.height) << i;
   }
+}
+
+// The lens is the glass, so the capture's lens is the same whichever frame the first cell chose:
+// long edge across, as the lens a device keeps is (ADR 0082).
+TEST_F(PanoramaBuildManagerTest, TheLensIsLongEdgeAcrossWhicheverWayTheFirstFrameWasHeld) {
+  for (int i = 0; i < 12; ++i) {
+    const bool turned = i < 5;
+    const Quat looking = FromAzimuthElevation(30.0 * i, 0.0);
+    AddCandidate(NodeId{static_cast<uint64_t>(i + 1)},
+                 turned ? Multiply(looking, FromAxisAngle(Vec3{0, 0, 1}, std::numbers::pi / 2))
+                        : looking,
+                 turned ? kHeight : kWidth, turned ? kWidth : kHeight);
+  }
+  WriteDocument();
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok()) << build.status.detail;
+  RunToEnd(build.value);
+  ASSERT_EQ(document_.candidates.front().frame.width, kHeight) << "the premise: it was held turned";
+  const Intrinsics expected =
+      LensFromFieldOfView(kHorizontalFovDeg, kVerticalFovDeg, kWidth, kHeight);
+  EXPECT_EQ(registration_.refinedLens.width, kWidth);
+  EXPECT_EQ(registration_.refinedLens.height, kHeight);
+  EXPECT_EQ(registration_.refinedLens.fx, expected.fx);
+  EXPECT_EQ(registration_.refinedLens.fy, expected.fy);
 }
 
 TEST_F(PanoramaBuildManagerTest, StartRefusesACubemapAndAnOutputTooNarrowToDraw) {

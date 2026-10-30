@@ -854,6 +854,16 @@ TEST_F(Refine, AFrameTheLensCannotBeReadThroughIsRefused) {
   Intrinsics offCentre = TrueLens();
   offCentre.cx = 330;
   refusedSaying(turnedFrame, offCentre, "a turned frame under an off-centre lens");
+
+  // And a shape the lens reads that is not the one its matches were measured in: a frame declared
+  // turned whose matches run past the turned frame's edge would be read the wrong way round, and
+  // solved, degrees out.
+  const std::vector<PairwiseResult> matched = MatchedRing(truth, TrueLens());
+  ASSERT_TRUE(engine_.Refine(matched, priors, TrueLens()).ok()) << "the premise";
+  const Result<GlobalSolution> misdeclared = engine_.Refine(matched, turnedFrame, TrueLens());
+  EXPECT_EQ(misdeclared.status.code, StatusCode::InvalidArgument);
+  EXPECT_NE(misdeclared.status.detail.find("outside the frame"), std::string::npos)
+      << misdeclared.status.detail;
 }
 
 /**
@@ -1315,7 +1325,8 @@ TEST_F(Refine, ALoopTooRoughToFitDoesNotOverrideTheLensHandedIn) {
     chords.pop_back();
     for (int32_t i = 0; i + 2 < 12; ++i) chords.push_back(Matched(i, i + 2, shapes.truth, distorted));
     for (const uint32_t seed : {0u, 1u, 2u}) {
-      const std::vector<PairwiseResult> noisy = seed == 0 ? chords : test::WithNoise(chords, 0.4, seed);
+      const std::vector<PairwiseResult> noisy =
+          seed == 0 ? chords : test::WithNoise(chords, 0.4, seed, doubled.width, doubled.height);
       const Result<GlobalSolution> solved =
           engine_.Refine(noisy, ShapedFor(PriorsOut(shapes.truth), doubled), doubled);
       ASSERT_TRUE(solved.ok()) << solved.status.detail;

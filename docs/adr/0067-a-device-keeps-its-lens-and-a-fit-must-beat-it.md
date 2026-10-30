@@ -1,7 +1,8 @@
 # 0067 — A device keeps its lens, and a fit is taken only where it is surer than the lens it replaces
 
 **Status:** accepted; amends [0066](0066-refine-fits-the-focal-length-from-the-ring.md) decision 3
-by one condition
+by one condition; amended by [0082](0082-a-lens-is-read-as-each-frame-was-held.md), under which a
+kept lens is one lens whichever way round its frames were grabbed
 
 ## Context
 

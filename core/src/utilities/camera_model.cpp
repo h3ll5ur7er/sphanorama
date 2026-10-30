@@ -278,9 +278,12 @@ Intrinsics LensForFrame(const Intrinsics& lens, int32_t width, int32_t height) {
   if (width == lens.width && height == lens.height) return lens;
   if (width != lens.height || height != lens.width) return Intrinsics{};
   // A centre in the middle and radial distortion are the same about the optical axis turned
-  // either way; the frame has rotated a quarter, so its axes, and their focal lengths, swap.
-  const bool centred = lens.cx == static_cast<double>(lens.width) / 2.0 &&
-                       lens.cy == static_cast<double>(lens.height) / 2.0;
+  // either way; the frame has rotated a quarter, so its axes, and their focal lengths, swap. The
+  // middle to a millionth of a pixel, since a lens rescaled to its frames can land a rounding off.
+  constexpr double kMiddlePx = 1e-6;
+  const bool centred =
+      std::abs(lens.cx - static_cast<double>(lens.width) / 2.0) <= kMiddlePx &&
+      std::abs(lens.cy - static_cast<double>(lens.height) / 2.0) <= kMiddlePx;
   if (!centred || lens.p1 != 0.0 || lens.p2 != 0.0 || lens.rollingShutterLineTimeNs != 0.0) {
     return Intrinsics{};
   }
