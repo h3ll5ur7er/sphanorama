@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ProjectId, ProjectSummary } from '../../../../contracts/ts/contracts';
-import { describeResumeRefusal, resumableProject, startOffer } from './resume';
+import { describeResumeRefusal, onFallbackTier, resumableProject, startOffer } from './resume';
 import { describeFailure } from './status';
 
 function project(id: number, hasSession: boolean, title = `sphere ${id}`,
@@ -172,6 +172,17 @@ describe('describeResumeRefusal', () => {
     expect(describeResumeRefusal({
       code: 'Unsupported', component: 'CameraAccess', detail: 'insecure origin',
     }).offerAgain).toBe(false);
+  });
+});
+
+describe('onFallbackTier', () => {
+  it('is a tier that is not the resident pair, and no page without a tier', () => {
+    expect(onFallbackTier(true, false)).toBe(true);
+    expect(onFallbackTier(true, true)).toBe(false);
+    // No tier at all: the worker reports it as not resident, and the hint would be permanent on
+    // a device with no private file system.
+    expect(onFallbackTier(false, false)).toBe(false);
+    expect(onFallbackTier(false, true)).toBe(false);
   });
 });
 

@@ -147,6 +147,15 @@ export function describeResumeRefusal(status: Status): ResumeRefusal {
  * since an unreadable capture can be offered on any tier. On the resident tier every capture in
  * another tier is one of those, and nothing is said (ADR 0083).
  */
+/**
+ * Whether the page holds a tier of its own, which is what `startOffer`'s hint is for: one that is
+ * not the resident pair, and is a tier at all. A page with no tier is told apart, since it cannot
+ * tell a device with no private file system from a failed fallback (ADR 0083).
+ */
+export function onFallbackTier(canSpill: boolean, holdsResidentTier: boolean): boolean {
+  return canSpill && !holdsResidentTier;
+}
+
 export function startOffer(listed: Result<ProjectSummary[]>, storageError: string | null,
                            onFallbackTier: boolean): {
   resume: ProjectId | null;

@@ -4282,7 +4282,40 @@ test('a tab on a tier of its own says a capture may be waiting, and the tab hold
     await page.reload();
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await expect(page.locator('#resume')).toBeVisible();
-    await expect(page.locator('#stage')).not.toContainText('may be waiting');
+
+    // And the resident tab says nothing of a capture in another tier, which there is one it will
+    // not give back. Its only capture is made one, so nothing readable is offered and the hint's
+    // other conditions hold: only the tier the page holds keeps the line plain.
+    const rewritten = await page.evaluate(async () => {
+      const listed = await window.sphanoramaCore.project.list();
+      const held = listed.ok ? listed.value.find((p) => p.hasSession) : undefined;
+      if (held === undefined) return null;
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open('sphanorama', 1);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const key = `${held.id}/session`;
+      const document = await new Promise((resolve, reject) => {
+        const request = db.transaction('documents').objectStore('documents').get(key);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      if (typeof document !== 'string' || !/^tier \d+$/m.test(document)) return null;
+      const elsewhere = document.replace(/^tier \d+$/m, 'tier 999999999');
+      await new Promise((resolve, reject) => {
+        const transaction = db.transaction('documents', 'readwrite');
+        transaction.objectStore('documents').put(elsewhere, key);
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
+      });
+      return elsewhere;
+    });
+    expect(rewritten).toContain('tier 999999999');
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#resume')).toHaveJSProperty('hidden', true);
+    await expect(page.locator('#stage')).toContainText('enable the camera to continue');
   } finally {
     await server.close();
   }
