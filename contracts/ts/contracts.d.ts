@@ -257,6 +257,35 @@ export interface CapturePlan {
   spec: CapturePlanSpec;
 }
 
+/**
+ * A frame where a solve placed it, which is what coverage is judged from once a capture is built:
+ * the sensor's pose and the page's lens are the two things a gap comes from, and registration is
+ * what sees past both (ADR 0084).
+ */
+export interface PlacedFrame {
+  /** camera to world, as `GlobalSolution::rotations` */
+  rotation: Quat;
+  /** as the frame was held, `LensForFrame` of the solve's lens */
+  lens: Intrinsics;
+}
+
+/**
+ * Part of the sphere no placed frame covers with a margin to spare, and where to aim to fill it:
+ * a seam where two frames overlap by less than about 2.5 degrees is a gap too, though imaged
+ * (ADR 0084). A gap wider than one frame is answered as several, each one a frame aimed anywhere
+ * in the plan's cone around `target` covers.
+ */
+export interface CoverageGap {
+  /** Looking at the gap, level: nothing about a gap says which way up to hold the phone. */
+  target: Quat;
+  /**
+   * Of the whole sphere. Zero for a gap of directions on a line, which is no share of it: a band of
+   * only its horizon ring answers for the horizon alone, and the horizon is a line. A gap's
+   * existence is the target, not its share.
+   */
+  solidAngleFraction: number;
+}
+
 export type NodeState = 'Pending' | 'Capturing' | 'Captured' | 'Satisfied' | 'Flagged' | 'Retaking';
 
 /** ---------------------------------------------------------------- candidates */

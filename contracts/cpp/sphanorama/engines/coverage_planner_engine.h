@@ -90,6 +90,23 @@ class ICoveragePlannerEngine {
 
   virtual Result<CoverageState> Evaluate(const CapturePlan&, std::span<const Candidate>) = 0;
 
+  // Where frames placed by a solve leave the plan's sphere open, or covered by seams thinner than
+  // about 2.5 degrees, and where to aim to fill it (ADR 0084). `Evaluate` judges a cell by the
+  // frames filed under it, which a wrong lens or a drifting pose leaves blind: since ADR 0076 the
+  // plan is complete for every frame aimed inside its cone under the lens it was laid with, so a
+  // gap is that lens or that aim being wrong.
+  //
+  // Answers for the directions the plan does, its caps only where it has them. Each gap's target
+  // is one a frame through `fillLens` covers wherever in the plan's cone it is aimed, between the
+  // directions asked as well as at them, so aiming at every target closes the sphere; no frames
+  // placed is the whole sphere open. Refuses with `InvalidArgument` a plan with no cells or whose
+  // cone is not a measurement, a fill lens that does not see to its frame's edges or reaches less
+  // than the directions are apart from inside the cone, and a frame that is not a placement; with
+  // `Unsupported` where an implementation judges no coverage.
+  virtual Result<std::vector<CoverageGap>> FindGaps(const CapturePlan&,
+                                                    std::span<const PlacedFrame> frames,
+                                                    const Intrinsics& fillLens) = 0;
+
   // Which cells would most improve coverage if re-shot? Drives retake suggestions.
   virtual Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan&, const CoverageState&,
                                                      const GhostReport&) = 0;
