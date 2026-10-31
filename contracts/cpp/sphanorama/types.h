@@ -940,8 +940,8 @@ struct ProjectSummary {
   // which tier it names; that one says so below.
   bool sessionInAnotherTier = false;
   // Whether that session's document is one this build cannot read. It is offered only where no
-  // readable capture is, so its refusal can say it is kept for a build that can read it
-  // (ADR 0039) without hiding a capture this tier can give back (ADR 0083).
+  // readable capture in this tier is, so its refusal can say it is kept for a build that can read
+  // it (ADR 0039) without hiding a capture this tier can give back (ADR 0083).
   bool sessionUnreadable = false;
 };
 

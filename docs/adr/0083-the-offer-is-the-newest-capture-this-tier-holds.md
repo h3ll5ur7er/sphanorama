@@ -62,10 +62,12 @@ the page holds is a question for the frame store. Neither reaches the page.
   offers it. Before this, it was offered and refused for its tier. Such a page knows it holds a
   tier of its own, and where nothing readable is offered it says a capture may be waiting that a
   reload, with any other tab of the app closed, would find. "May", because the page cannot tell
-  the resident tier's capture from one nobody holds again: an older capture the resident tier has
-  since cleared, another fallback tier's, one that named frames on a page with no tier. So the
+  the resident tier's capture from one it will not give back: an older capture the resident tier
+  has since cleared, another fallback tier's, one that named frames on a page with no tier, or one
+  with no frames written on a page with no tier, which only such a page offers. So the
   line can send a user to reload for nothing, and says only that a reload would find out. On the
-  resident tier every capture in another tier is one of those, and nothing is said.
+  resident tier every capture in another tier is one of those, and nothing is said. Where an
+  unreadable capture is offered beside the line, the line names that offer first.
 - **A page with no tier gets no such line.** It cannot tell a device with no origin private file
   system, where every capture that named frames is gone for good, from a second tab whose fallback
   could not be opened, where a reload might take the resident tier. A line there would be

@@ -465,11 +465,13 @@ the resident tier went into a tier of its own and cannot come back here (ADR 008
 document this build cannot read, `sessionUnreadable`, comes after every readable one, since its
 refusal leaves only a new capture. If a summary qualifies the page offers a resume beside the
 ordinary enable, and a listing that failed is not one with nothing to resume: the page says it could
-not tell, and that a new capture would clear a capture that is waiting (ADR 0078). Both offers are
-the same user gesture, because a resume needs the camera and the sensor exactly as a new capture
-does. Pressed, it establishes the motion capability first — a device reporting none is turned away
-before `getUserMedia`, so nobody answers a camera prompt on the way to being told the session cannot
-start (ADR 0044) — then opens the camera, pushes the lens to the host, and calls
+not tell, and that a new capture would clear a capture that is waiting (ADR 0078). A page holding a
+tier of its own, where nothing readable is offered and some session is in another tier, says a
+capture may be waiting that a reload would find (ADR 0083). Both offers are the same user gesture,
+because a resume needs the camera and the sensor exactly as a new capture does. Pressed, it
+establishes the motion capability first — a device reporting none is turned away before
+`getUserMedia`, so nobody answers a camera prompt on the way to being told the session cannot start
+(ADR 0044) — then opens the camera, pushes the lens to the host, and calls
 `CaptureSessionManager.Resume(project)` instead of `Create` plus `Begin` — the manager reads the
 document it wrote, takes the plan that document carries cell for cell rather than laying it again,
 since a later build's planner lays a different sphere from the same spec (ADR 0077) — or, for a

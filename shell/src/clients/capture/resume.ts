@@ -32,8 +32,9 @@ import { describeFailure } from './status';
  * give back; offered, it was refused, and offered again on every load, in front of the capture
  * this tier does hold (ADR 0083).
  *
- * A capture this build cannot read comes last, offered only where no readable one is: its refusal
- * withdraws the offer and leaves a new capture, which would empty the tier a readable one is in.
+ * A capture this build cannot read comes last, offered only where no readable one in this tier is:
+ * its refusal withdraws the offer and leaves a new capture, which would empty the tier a readable
+ * one is in.
  */
 export function resumableProject(projects: readonly ProjectSummary[]): ProjectId | null {
   let newest: ProjectSummary | null = null;
@@ -140,10 +141,11 @@ export function describeResumeRefusal(status: Status): ResumeRefusal {
  * second tab, or one opened while the last tab's worker was still letting go (ADR 0063). There a
  * capture in another tier may be the resident tier's, still on disk and offered by a reload that
  * gets the resident tier, so the line says one may be waiting. "May", because the page cannot tell
- * it from one nobody holds again: an older capture the resident tier has since cleared, another
- * fallback tier's, one that named frames on a page with no tier. Where nothing readable is
- * offered, that is, since an unreadable capture can be offered on any tier. On the resident tier
- * every capture in another tier is one of those, and nothing is said (ADR 0083).
+ * it from one the resident tier will not give back: an older capture it has since cleared, another
+ * fallback tier's, one that named frames on a page with no tier, or one with no frames written on
+ * a page with no tier, which only such a page offers. Where nothing readable is offered, that is,
+ * since an unreadable capture can be offered on any tier. On the resident tier every capture in
+ * another tier is one of those, and nothing is said (ADR 0083).
  */
 export function startOffer(listed: Result<ProjectSummary[]>, storageError: string | null,
                            onFallbackTier: boolean): {
@@ -176,11 +178,16 @@ export function startOffer(listed: Result<ProjectSummary[]>, storageError: strin
     (project) => project.id === resume && !project.sessionUnreadable);
   if (!readableOffered && onFallbackTier
       && listed.value.some((project) => project.hasSession && project.sessionInAnotherTier)) {
+    // An unreadable capture is still offered, and the line names that press first, apart from the
+    // hint, so the hint does not read as what the resume button reaches.
     return {
       resume,
-      message:
-        'core ready — a capture may be waiting in storage this page could not take: reload, ' +
-        'closing any other tab of this app, to find out; or enable the camera to start a new one',
+      message: resume === null
+        ? 'core ready — a capture may be waiting in storage this page could not take: reload, ' +
+          'closing any other tab of this app, to find out; or enable the camera to start a new one'
+        : 'core ready — resume the last capture, or enable the camera to start a new one; a ' +
+          'capture this page could not take may also be waiting: reload, closing any other tab ' +
+          'of this app, to find out',
     };
   }
   return {

@@ -206,7 +206,12 @@ describe('startOffer', () => {
     const unreadableOnly =
       startOffer({ ok: true, value: [unreadable(2), elsewhere(5)] }, null, true);
     expect(unreadableOnly.resume).toBe(2);
-    expect(unreadableOnly.message).toContain('a capture may be waiting');
+    expect(unreadableOnly.message).toContain('may also be waiting');
+    // Naming the offer as well, and apart from the hint: the line says which presses are on offer,
+    // and the resume button is one of them.
+    expect(unreadableOnly.message).toContain('resume the last capture');
+    expect(unreadableOnly.message.indexOf('resume the last capture'))
+      .toBeLessThan(unreadableOnly.message.indexOf('may also be waiting'));
 
     // On the resident tier a capture in another tier is a fallback tier's, which nobody will
     // ever hold again, so there is nothing to say about it.
