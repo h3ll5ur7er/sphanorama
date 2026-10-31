@@ -4253,6 +4253,41 @@ test('the capture this tier holds is offered over a newer one from another tab',
   }
 });
 
+test('a tab on a tier of its own says a capture may be waiting, and the tab holding it offers it',
+  async ({ page, context }) => {
+  // The second tab takes a tier of its own (ADR 0063), so the first tab's capture reads as in
+  // another tier there and is not offered. It is still on disk, and the line says a reload may find
+  // it rather than that there is nothing (ADR 0083).
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+    // Written down before the second tab loads, since a page hydrates its documents once.
+    await page.evaluate(() => window.sphanoramaHost.flush());
+
+    const second = await context.newPage();
+    await second.goto(server.appUrl);
+    await expect(second.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(second.locator('#stage')).toContainText('a capture may be waiting');
+    await expect(second.locator('#resume')).toHaveJSProperty('hidden', true);
+    await expect(second.locator('#enable')).toBeEnabled();
+
+    // And the tab holding the resident tier offers it, its reload handed the pair (ADR 0063).
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#resume')).toBeVisible();
+    await expect(page.locator('#stage')).not.toContainText('may be waiting');
+  } finally {
+    await server.close();
+  }
+});
+
 test('a resume refused for a reason a press could clear stays on offer, and goes when a capture starts',
   async ({ page }) => {
   // The other half of ADR 0039. A refusal about this attempt, not about the document, is one the

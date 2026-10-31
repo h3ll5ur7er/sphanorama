@@ -200,16 +200,16 @@ the affected seam region — and re-blends the affected tiles. This is the mecha
 and it is the reason the build is modelled as a graph and not a pipeline run (§4.4).
 
 ### ProjectManager (V3)
-Owns projects across sessions: list, create, delete, and export. Not resume — picking a capture
-back up means holding a live session, and that is `CaptureSessionManager`'s (ADR 0029). It does
-report *that* there is one: `ProjectSummary.hasSession` says a session document exists, which is
-metadata about a project rather than a session anybody can be handed, and it is what lets a client
-offer a resume instead of discovering one by attempting it (ADR 0036). `sessionInAnotherTier` says
-that session's frames are in a spill tier other than the one the frame store holds, which it asks
-`IFrameStoreAccess` for, and `sessionUnreadable` that this build cannot read its document
-(ADR 0083). Export means asking
-`IImageCodecAccess` to encode and attach XMP `GPano` metadata, then handing bytes to
-`IExportAccess`. It is the only manager that touches `IExportAccess`.
+Owns projects across sessions: list, create, delete, and export. Not resume — picking a capture back
+up means holding a live session, and that is `CaptureSessionManager`'s (ADR 0029). It does report
+*that* there is one: `ProjectSummary.hasSession` says a session document exists, which is metadata
+about a project rather than a session anybody can be handed, and it is what lets a client offer a
+resume instead of discovering one by attempting it (ADR 0036). `sessionInAnotherTier` says that
+session's document names a spill tier other than the one the frame store holds, which it asks
+`IFrameStoreAccess` for, or frames on a store with no tier, and `sessionUnreadable` that this build
+cannot read its document (ADR 0083). Export means asking `IImageCodecAccess` to encode and attach
+XMP `GPano` metadata, then handing bytes to `IExportAccess`. It is the only manager that touches
+`IExportAccess`.
 
 ## 3.5 The boundary that makes this work
 

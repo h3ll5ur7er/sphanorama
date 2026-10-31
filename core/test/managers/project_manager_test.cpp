@@ -268,8 +268,9 @@ TEST_F(Projects, ASessionThisBuildCannotReadIsNotSaidToBeElsewhere) {
   // Said, so the page can rank it after any capture it can give back.
   EXPECT_TRUE(listed.value.front().sessionUnreadable);
 
-  // And only it: a readable session is not.
+  // And only it: a readable session is not, nor a project with no session at all.
   ASSERT_TRUE(Captured("readable").ok());
+  ASSERT_TRUE(manager->Create("never captured").ok());
   listed = manager->List();
   ASSERT_TRUE(listed.ok()) << listed.status.detail;
   for (const ProjectSummary& summary : listed.value) {

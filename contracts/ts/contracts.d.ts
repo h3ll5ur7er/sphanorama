@@ -993,12 +993,11 @@ export interface ProjectSummary {
    */
   hasSession: boolean;
   /**
-   * Whether that session's frames are in a spill tier other than the one this store holds, so
-   * that `Resume` would refuse it (ADR 0035). Only one tier is resident at a time, and a tab
+   * Whether that session's document names a spill tier other than the one this store holds, or
+   * names frames on a store with no tier, so that `Resume` would refuse it (ADR 0035): zero
+   * matches zero, but such a store adopts no frame. Only one tier is resident at a time, and a tab
    * beside the one holding it captures into a tier of its own (ADR 0063); this is how a page
    * offers the capture its own tier can give back rather than the newest anywhere (ADR 0083).
-   * A document naming frames on a store with no tier is elsewhere too: zero matches zero, but
-   * such a store adopts no frame (ADR 0035).
    * False where there is no session, and for a document this build cannot read, which cannot say
    * which tier it names; that one says so below.
    */

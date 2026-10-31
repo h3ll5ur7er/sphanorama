@@ -138,9 +138,12 @@ export function describeResumeRefusal(status: Status): ResumeRefusal {
  *
  * `onFallbackTier` is a page whose worker took a tier of its own rather than the resident one: a
  * second tab, or one opened while the last tab's worker was still letting go (ADR 0063). There a
- * capture in another tier may be the resident tier's, still on disk and offered by a reload with
- * the other tab closed, so the line says one is waiting. On the resident tier a capture in another
- * tier is a fallback tier's, which nobody holds again, and nothing is said (ADR 0083).
+ * capture in another tier may be the resident tier's, still on disk and offered by a reload that
+ * gets the resident tier, so the line says one may be waiting. "May", because the page cannot tell
+ * it from one nobody holds again: an older capture the resident tier has since cleared, another
+ * fallback tier's, one that named frames on a page with no tier. Where nothing readable is
+ * offered, that is, since an unreadable capture can be offered on any tier. On the resident tier
+ * every capture in another tier is one of those, and nothing is said (ADR 0083).
  */
 export function startOffer(listed: Result<ProjectSummary[]>, storageError: string | null,
                            onFallbackTier: boolean): {
@@ -169,13 +172,15 @@ export function startOffer(listed: Result<ProjectSummary[]>, storageError: strin
     };
   }
   const resume = resumableProject(listed.value);
-  if (resume === null && onFallbackTier
+  const readableOffered = listed.value.some(
+    (project) => project.id === resume && !project.sessionUnreadable);
+  if (!readableOffered && onFallbackTier
       && listed.value.some((project) => project.hasSession && project.sessionInAnotherTier)) {
     return {
       resume,
       message:
-        'core ready — a capture is waiting in storage another tab of this app is holding: close ' +
-        'it and reload to resume, or enable the camera to start a new one here',
+        'core ready — a capture may be waiting in storage this page could not take: reload, ' +
+        'closing any other tab of this app, to find out; or enable the camera to start a new one',
     };
   }
   return {

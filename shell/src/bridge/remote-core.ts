@@ -76,8 +76,9 @@ export interface RemoteCore extends CoreRuntime {
    */
   canSpill(): boolean;
   /**
-   * Whether that tier is the resident pair, the one a reload resumes from, rather than a tier of
-   * the worker's own (ADR 0063).
+   * Whether that tier is the resident pair, the one a reload resumes from (ADR 0063). False both
+   * for a tier of the worker's own and where there is no tier at all, which `canSpill` tells
+   * apart.
    */
   holdsResidentTier(): boolean;
   /**

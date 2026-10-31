@@ -193,9 +193,20 @@ describe('startOffer', () => {
     const waiting = [project(1, false), elsewhere(3)];
     const fallback = startOffer({ ok: true, value: waiting }, null, true);
     expect(fallback.resume).toBeNull();
-    expect(fallback.message).toContain('a capture is waiting');
+    // "May": a capture in another tier can as well be one nobody will hold again — an older one
+    // the resident tier no longer holds, or another fallback tier's — and the page cannot tell
+    // which, so it says what a reload would find out rather than that it would resume.
+    expect(fallback.message).toContain('a capture may be waiting');
     expect(fallback.message).toContain('reload');
     expect(fallback.message).not.toContain('enable the camera to continue');
+
+    // And where the only offer is a capture this build cannot read, which on a fallback page is
+    // the only kind that can be offered: it stays on offer, and the line still says a reload may
+    // find a capture this build can resume.
+    const unreadableOnly =
+      startOffer({ ok: true, value: [unreadable(2), elsewhere(5)] }, null, true);
+    expect(unreadableOnly.resume).toBe(2);
+    expect(unreadableOnly.message).toContain('a capture may be waiting');
 
     // On the resident tier a capture in another tier is a fallback tier's, which nobody will
     // ever hold again, so there is nothing to say about it.

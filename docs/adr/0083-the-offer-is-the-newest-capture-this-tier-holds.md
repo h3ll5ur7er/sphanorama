@@ -60,9 +60,16 @@ the page holds is a question for the frame store. Neither reaches the page.
   closing, and a reload whose old worker holds the files past its wait. Each takes a tier of its
   own, so the resident tier's capture reads as elsewhere, while it is still on disk and a reload
   offers it. Before this, it was offered and refused for its tier. Such a page knows it holds a
-  tier of its own, and says a capture is waiting that a reload with the other tab closed can
-  resume. On the resident tier nothing is said, since a capture in another tier there is a
-  fallback tier's.
+  tier of its own, and where nothing readable is offered it says a capture may be waiting that a
+  reload, with any other tab of the app closed, would find. "May", because the page cannot tell
+  the resident tier's capture from one nobody holds again: an older capture the resident tier has
+  since cleared, another fallback tier's, one that named frames on a page with no tier. So the
+  line can send a user to reload for nothing, and says only that a reload would find out. On the
+  resident tier every capture in another tier is one of those, and nothing is said.
+- **A page with no tier gets no such line.** It cannot tell a device with no origin private file
+  system, where every capture that named frames is gone for good, from a second tab whose fallback
+  could not be opened, where a reload might take the resident tier. A line there would be
+  permanent on the first.
 - **A tier mismatch is no longer reached through the offer.** It now needs the tier to change
   between the listing and the press, and only `Begin` changes it, which hides the offer. A resume
   can still be refused after it was offered for reasons a press could clear, the store or the
