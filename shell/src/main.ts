@@ -1693,8 +1693,7 @@ async function main() {
     // *trying* would start the very capture the user has not chosen yet (ADR 0036).
     const storageError = remote.storageError();
     const { resume, message } = startOffer(await reportFacade(core, storageError), storageError,
-                                           onFallbackTier(remote.canSpill(),
-                                                          remote.holdsResidentTier()));
+                                           onFallbackTier(remote));
     resumeButton.hidden = resume === null;
     stage.textContent = message;
     // Known from the boot, so neither offer is made to a core that cannot read this page's motion.

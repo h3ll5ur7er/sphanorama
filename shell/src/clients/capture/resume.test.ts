@@ -71,7 +71,7 @@ describe('resumableProject', () => {
     expect(resumableProject([elsewhere(3), elsewhere(9)])).toBeNull();
   });
 
-  it('offers a capture this build cannot read only where no readable one is', () => {
+  it('offers a capture this build cannot read only where no readable one in this tier is', () => {
     // Offered, it is refused as `Unsupported` and the offer is withdrawn, leaving a new capture,
     // which empties the tier a readable capture is in (ADR 0083). Offered alone, its refusal says
     // it is kept for a build that can read it (ADR 0039).
@@ -113,10 +113,11 @@ describe('describeResumeRefusal', () => {
   });
 
   it('keeps the offer up for a refusal another attempt could clear', () => {
-    // A tier mismatch is a statement about *this* tier rather than about those frames: a session
-    // that could not take the resident pair and fell back to a tier of its own (ADR 0030) says
-    // exactly this while its pixels are still on disk. Withdrawing the offer would make a device
-    // that is momentarily wrong look like a capture that is gone.
+    // A `FailedPrecondition` is a statement about this attempt rather than about those frames: a
+    // store that would not take them back, or a tier that changed between the listing and the
+    // press. Withdrawing the offer would make a device that is momentarily wrong look like a
+    // capture that is gone. Since ADR 0083 a tier mismatch is not offered in the first place, but
+    // the code is classified the same whatever said it.
     const refusal = describeResumeRefusal(wrongTier);
     expect(refusal.offerAgain).toBe(true);
     expect(refusal.message).toMatch(/try again/i);
@@ -177,12 +178,16 @@ describe('describeResumeRefusal', () => {
 
 describe('onFallbackTier', () => {
   it('is a tier that is not the resident pair, and no page without a tier', () => {
-    expect(onFallbackTier(true, false)).toBe(true);
-    expect(onFallbackTier(true, true)).toBe(false);
+    // Handed the remote's own answers rather than two booleans, so which of them it reads is pinned
+    // here and not left to the page's call.
+    const remote = (canSpill: boolean, holdsResidentTier: boolean) =>
+      ({ canSpill: () => canSpill, holdsResidentTier: () => holdsResidentTier });
+    expect(onFallbackTier(remote(true, false))).toBe(true);
+    expect(onFallbackTier(remote(true, true))).toBe(false);
     // No tier at all: the worker reports it as not resident, and the hint would be permanent on
     // a device with no private file system.
-    expect(onFallbackTier(false, false)).toBe(false);
-    expect(onFallbackTier(false, true)).toBe(false);
+    expect(onFallbackTier(remote(false, false))).toBe(false);
+    expect(onFallbackTier(remote(false, true))).toBe(false);
   });
 });
 

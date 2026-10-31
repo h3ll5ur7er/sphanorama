@@ -87,12 +87,12 @@ export interface ResumeRefusal {
  * means different things to do next, and the line has to say which one just failed.
  *
  * The offer comes back for every refusal except `Unsupported` and `SensorUnavailable`, and the
- * asymmetry is the answer to
- * the question ADR 0035 and ADR 0036 left between them (ADR 0039). Most refusals are statements
- * about this attempt: a tier this device does not currently hold, a store that would not take the
- * frames back, a camera another tab has. Those can be different on the next press or the next
- * load, and a capture that is still on disk must not be made to look gone. `Unsupported` is the
- * core's word for "this build does not read that", and no press changes which build is running.
+ * asymmetry is the answer to the question ADR 0035 and ADR 0036 left between them (ADR 0039). Most
+ * refusals are statements about this attempt: a store that would not take the frames back, a camera
+ * another tab has. (A tier this device does not hold was one; since ADR 0083 such a capture is not
+ * offered at all.) Those can be different on the next press or the next load, and a capture that is
+ * still on disk must not be made to look gone. `Unsupported` is the core's word for "this build
+ * does not read that", and no press changes which build is running.
  *
  * Read off the code rather than the component on purpose. The camera adapter's `Unsupported` is
  * the secure-origin one, which is equally not fixable by pressing again — the origin belongs to
@@ -128,6 +128,17 @@ export function describeResumeRefusal(status: Status): ResumeRefusal {
 }
 
 /**
+ * Whether the page holds a tier of its own, which is what `startOffer`'s hint is for: one that is
+ * not the resident pair, and is a tier at all. A page with no tier is told apart, since it cannot
+ * tell a device with no private file system from a failed fallback (ADR 0083).
+ */
+export function onFallbackTier(
+  tier: { canSpill(): boolean; holdsResidentTier(): boolean },
+): boolean {
+  return tier.canSpill() && !tier.holdsResidentTier();
+}
+
+/**
  * What the page offers once the core is up: the capture to resume, if any, and the line saying
  * which presses are on offer.
  *
@@ -137,7 +148,7 @@ export function describeResumeRefusal(status: Status): ResumeRefusal {
  * that keeps failing must not lock the user out of capturing anything, and the line says what it
  * would cost (ADR 0078).
  *
- * `onFallbackTier` is a page whose worker took a tier of its own rather than the resident one: a
+ * `fallbackTier` is a page whose worker took a tier of its own rather than the resident one: a
  * second tab, or one opened while the last tab's worker was still letting go (ADR 0063). There a
  * capture in another tier may be the resident tier's, still on disk and offered by a reload that
  * gets the resident tier, so the line says one may be waiting. "May", because the page cannot tell
@@ -147,17 +158,8 @@ export function describeResumeRefusal(status: Status): ResumeRefusal {
  * since an unreadable capture can be offered on any tier. On the resident tier every capture in
  * another tier is one of those, and nothing is said (ADR 0083).
  */
-/**
- * Whether the page holds a tier of its own, which is what `startOffer`'s hint is for: one that is
- * not the resident pair, and is a tier at all. A page with no tier is told apart, since it cannot
- * tell a device with no private file system from a failed fallback (ADR 0083).
- */
-export function onFallbackTier(canSpill: boolean, holdsResidentTier: boolean): boolean {
-  return canSpill && !holdsResidentTier;
-}
-
 export function startOffer(listed: Result<ProjectSummary[]>, storageError: string | null,
-                           onFallbackTier: boolean): {
+                           fallbackTier: boolean): {
   resume: ProjectId | null;
   message: string;
 } {
@@ -185,7 +187,7 @@ export function startOffer(listed: Result<ProjectSummary[]>, storageError: strin
   const resume = resumableProject(listed.value);
   const readableOffered = listed.value.some(
     (project) => project.id === resume && !project.sessionUnreadable);
-  if (!readableOffered && onFallbackTier
+  if (!readableOffered && fallbackTier
       && listed.value.some((project) => project.hasSession && project.sessionInAnotherTier)) {
     // An unreadable capture is still offered, and the line names that press first, apart from the
     // hint, so the hint does not read as what the resume button reaches.

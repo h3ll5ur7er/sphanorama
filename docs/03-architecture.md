@@ -462,13 +462,13 @@ the same predicate `ArmBurst` asks.
 At load the Capture Client calls `ProjectManager.List()` and looks for the newest summary carrying
 `hasSession` and not `sessionInAnotherTier`, since a capture taken in a tab beside the one holding
 the resident tier went into a tier of its own and cannot come back here (ADR 0083). One whose
-document this build cannot read, `sessionUnreadable`, comes after every readable one, since its
-refusal leaves only a new capture. If a summary qualifies the page offers a resume beside the
-ordinary enable, and a listing that failed is not one with nothing to resume: the page says it could
-not tell, and that a new capture would clear a capture that is waiting (ADR 0078). A page holding a
-tier of its own, where nothing readable is offered and some session is in another tier, says a
-capture may be waiting that a reload would find (ADR 0083). Both offers are the same user gesture,
-because a resume needs the camera and the sensor exactly as a new capture does. Pressed, it
+document this build cannot read, `sessionUnreadable`, comes after every readable one in this tier,
+since its refusal leaves only a new capture. If a summary qualifies the page offers a resume beside
+the ordinary enable, and a listing that failed is not one with nothing to resume: the page says it
+could not tell, and that a new capture would clear a capture that is waiting (ADR 0078). A page
+holding a tier of its own, where nothing readable is offered and some session is in another tier,
+says a capture may be waiting that a reload would find (ADR 0083). Both offers are the same user
+gesture, because a resume needs the camera and the sensor exactly as a new capture does. Pressed, it
 establishes the motion capability first — a device reporting none is turned away before
 `getUserMedia`, so nobody answers a camera prompt on the way to being told the session cannot start
 (ADR 0044) — then opens the camera, pushes the lens to the host, and calls
