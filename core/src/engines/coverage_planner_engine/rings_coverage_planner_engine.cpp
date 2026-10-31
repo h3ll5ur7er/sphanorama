@@ -470,24 +470,32 @@ Result<std::vector<CoverageGap>> RingsCoveragePlannerEngine::FindGaps(
     return Err<std::vector<CoverageGap>>(StatusCode::InvalidArgument, kComponent,
                                          "a gap is judged against a cone that is a measurement");
   }
-  // No point of the sphere is farther than about 1.012 degrees from a direction asked below. A
-  // direction is counted covered only where one frame covers it and the ring this far around it,
-  // whose hull holds every point that near, so a point left open always has an open direction
-  // within 1.012 degrees; and a fill frame reaches this far past its target's directions. Asked of
+  // No point the plan answers for is farther than about 1.03 degrees from a direction asked below,
+  // the poles and a band's edges included, which are asked outright for that reason. A direction
+  // is counted covered only where one frame covers it and eight directions this far around it,
+  // whose hull holds every point within 1.15 degrees, so a point left open always has an open
+  // direction that near; and a fill frame reaches this far past its target's directions. Asked of
   // the directions alone, filling left slivers open between them (ADR 0084).
-  constexpr double kBetweenDeg = 1.1;
+  constexpr double kBetweenDeg = 1.25;
   // What a fill frame covers wherever in the cone it is aimed: the circle inscribed in it, the
-  // nearest of its four edges to its axis whatever its centre and distortion, less the cone, less
-  // the distance between directions.
+  // nearest point of its border to its axis, less the cone, less the distance between directions.
+  // The border is asked along its length rather than at its midpoints, which are the nearest only
+  // for a centred, radial lens: tangential distortion moves the nearest point along an edge.
   double inscribed = std::numbers::pi / 2.0;
-  for (const Pixel& edge : {Pixel{0.0, fillLens.cy}, Pixel{fillLens.width * 1.0, fillLens.cy},
-                            Pixel{fillLens.cx, 0.0}, Pixel{fillLens.cx, fillLens.height * 1.0}}) {
-    const UnprojectedDirection ray = Unproject(fillLens, edge);
-    if (!ray.valid) {
-      return Err<std::vector<CoverageGap>>(StatusCode::InvalidArgument, kComponent,
-                                           "a fill lens has to see to the edges of its frame");
+  constexpr int kAlongAnEdge = 64;
+  const double w = fillLens.width * 1.0;
+  const double h = fillLens.height * 1.0;
+  for (int i = 0; i < kAlongAnEdge; ++i) {
+    const double t = (i + 0.5) / kAlongAnEdge;
+    for (const Pixel& edge : {Pixel{0.0, t * h}, Pixel{w, t * h}, Pixel{t * w, 0.0},
+                              Pixel{t * w, h}}) {
+      const UnprojectedDirection ray = Unproject(fillLens, edge);
+      if (!ray.valid) {
+        return Err<std::vector<CoverageGap>>(StatusCode::InvalidArgument, kComponent,
+                                             "a fill lens has to see to the edges of its frame");
+      }
+      inscribed = std::min(inscribed, std::acos(std::clamp(-ray.direction.z, -1.0, 1.0)));
     }
-    inscribed = std::min(inscribed, std::acos(std::clamp(-ray.direction.z, -1.0, 1.0)));
   }
   const double reachDeg = inscribed * kRadToDeg - cone - kBetweenDeg;
   // And no finer than the directions are apart, about a degree and a half: below that every open
@@ -580,10 +588,29 @@ Result<std::vector<CoverageGap>> RingsCoveragePlannerEngine::FindGaps(
     const Vec3 direction{std::cos(golden * i) * radius, y, std::sin(golden * i) * radius};
     if (!covered(direction)) open.push_back(Open{direction, true});
   }
-  for (int i = 0; i < kOnTheHorizon; ++i) {
-    const double azimuth = 2.0 * std::numbers::pi * (i + 0.5) / kOnTheHorizon;
-    const Vec3 direction{std::sin(azimuth), 0.0, -std::cos(azimuth)};
-    if (!covered(direction)) open.push_back(Open{direction, false});
+  const auto ringAt = [&](double y, int count) {
+    const double radius = std::sqrt(std::max(0.0, 1.0 - y * y));
+    for (int i = 0; i < count; ++i) {
+      const double azimuth = 2.0 * std::numbers::pi * (i + 0.5) / count;
+      const Vec3 direction{std::sin(azimuth) * radius, y, -std::cos(azimuth) * radius};
+      if (!covered(direction)) open.push_back(Open{direction, false});
+    }
+  };
+  ringAt(0.0, kOnTheHorizon);
+  // The spread thins where it is cut and where it closes on a pole, and a point there was 1.46
+  // degrees from the nearest direction asked: a band's edges and the poles are asked outright,
+  // weighing nothing either, and so is a ring a degree or two around each pole.
+  if (highest >= 1.0 - 1e-9) {
+    for (const double side : {1.0, -1.0}) {
+      if (!covered(Vec3{0.0, side, 0.0})) open.push_back(Open{Vec3{0.0, side, 0.0}, false});
+      for (const double fromThePole : {0.8, 1.6}) {
+        ringAt(side * std::cos(fromThePole * kDegToRad),
+               std::max(8, static_cast<int>(360.0 * std::sin(fromThePole * kDegToRad) / 0.8)));
+      }
+    }
+  } else if (highest > 0.0) {
+    ringAt(highest, kOnTheHorizon);
+    ringAt(-highest, kOnTheHorizon);
   }
   // Highest first, so the directions within reach of one lie in a run of elevations either side of
   // it: a reach of r radians moves the height by at most r. Each target then asks only that run,

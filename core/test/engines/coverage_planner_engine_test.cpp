@@ -1414,20 +1414,42 @@ int OpenBetweenTheSamples(const CapturePlan& plan, const std::vector<PlacedFrame
   std::vector<Vec3> asked;
   const double golden = std::numbers::pi * (3.0 - std::sqrt(5.0));
   constexpr int kCount = 20000;
-  for (const double phase : {0.0, 0.25, 0.75}) {
+  // Two lattices offset from the engine's by a quarter step either way, and the engine's own
+  // turned by 0.6 degrees about an axis it has no symmetry about: off its directions by about
+  // half their spacing on average, not exactly between them anywhere, which a lattice cannot be.
+  const Quat turned = FromAxisAngle(Normalize(Vec3{0.3, 0.8, 0.5}), 0.6 / kRadToDeg);
+  for (const double phase : {0.25, 0.75, 0.5}) {
     for (int i = 0; i < kCount; ++i) {
       const double y = 1.0 - 2.0 * (static_cast<double>(i) + phase) / kCount;
-      if (std::abs(y) > highest) continue;
       const double radius = std::sqrt(std::max(0.0, 1.0 - y * y));
-      // Turned by half the step in longitude too, so these sit between the engine's directions in
-      // both senses rather than on top of them.
       const double theta = golden * (i + phase);
-      asked.push_back(Vec3{std::cos(theta) * radius, y, std::sin(theta) * radius});
+      Vec3 direction{std::cos(theta) * radius, y, std::sin(theta) * radius};
+      if (phase == 0.5) direction = Rotate(turned, direction);
+      if (std::abs(direction.y) > highest) continue;
+      asked.push_back(direction);
     }
   }
-  for (int i = 0; i < 7200; ++i) {
-    const double azimuth = 2.0 * std::numbers::pi * (i + 0.25) / 7200.0;
-    asked.push_back(Vec3{std::sin(azimuth), 0.0, -std::cos(azimuth)});
+  // And where the engine's spread thins, which is where it asks extra directions of its own: the
+  // horizon, a band's edges just inside them, and the poles a few tenths of a degree out.
+  const auto ringAt = [&](double y, int count) {
+    const double radius = std::sqrt(std::max(0.0, 1.0 - y * y));
+    for (int i = 0; i < count; ++i) {
+      const double azimuth = 2.0 * std::numbers::pi * (i + 0.25) / count;
+      asked.push_back(Vec3{std::sin(azimuth) * radius, y, -std::cos(azimuth) * radius});
+    }
+  };
+  ringAt(0.0, 7200);
+  if (highest >= 1.0 - 1e-9) {
+    for (const double side : {1.0, -1.0}) {
+      for (const double fromThePole : {0.3, 0.7, 1.2, 2.0, 2.8}) {
+        ringAt(side * std::cos(fromThePole / kRadToDeg), 720);
+      }
+    }
+  } else if (highest > 0.0) {
+    for (const double inside : {0.0, 0.002, 0.005}) {
+      ringAt(highest - inside, 3600);
+      ringAt(-(highest - inside), 3600);
+    }
   }
   int open = 0;
   for (const Vec3& direction : asked) {
@@ -1497,7 +1519,7 @@ TEST(CoverageGaps, AMissingFrameLeavesAGapWhereItWouldHaveLookedAndFillingItClos
 // The field report's cause: the page's 66-degree guess against a camera that sees less. The plan
 // was complete for the lens it was laid with, and the frames are not that lens. Aimed at the
 // cells' centres, frames 50 degrees across leave none; 46 leave seams thinner than the distance
-// between directions, 0.7% of the sphere; 42 by 32 leave 5.0%, which is pinned so that where a
+// between directions, 0.9% of the sphere; 42 by 32 leave 6.1%, which is pinned so that where a
 // frame's edge is read moves it.
 TEST(CoverageGaps, FramesNarrowerThanThePlannedLensLeaveGapsBetweenCellsThatFillingCloses) {
   const CapturePlan plan = Plan(Spec());
@@ -1506,7 +1528,7 @@ TEST(CoverageGaps, FramesNarrowerThanThePlannedLensLeaveGapsBetweenCellsThatFill
   auto gaps = engine.FindGaps(plan, AtEveryCell(plan, actual), actual);
   ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
   ASSERT_FALSE(gaps.value.empty());
-  EXPECT_NEAR(Fraction(gaps.value), 0.0505, 0.003);
+  EXPECT_NEAR(Fraction(gaps.value), 0.0613, 0.003);
 
   const std::vector<PlacedFrame> filled =
       Filled(AtEveryCell(plan, actual), gaps.value, actual, 5.0);
@@ -1564,6 +1586,9 @@ TEST(CoverageGaps, NothingPlacedIsTheWholeSphereAndFillingItCloses) {
   auto gaps = engine.FindGaps(plan, {}, lens);
   ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
   EXPECT_NEAR(Fraction(gaps.value), 1.0, 1e-9);
+  // And in about as many targets as a reach of this lens tiles the sphere with, gathered greedily:
+  // asking too few directions per target, as a window half its reach did, leaves more of them.
+  EXPECT_NEAR(static_cast<double>(gaps.value.size()), 64.0, 4.0);
 
   const std::vector<PlacedFrame> filled = Filled({}, gaps.value, lens, 5.0);
   auto after = engine.FindGaps(plan, filled, lens);
@@ -1620,13 +1645,12 @@ TEST(CoverageGaps, ABandOfOnlyItsHorizonRingStillHasAHorizonToCover) {
 TEST(CoverageGaps, AFillLensTooNarrowToResolveIsRefusedRatherThanAnsweredDirectionByDirection) {
   const CapturePlan plan = Plan(Spec());
   RingsCoveragePlannerEngine engine;
-  // Half of 13 degrees less the 5-degree cone and the degree: half a degree of reach.
-  EXPECT_EQ(engine.FindGaps(plan, {}, LensOf(13.0, 13.0)).status.code,
+  // Half the field, less the 5-degree cone and the 1.25 degrees between directions, against a floor
+  // of 1.5: 15.4 degrees across reaches 1.45 and is refused, 15.6 reaches 1.55 and answers.
+  EXPECT_EQ(engine.FindGaps(plan, {}, LensOf(15.4, 15.4)).status.code,
             StatusCode::InvalidArgument);
-  // And one just wide enough answers, in bounded time and number.
-  auto resolved = engine.FindGaps(plan, {}, LensOf(20.0, 20.0));
-  ASSERT_TRUE(resolved.ok()) << resolved.status.detail;
-  EXPECT_LT(resolved.value.size(), 2000u);
+  auto resolved = engine.FindGaps(plan, {}, LensOf(15.6, 15.6));
+  EXPECT_TRUE(resolved.ok()) << resolved.status.detail;
 }
 
 // A gap's target is a direction, and nothing about the gap says which way up to hold the phone.
@@ -1654,8 +1678,8 @@ TEST(CoverageGaps, EachTargetIsAtMostOneFillFramesShareOfTheSphere) {
   RingsCoveragePlannerEngine engine;
   auto gaps = engine.FindGaps(plan, {}, lens);
   ASSERT_TRUE(gaps.ok());
-  // Half the narrower field, less the 5-degree cone and the 1.1 degrees between directions.
-  const double reach = (25.0 - 5.0 - 1.1) / kRadToDeg;
+  // Half the narrower field, less the 5-degree cone and the 1.25 degrees between directions.
+  const double reach = (25.0 - 5.0 - 1.25) / kRadToDeg;
   const double cap = (1.0 - std::cos(reach)) / 2.0;
   for (const CoverageGap& gap : gaps.value) {
     EXPECT_LE(gap.solidAngleFraction, cap * 1.02 + 1.0 / 20000.0);
@@ -1673,6 +1697,14 @@ TEST(CoverageGaps, AnOffCentreFillLensReachesOnlyAsFarAsItsNearestEdge) {
   auto gaps = engine.FindGaps(plan, {}, lens);
   ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
   EXPECT_EQ(OpenBetweenTheSamples(plan, Filled({}, gaps.value, lens, 5.0)), 0);
+  // Closure alone cannot tell, since fill frames overlap and cover for each other: each target is
+  // held to the share of the sphere the near edge's reach covers.
+  const UnprojectedDirection near = Unproject(lens, Pixel{0.0, lens.cy});
+  ASSERT_TRUE(near.valid);
+  const double reach = std::acos(-near.direction.z) - (5.0 + 1.25) / kRadToDeg;
+  for (const CoverageGap& gap : gaps.value) {
+    EXPECT_LE(gap.solidAngleFraction, (1.0 - std::cos(reach)) / 2.0 * 1.02 + 1.0 / 20000.0);
+  }
 }
 
 // Placed frames are read through their own distortion, and so is a fill lens's reach.
@@ -1684,8 +1716,84 @@ TEST(CoverageGaps, ADistortedLensIsReadThroughItsDistortion) {
   RingsCoveragePlannerEngine engine;
   auto gaps = engine.FindGaps(plan, AtEveryCell(plan, lens), lens);
   ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
+  // A barrel lens sees wider than its focal length says, so read as a pinhole it would leave more
+  // open than it does; the share is pinned for that reason, since filling closes either way.
+  EXPECT_NEAR(Fraction(gaps.value), 0.0154, 0.002);
   const std::vector<PlacedFrame> filled = Filled(AtEveryCell(plan, lens), gaps.value, lens, 5.0);
   EXPECT_EQ(OpenBetweenTheSamples(plan, filled), 0);
+}
+
+// A barrel lens strong enough that its corners lie past the fold, so `Unproject` has no direction
+// for them: such a frame is asked of its whole half-sphere, and `Project` decides. Asked of none of
+// it, every frame would cover nothing and the capture would read as one wide gap.
+TEST(CoverageGaps, AFrameWhoseCornersDoNotUnprojectIsAskedOfItsHalfSphere) {
+  const CapturePlan plan = Plan(Spec());
+  Intrinsics barrel = LensOf(66.0, 50.0);
+  barrel.k1 = -0.3;
+  ASSERT_TRUE(IsUsableLens(barrel));
+  ASSERT_FALSE(Unproject(barrel, Pixel{0.0, 0.0}).valid) << "the premise: a corner past the fold";
+  RingsCoveragePlannerEngine engine;
+  auto gaps = engine.FindGaps(plan, AtEveryCell(plan, barrel), LensOf(66.0, 50.0));
+  ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
+  EXPECT_TRUE(gaps.value.empty()) << gaps.value.size() << " gaps, " << Fraction(gaps.value);
+}
+
+// Whether a direction is imaged by any of the frames, asked with `Project` alone.
+bool Imaged(const std::vector<PlacedFrame>& frames, const Vec3& direction) {
+  return std::any_of(frames.begin(), frames.end(), [&](const PlacedFrame& frame) {
+    const ProjectedPixel at = Project(frame.lens, Rotate(Conjugate(frame.rotation), direction));
+    return at.valid && at.pixel.x >= 0.0 && at.pixel.x <= frame.lens.width && at.pixel.y >= 0.0 &&
+           at.pixel.y <= frame.lens.height;
+  });
+}
+
+// A hole `epsDeg` either side of `at` and nothing else near it: four square frames 60 degrees
+// across, each aimed past `at` by half its field and `epsDeg`, so their near edges frame a small
+// square there; and every cell of the plan more than 70 degrees away, so what else is open is too
+// far for a fill frame aimed at it to reach this one.
+std::vector<PlacedFrame> AHoleAt(const CapturePlan& plan, const Quat& at, double epsDeg) {
+  const Intrinsics square = LensOf(60.0, 60.0);
+  std::vector<PlacedFrame> frames;
+  for (const Vec3& axis : {Vec3{1.0, 0.0, 0.0}, Vec3{-1.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0},
+                           Vec3{0.0, -1.0, 0.0}}) {
+    frames.push_back(PlacedFrame{Multiply(at, FromAxisAngle(axis, (30.0 + epsDeg) / kRadToDeg)),
+                                 square});
+  }
+  const Vec3 there = Direction(at);
+  for (const CoverageNode& node : plan.nodes) {
+    if (Dot(Direction(node.targetOrientation), there) < std::cos(70.0 / kRadToDeg)) {
+      frames.push_back(PlacedFrame{node.targetOrientation, LensOf(66.0, 50.0)});
+    }
+  }
+  return frames;
+}
+
+// Where the spread thins, a hole narrower than its spacing fell between the directions asked,
+// each of them covered with its ring: at a band's edge, where the spread is cut, and at a pole,
+// where it closes. Both are asked outright now, and filling closes what is open there.
+TEST(CoverageGaps, AHoleAtABandsEdgeOrAPoleIsFoundAndFilled) {
+  CapturePlanSpec band = Spec();
+  band.coverPoles = false;
+  struct Case {
+    CapturePlan plan;
+    double elevation;
+    double eps;
+  };
+  const CapturePlan banded = Plan(band);
+  double highest = 0.0;
+  for (const CoverageNode& node : banded.nodes) {
+    highest = std::max(highest, ElevationOf(node.targetOrientation));
+  }
+  for (const Case& c : {Case{banded, highest, 0.25}, Case{Plan(Spec()), 90.0, 0.05}}) {
+    const Quat at = FromAzimuthElevation(37.0, c.elevation);
+    const std::vector<PlacedFrame> frames = AHoleAt(c.plan, at, c.eps);
+    ASSERT_FALSE(Imaged(frames, Direction(at))) << "the premise: a hole there";
+    RingsCoveragePlannerEngine engine;
+    const Intrinsics lens = LensOf(66.0, 50.0);
+    auto gaps = engine.FindGaps(c.plan, frames, lens);
+    ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
+    EXPECT_TRUE(Imaged(Filled(frames, gaps.value, lens, 5.0), Direction(at))) << c.elevation;
+  }
 }
 
 TEST(CoverageGaps, RefusesWhatCannotBeJudged) {

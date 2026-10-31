@@ -277,7 +277,11 @@ export interface PlacedFrame {
 export interface CoverageGap {
   /** Looking at the gap, level: nothing about a gap says which way up to hold the phone. */
   target: Quat;
-  /** Of the whole sphere. */
+  /**
+   * Of the whole sphere. Zero for a gap of directions on a line, which is no share of it: a band of
+   * only its horizon ring answers for the horizon alone, and the horizon is a line. A gap's
+   * existence is the target, not its share.
+   */
   solidAngleFraction: number;
 }
 
