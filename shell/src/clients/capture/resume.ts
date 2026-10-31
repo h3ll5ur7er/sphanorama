@@ -26,14 +26,30 @@ import { describeFailure } from './status';
  * empties it, so an older session's document would come back naming frames the tier no longer
  * has (ADR 0034). One unfinished sphere is also the case this is for — resuming means standing in
  * the same spot again, which is a phone call, not tomorrow.
+ *
+ * And the newest in *this page's* tier. A tab beside the one holding the resident tier captures
+ * into one of its own (ADR 0063), so its capture can be newer and still be one this page cannot
+ * give back; offered, it was refused, and offered again on every load, in front of the capture
+ * this tier does hold (ADR 0083).
+ *
+ * A capture this build cannot read comes last, offered only where no readable one in this tier is:
+ * its refusal withdraws the offer and leaves a new capture, which would empty the tier a readable
+ * one is in.
  */
 export function resumableProject(projects: readonly ProjectSummary[]): ProjectId | null {
   let newest: ProjectSummary | null = null;
+  let newestUnreadable: ProjectSummary | null = null;
   for (const project of projects) {
-    if (!project.hasSession) continue;
-    if (newest === null || (project.id as number) > (newest.id as number)) newest = project;
+    if (!project.hasSession || project.sessionInAnotherTier) continue;
+    if (project.sessionUnreadable) {
+      if (newestUnreadable === null || (project.id as number) > (newestUnreadable.id as number)) {
+        newestUnreadable = project;
+      }
+    } else if (newest === null || (project.id as number) > (newest.id as number)) {
+      newest = project;
+    }
   }
-  return newest === null ? null : newest.id;
+  return (newest ?? newestUnreadable)?.id ?? null;
 }
 
 /**
@@ -71,12 +87,12 @@ export interface ResumeRefusal {
  * means different things to do next, and the line has to say which one just failed.
  *
  * The offer comes back for every refusal except `Unsupported` and `SensorUnavailable`, and the
- * asymmetry is the answer to
- * the question ADR 0035 and ADR 0036 left between them (ADR 0039). Most refusals are statements
- * about this attempt: a tier this device does not currently hold, a store that would not take the
- * frames back, a camera another tab has. Those can be different on the next press or the next
- * load, and a capture that is still on disk must not be made to look gone. `Unsupported` is the
- * core's word for "this build does not read that", and no press changes which build is running.
+ * asymmetry is the answer to the question ADR 0035 and ADR 0036 left between them (ADR 0039). Most
+ * refusals are statements about this attempt: a store that would not take the frames back, a camera
+ * another tab has. (A tier this device does not hold was one; since ADR 0083 such a capture is not
+ * offered at all.) Those can be different on the next press or the next load, and a capture that is
+ * still on disk must not be made to look gone. `Unsupported` is the core's word for "this build
+ * does not read that", and no press changes which build is running.
  *
  * Read off the code rather than the component on purpose. The camera adapter's `Unsupported` is
  * the secure-origin one, which is equally not fixable by pressing again — the origin belongs to
@@ -112,6 +128,17 @@ export function describeResumeRefusal(status: Status): ResumeRefusal {
 }
 
 /**
+ * Whether the page holds a tier of its own, which is what `startOffer`'s hint is for: one that is
+ * not the resident pair, and is a tier at all. A page with no tier is told apart, since it cannot
+ * tell a device with no private file system from a failed fallback (ADR 0083).
+ */
+export function onFallbackTier(
+  tier: { canSpill(): boolean; holdsResidentTier(): boolean },
+): boolean {
+  return tier.canSpill() && !tier.holdsResidentTier();
+}
+
+/**
  * What the page offers once the core is up: the capture to resume, if any, and the line saying
  * which presses are on offer.
  *
@@ -120,8 +147,19 @@ export function describeResumeRefusal(status: Status): ResumeRefusal {
  * waiting invites the press that would erase it. The new capture stays on offer, since a store
  * that keeps failing must not lock the user out of capturing anything, and the line says what it
  * would cost (ADR 0078).
+ *
+ * `fallbackTier` is a page whose worker took a tier of its own rather than the resident one: a
+ * second tab, or one opened while the last tab's worker was still letting go (ADR 0063). There a
+ * capture in another tier may be the resident tier's, still on disk and offered by a reload that
+ * gets the resident tier, so the line says one may be waiting. "May", because the page cannot tell
+ * it from one the resident tier will not give back: an older capture it has since cleared, another
+ * fallback tier's, one that named frames on a page with no tier, or one with no frames written on
+ * a page with no tier, which only such a page offers. Where nothing readable is offered, that is,
+ * since an unreadable capture can be offered on any tier. On the resident tier every capture in
+ * another tier is one of those, and nothing is said (ADR 0083).
  */
-export function startOffer(listed: Result<ProjectSummary[]>, storageError: string | null): {
+export function startOffer(listed: Result<ProjectSummary[]>, storageError: string | null,
+                           fallbackTier: boolean): {
   resume: ProjectId | null;
   message: string;
 } {
@@ -147,6 +185,22 @@ export function startOffer(listed: Result<ProjectSummary[]>, storageError: strin
     };
   }
   const resume = resumableProject(listed.value);
+  const readableOffered = listed.value.some(
+    (project) => project.id === resume && !project.sessionUnreadable);
+  if (!readableOffered && fallbackTier
+      && listed.value.some((project) => project.hasSession && project.sessionInAnotherTier)) {
+    // An unreadable capture is still offered, and the line names that press first, apart from the
+    // hint, so the hint does not read as what the resume button reaches.
+    return {
+      resume,
+      message: resume === null
+        ? 'core ready — a capture may be waiting in storage this page could not take: reload, ' +
+          'closing any other tab of this app, to find out; or enable the camera to start a new one'
+        : 'core ready — resume the last capture, or enable the camera to start a new one; a ' +
+          'capture this page could not take may also be waiting: reload, closing any other tab ' +
+          'of this app, to find out',
+    };
+  }
   return {
     resume,
     message: resume === null

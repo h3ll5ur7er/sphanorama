@@ -26,7 +26,7 @@ import {
   describeGuidance, reticleRadius, unwrapDegrees, RETICLE_LOCKED_RADIUS,
   RETICLE_MAX_RADIUS,
 } from './clients/capture/guidance';
-import { describeResumeRefusal, startOffer } from './clients/capture/resume';
+import { describeResumeRefusal, onFallbackTier, startOffer } from './clients/capture/resume';
 import { describeAttitude } from './clients/capture/attitude';
 import { planOverlay } from './clients/capture/overlay';
 import { createOverlayPainter } from './clients/capture/painter';
@@ -1692,7 +1692,8 @@ async function main() {
     // project has a session to return to is a fact about the project, and finding it out by
     // *trying* would start the very capture the user has not chosen yet (ADR 0036).
     const storageError = remote.storageError();
-    const { resume, message } = startOffer(await reportFacade(core, storageError), storageError);
+    const { resume, message } = startOffer(await reportFacade(core, storageError), storageError,
+                                           onFallbackTier(remote));
     resumeButton.hidden = resume === null;
     stage.textContent = message;
     // Known from the boot, so neither offer is made to a core that cannot read this page's motion.

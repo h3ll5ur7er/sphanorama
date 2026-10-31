@@ -992,6 +992,22 @@ export interface ProjectSummary {
    * a resume nobody asked for (ADR 0036).
    */
   hasSession: boolean;
+  /**
+   * Whether that session's document names a spill tier other than the one this store holds, or
+   * names frames on a store with no tier, so that `Resume` would refuse it (ADR 0035): zero
+   * matches zero, but such a store adopts no frame. Only one tier is resident at a time, and a tab
+   * beside the one holding it captures into a tier of its own (ADR 0063); this is how a page
+   * offers the capture its own tier can give back rather than the newest anywhere (ADR 0083).
+   * False where there is no session, and for a document this build cannot read, which cannot say
+   * which tier it names; that one says so below.
+   */
+  sessionInAnotherTier: boolean;
+  /**
+   * Whether that session's document is one this build cannot read. It is offered only where no
+   * readable capture in this tier is, so its refusal can say it is kept for a build that can read
+   * it (ADR 0039) without hiding a capture this tier can give back (ADR 0083).
+   */
+  sessionUnreadable: boolean;
 }
 
 export interface ExportSpec {
@@ -1320,7 +1336,9 @@ export interface ProjectManager {
    * Only a document that is not there is "no session". A read that failed any other way fails the
    * listing with the store's status, because a summary saying there is none is what keeps a
    * capture from being offered back, and the page's other press empties the tier holding its
-   * frames (ADR 0078).
+   * frames (ADR 0078). So does a tier that cannot say which capture it holds, when a session needs
+   * placing against it: a listing that answered "not elsewhere" for it would offer a capture
+   * `Resume` refuses (ADR 0083).
    */
   list(): Promise<Result<ProjectSummary[]>>;
   create(title: string): Promise<Result<ProjectId>>;

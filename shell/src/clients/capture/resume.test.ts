@@ -4,10 +4,11 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ProjectId, ProjectSummary } from '../../../../contracts/ts/contracts';
-import { describeResumeRefusal, resumableProject, startOffer } from './resume';
+import { describeResumeRefusal, onFallbackTier, resumableProject, startOffer } from './resume';
 import { describeFailure } from './status';
 
-function project(id: number, hasSession: boolean, title = `sphere ${id}`): ProjectSummary {
+function project(id: number, hasSession: boolean, title = `sphere ${id}`,
+                 sessionInAnotherTier = false, sessionUnreadable = false): ProjectSummary {
   return {
     id: id as ProjectId,
     title,
@@ -16,7 +17,17 @@ function project(id: number, hasSession: boolean, title = `sphere ${id}`): Proje
     nodesSatisfied: 0,
     hasBuild: false,
     hasSession,
+    sessionInAnotherTier,
+    sessionUnreadable,
   };
+}
+
+function elsewhere(id: number): ProjectSummary {
+  return project(id, true, `sphere ${id}`, true);
+}
+
+function unreadable(id: number): ProjectSummary {
+  return project(id, true, `sphere ${id}`, false, true);
 }
 
 describe('resumableProject', () => {
@@ -44,6 +55,29 @@ describe('resumableProject', () => {
     // newest *with a session* — would answer "nothing to resume" for a capture that is still
     // there in full.
     expect(resumableProject([project(4, true), project(9, false)])).toBe(4);
+  });
+
+  it('offers the newest capture this tier holds, not a newer one in another tab\'s', () => {
+    // A tab beside the one holding the resident tier captures into a tier of its own (ADR 0063),
+    // and its capture can have the larger id. `Resume` refuses that one, and a refusal for the tier
+    // keeps the offer up (ADR 0039), so offering it hid the capture this tier holds on every load
+    // (ADR 0083).
+    expect(resumableProject([project(4, true), elsewhere(9)])).toBe(4);
+    expect(resumableProject([elsewhere(9), project(4, true), project(2, true)])).toBe(4);
+  });
+
+  it('offers nothing when every capture is in another tier', () => {
+    // A new capture here empties this tier, which holds none of them, so nothing is lost by it.
+    expect(resumableProject([elsewhere(3), elsewhere(9)])).toBeNull();
+  });
+
+  it('offers a capture this build cannot read only where no readable one in this tier is', () => {
+    // Offered, it is refused as `Unsupported` and the offer is withdrawn, leaving a new capture,
+    // which empties the tier a readable capture is in (ADR 0083). Offered alone, its refusal says
+    // it is kept for a build that can read it (ADR 0039).
+    expect(resumableProject([project(4, true), unreadable(9)])).toBe(4);
+    expect(resumableProject([unreadable(9), elsewhere(12)])).toBe(9);
+    expect(resumableProject([unreadable(3), unreadable(9)])).toBe(9);
   });
 });
 
@@ -79,10 +113,11 @@ describe('describeResumeRefusal', () => {
   });
 
   it('keeps the offer up for a refusal another attempt could clear', () => {
-    // A tier mismatch is a statement about *this* tier rather than about those frames: a session
-    // that could not take the resident pair and fell back to a tier of its own (ADR 0030) says
-    // exactly this while its pixels are still on disk. Withdrawing the offer would make a device
-    // that is momentarily wrong look like a capture that is gone.
+    // A `FailedPrecondition` is a statement about this attempt rather than about those frames: a
+    // store that would not take them back, or a tier that changed between the listing and the
+    // press. Withdrawing the offer would make a device that is momentarily wrong look like a
+    // capture that is gone. Since ADR 0083 a tier mismatch is not offered in the first place, but
+    // the code is classified the same whatever said it.
     const refusal = describeResumeRefusal(wrongTier);
     expect(refusal.offerAgain).toBe(true);
     expect(refusal.message).toMatch(/try again/i);
@@ -141,17 +176,76 @@ describe('describeResumeRefusal', () => {
   });
 });
 
+describe('onFallbackTier', () => {
+  it('is a tier that is not the resident pair, and no page without a tier', () => {
+    // Handed the remote's own answers rather than two booleans, so which of them it reads is pinned
+    // here and not left to the page's call.
+    const remote = (canSpill: boolean, holdsResidentTier: boolean) =>
+      ({ canSpill: () => canSpill, holdsResidentTier: () => holdsResidentTier });
+    expect(onFallbackTier(remote(true, false))).toBe(true);
+    expect(onFallbackTier(remote(true, true))).toBe(false);
+    // No tier at all: the worker reports it as not resident, and the hint would be permanent on
+    // a device with no private file system.
+    expect(onFallbackTier(remote(false, false))).toBe(false);
+    expect(onFallbackTier(remote(false, true))).toBe(false);
+  });
+});
+
 describe('startOffer', () => {
   it('offers the newest capture with a session, and says both ways on', () => {
-    const offer = startOffer({ ok: true, value: [project(1, true), project(3, true)] }, null);
+    const listed = { ok: true as const, value: [project(1, true), project(3, true)] };
+    const offer = startOffer(listed, null, false);
     expect(offer.resume).toBe(3);
     expect(offer.message).toBe(
       'core ready — resume the last capture, or enable the camera to start a new one',
     );
   });
 
+  it('says a capture is waiting where this page holds a tier of its own', () => {
+    // A page that did not get the resident tier — a second tab, or a tab opened while the last
+    // one's worker was still letting go of it (ADR 0063) — sees the resident tier's capture as in
+    // another tier, and is not offered it. It is still on disk, and a reload with the other tab
+    // closed offers it, so the line says so rather than that there is nothing (ADR 0083).
+    const waiting = [project(1, false), elsewhere(3)];
+    const fallback = startOffer({ ok: true, value: waiting }, null, true);
+    expect(fallback.resume).toBeNull();
+    // "May": a capture in another tier can as well be one nobody will hold again — an older one
+    // the resident tier no longer holds, or another fallback tier's — and the page cannot tell
+    // which, so it says what a reload would find out rather than that it would resume.
+    expect(fallback.message).toContain('a capture may be waiting');
+    expect(fallback.message).toContain('reload');
+    expect(fallback.message).not.toContain('enable the camera to continue');
+
+    // And where the only offer is a capture this build cannot read, which on a fallback page is
+    // the only kind that can be offered: it stays on offer, and the line still says a reload may
+    // find a capture this build can resume.
+    const unreadableOnly =
+      startOffer({ ok: true, value: [unreadable(2), elsewhere(5)] }, null, true);
+    expect(unreadableOnly.resume).toBe(2);
+    expect(unreadableOnly.message).toContain('may also be waiting');
+    // Naming the offer as well, and apart from the hint: the line says which presses are on offer,
+    // and the resume button is one of them.
+    expect(unreadableOnly.message).toContain('resume the last capture');
+    expect(unreadableOnly.message.indexOf('resume the last capture'))
+      .toBeLessThan(unreadableOnly.message.indexOf('may also be waiting'));
+
+    // On the resident tier a capture in another tier is a fallback tier's, which nobody will
+    // ever hold again, so there is nothing to say about it.
+    const resident = startOffer({ ok: true, value: waiting }, null, false);
+    expect(resident.message).toBe('core ready — enable the camera to continue');
+    // Nor where the fallback page has nothing in another tier.
+    const nothing = startOffer({ ok: true, value: [project(1, false)] }, null, true);
+    expect(nothing.message).toBe('core ready — enable the camera to continue');
+    // And an offer is an offer, whichever tier the page holds.
+    const offered = startOffer({ ok: true, value: [project(2, true), elsewhere(3)] }, null, true);
+    expect(offered.resume).toBe(2);
+    expect(offered.message).toBe(
+      'core ready — resume the last capture, or enable the camera to start a new one',
+    );
+  });
+
   it('offers a new capture alone when nothing was captured into', () => {
-    const offer = startOffer({ ok: true, value: [project(1, false)] }, null);
+    const offer = startOffer({ ok: true, value: [project(1, false)] }, null, false);
     expect(offer.resume).toBeNull();
     expect(offer.message).toBe('core ready — enable the camera to continue');
   });
@@ -163,7 +257,7 @@ describe('startOffer', () => {
     const status = {
       code: 'StorageQuotaExceeded', component: 'ProjectManager', detail: 'full',
     } as const;
-    const offer = startOffer({ ok: false, status }, null);
+    const offer = startOffer({ ok: false, status }, null, false);
     expect(offer.resume).toBeNull();
     expect(offer.message).toContain('could not tell whether a capture is waiting');
     // Named the way every other failure on the page is, not as a raw code.
@@ -176,7 +270,7 @@ describe('startOffer', () => {
   it('does not read a store that could not be loaded as one with nothing in it', () => {
     // The worker's document store starts empty when its database will not open, so the listing
     // succeeds with nothing in it while a capture may be waiting on disk (ADR 0078).
-    const offer = startOffer({ ok: true, value: [] }, 'VersionError: the database is newer');
+    const offer = startOffer({ ok: true, value: [] }, 'VersionError: the database is newer', false);
     expect(offer.resume).toBeNull();
     expect(offer.message).toContain('could not tell whether a capture is waiting');
     // And what a new capture would be, as well as what it would cost: nothing is written down.

@@ -4171,7 +4171,7 @@ TEST_F(ResumedSession, ASessionWorthResumingIsVisibleInTheProjectListing) {
   FakeCameraAccess first_camera(first_store);
   CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
-  ProjectManager listing(*projects);
+  ProjectManager listing(*projects, *first_store);
 
   auto untouched = listing.Create("never captured");
   ASSERT_TRUE(untouched.ok());
@@ -4187,6 +4187,9 @@ TEST_F(ResumedSession, ASessionWorthResumingIsVisibleInTheProjectListing) {
   for (const ProjectSummary& summary : listed.value) {
     EXPECT_EQ(summary.hasSession, summary.id.value == kProject.value)
         << "project " << summary.id.value << " after a cell was captured";
+    // And in this tier: `Begin` emptied it under a new token and the checkpoint wrote that one, so
+    // a page holding it offers this capture back (ADR 0083).
+    EXPECT_FALSE(summary.sessionInAnotherTier) << "project " << summary.id.value;
   }
 }
 
@@ -6115,8 +6118,8 @@ TEST_F(ResumedSession, APickAtTheTopOfTheRangeLeavesTheCaptureAbleToTakeFrames) 
 // one nobody issued stepped the tab's counter past it, onto identities this door then refused — on
 // this project and every later one in the tab.
 TEST_F(ResumedSession, EveryCandidateACaptureIssuedCanBePickedAndNoUnissuedOneCan) {
-  ProjectManager picker{*projects};
   auto store_with_sink = NewStore();
+  ProjectManager picker{*projects, *store_with_sink};
   FakeCameraAccess camera(store_with_sink);
   CaptureSessionManager manager(planner, pose, quality, preview, camera, *sensor, *store_with_sink,
                                 *projects, clock);

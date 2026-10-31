@@ -2,7 +2,9 @@
 
 **Status:** accepted; amends [0036](0036-a-resumable-capture-is-visible-in-the-project-listing.md),
 whose newest capture is still the largest id, and closes the overwrite
-[0078](0078-a-failed-read-is-not-an-absent-session.md) left open
+[0078](0078-a-failed-read-is-not-an-absent-session.md) left open; the newest capture it left offered
+over the one the tier holds is closed by
+[0083](0083-the-offer-is-the-newest-capture-this-tier-holds.md)
 
 ## Context
 

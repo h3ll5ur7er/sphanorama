@@ -43,7 +43,11 @@ class FakeSpillSink final : public ISpillSink {
   // A tier that cannot say which capture it holds, which is a page whose worker script is older
   // than the module calling it — the same half-updated page the browser sink's `clear` guards
   // against. Without it the store's and the manager's answers to that are unreachable.
-  void FailGenerations(bool fail) { fail_generations_ = fail; }
+  // The code is the test's, so a refusal of the caller's own choosing cannot pass for the tier's.
+  void FailGenerations(bool fail, StatusCode code = StatusCode::Unsupported) {
+    fail_generations_ = fail;
+    generation_refusal_ = code;
+  }
   // How many frames are still down here. `Holds` answers about one frame; a clear is about all of
   // them, and a test that only checked the frame it knew about could not tell a sink that dropped
   // everything from one that dropped the entry it was asked about last.
@@ -66,6 +70,7 @@ class FakeSpillSink final : public ISpillSink {
   // starts at 1 because zero is the store's answer for a tier that does not exist.
   uint64_t generation_ = 1;
   bool fail_generations_ = false;
+  StatusCode generation_refusal_ = StatusCode::Unsupported;
 };
 
 }  // namespace sphanorama

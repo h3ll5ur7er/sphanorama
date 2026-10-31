@@ -3557,7 +3557,7 @@ test('a resume the core refuses says why and still lets a new capture start', as
     // And the offer is gone. Nothing this user can press changes which build is running, so an
     // offer left up is one that fails identically every time (ADR 0039). `enable` had already
     // hidden it on the way in, so what this pins is that the refusal did not put it back — which
-    // is exactly what the other refusal below does.
+    // is exactly what the refusal in the test of a press that could clear it does.
     await expect(page.locator('#resume')).toHaveJSProperty('hidden', true);
 
     // And not stranded: a new sphere from here, on the camera the refused resume already opened.
@@ -4172,12 +4172,12 @@ test('a core that stops answering stops the loop rather than feeding it for ever
   }
 });
 
-test('a resume refused by the tier stays on offer, and goes when a capture starts', async ({ page }) => {
-  // The other half of ADR 0039. A tier mismatch says this tier is not the one those frames went
-  // into, which is not the same as saying they are gone: a session that fell back to a tier of its
-  // own (ADR 0030) says exactly this while its pixels are still on disk, and the next run that
-  // gets the resident pair resumes them. So the offer survives its own refusal here, where it did
-  // not for a document shape this build cannot read.
+test('the capture this tier holds is offered over a newer one from another tab',
+  async ({ page }) => {
+  // A tab beside the one holding the resident tier captures into a tier of its own (ADR 0063), so
+  // its capture can have the larger id and still be one this page cannot give back. Offering the
+  // newest outright offered that one, `Resume` refused it, the refusal kept the offer up
+  // (ADR 0039), and the capture this tier does hold was never offered (ADR 0083).
   const server = await serve();
   try {
     await page.goto(server.appUrl);
@@ -4189,9 +4189,156 @@ test('a resume refused by the tier stays on offer, and goes when a capture start
     expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
     await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
 
-    // A real session document, written by the manager at the cell it just committed, and then one
-    // line of it changed. The shape stays valid — that is the point: this has to refuse at the
-    // tier comparison rather than at the parse, which is the refusal the other test covers.
+    const held = await page.evaluate(async () => {
+      await window.sphanoramaHost.flush();
+      const listed = await window.sphanoramaCore.project.list();
+      const withSession = listed.ok ? listed.value.filter((p) => p.hasSession) : [];
+      return withSession.length === 1 ? withSession[0].id : null;
+    });
+    expect(held).not.toBeNull();
+    // Issued after the capture, so its id is the larger: the store issues ids in ascending order
+    // within a page (ADR 0081).
+    const beside = await page.evaluate(async () => {
+      const created = await window.sphanoramaCore.project.create('captured in another tab');
+      await window.sphanoramaHost.flush();
+      return created.ok ? created.value : null;
+    });
+    expect(beside).not.toBeNull();
+    expect(beside).toBeGreaterThan(held);
+
+    // Another tab's capture, as its document would read: this one's, with its own tier's token.
+    // Written underneath the core, which is hydrated once at startup, so before the reload.
+    const written = await page.evaluate(async ({ from, to }) => {
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open('sphanorama', 1);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const document = await new Promise((resolve, reject) => {
+        const request = db.transaction('documents').objectStore('documents').get(`${from}/session`);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      if (typeof document !== 'string' || !/^tier \d+$/m.test(document)) return null;
+      const elsewhere = document.replace(/^tier \d+$/m, 'tier 999999999');
+      await new Promise((resolve, reject) => {
+        const transaction = db.transaction('documents', 'readwrite');
+        transaction.objectStore('documents').put(elsewhere, `${to}/session`);
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
+      });
+      return elsewhere;
+    }, { from: held, to: beside });
+    // Asserted rather than assumed: without the tier line found, both documents would name this
+    // tier and the newer would be offered for the right reason.
+    expect(written).toContain('tier 999999999');
+
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    const listed = await page.evaluate(async () => {
+      const result = await window.sphanoramaCore.project.list();
+      if (!result.ok) return null;
+      return result.value.map((p) => [p.id, p.hasSession, p.sessionInAnotherTier]);
+    });
+    expect(listed).toEqual(expect.arrayContaining([[held, true, false], [beside, true, true]]));
+
+    // And the press resumes the capture this tier holds. Offered the newer one, it refused it as
+    // captured into a spill tier this device no longer holds.
+    await expect(page.locator('#resume')).toBeVisible();
+    await page.locator('#resume').click();
+    await expect(page.locator('#stage')).toContainText('resumed', { timeout: 15000 });
+    await expect(page.locator('#stage')).not.toContainText('spill tier');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a tab on a tier of its own says a capture may be waiting, and the tab holding it offers it',
+  async ({ page, context }) => {
+  // The second tab takes a tier of its own (ADR 0063), so the first tab's capture reads as in
+  // another tier there and is not offered. It is still on disk, and the line says a reload may find
+  // it rather than that there is nothing (ADR 0083).
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+    // Written down before the second tab loads, since a page hydrates its documents once.
+    await page.evaluate(() => window.sphanoramaHost.flush());
+
+    const second = await context.newPage();
+    await second.goto(server.appUrl);
+    await expect(second.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(second.locator('#stage')).toContainText('a capture may be waiting');
+    await expect(second.locator('#resume')).toHaveJSProperty('hidden', true);
+    await expect(second.locator('#enable')).toBeEnabled();
+
+    // And the tab holding the resident tier offers it, its reload handed the pair (ADR 0063).
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#resume')).toBeVisible();
+
+    // And the resident tab says nothing of a capture in another tier, which there is one it will
+    // not give back. Its only capture is made one, so nothing readable is offered and the hint's
+    // other conditions hold: only the tier the page holds keeps the line plain.
+    const rewritten = await page.evaluate(async () => {
+      const listed = await window.sphanoramaCore.project.list();
+      const held = listed.ok ? listed.value.find((p) => p.hasSession) : undefined;
+      if (held === undefined) return null;
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open('sphanorama', 1);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const key = `${held.id}/session`;
+      const document = await new Promise((resolve, reject) => {
+        const request = db.transaction('documents').objectStore('documents').get(key);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      if (typeof document !== 'string' || !/^tier \d+$/m.test(document)) return null;
+      const elsewhere = document.replace(/^tier \d+$/m, 'tier 999999999');
+      await new Promise((resolve, reject) => {
+        const transaction = db.transaction('documents', 'readwrite');
+        transaction.objectStore('documents').put(elsewhere, key);
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
+      });
+      return elsewhere;
+    });
+    expect(rewritten).toContain('tier 999999999');
+    await page.reload();
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await expect(page.locator('#resume')).toHaveJSProperty('hidden', true);
+    await expect(page.locator('#stage')).toContainText('enable the camera to continue');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a resume refused for a reason a press could clear stays on offer, and goes when a capture starts',
+  async ({ page }) => {
+  // The other half of ADR 0039. A refusal about this attempt, not about the document, is one the
+  // next press or load can clear, so the offer survives it here, where it did not for a document
+  // shape this build cannot read.
+  const server = await serve();
+  try {
+    await page.goto(server.appUrl);
+    await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
+    await page.locator('#enable').click();
+    await expect(page.locator('#stage')).toContainText('capturing', { timeout: 15000 });
+    await aimAtACell(page);
+    await viewfinderIsLive(page);
+    expect(await page.evaluate(() => window.sphanoramaCapture())).toBe(true);
+    await expect(page.locator('#guidance')).toContainText(/captured|cell done/i, { timeout: 15000 });
+
+    // A real session document, written by the manager at the cell it just committed, so the offer
+    // below is the page's own.
     const project = await page.evaluate(async () => {
       await window.sphanoramaHost.flush();
       const listed = await window.sphanoramaCore.project.list();
@@ -4200,38 +4347,30 @@ test('a resume refused by the tier stays on offer, and goes when a capture start
     });
     expect(project).not.toBeNull();
 
-    const rewritten = await page.evaluate(async (id) => {
-      const db = await new Promise((resolve, reject) => {
-        const request = indexedDB.open('sphanorama', 1);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
-      const key = `${id}/session`;
-      const document = await new Promise((resolve, reject) => {
-        const request = db.transaction('documents').objectStore('documents').get(key);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
-      if (typeof document !== 'string' || !/^tier \d+$/m.test(document)) return null;
-      const changed = document.replace(/^tier \d+$/m, 'tier 999999999');
-      await new Promise((resolve, reject) => {
-        const transaction = db.transaction('documents', 'readwrite');
-        transaction.objectStore('documents').put(changed, key);
-        transaction.oncomplete = resolve;
-        transaction.onerror = () => reject(transaction.error);
-      });
-      return changed;
-    }, project);
-    // Asserted rather than assumed: a document whose tier line this did not find would resume
-    // perfectly well, and every expectation below would then be about the wrong thing.
-    expect(rewritten).toContain('tier 999999999');
-
     await page.reload();
     await expect(page.locator('#stage')).toContainText('core ready', { timeout: 15000 });
     await expect(page.locator('#resume')).toBeVisible();
 
+    // A refusal another press could clear, injected at the core the page calls. Since ADR 0083 a
+    // tier mismatch is no longer reached through the offer, but a resume can still be refused for
+    // the store or the sensor after it was offered, and the page's answer to that is what this
+    // pins. Every press is counted, so a second one that never reached the core cannot pass.
+    await page.evaluate(() => {
+      window.__resumeCalls = 0;
+      window.sphanoramaCore.captureSession.resume = async () => {
+        window.__resumeCalls += 1;
+        return {
+          ok: false,
+          status: {
+            code: 'FailedPrecondition', component: 'CaptureSessionManager',
+            detail: 'the store would not take this capture\'s frames back',
+          },
+        };
+      };
+    });
+
     await page.locator('#resume').click();
-    await expect(page.locator('#stage')).toContainText('spill tier', { timeout: 15000 });
+    await expect(page.locator('#stage')).toContainText('would not take', { timeout: 15000 });
     await expect(page.locator('#stage')).toContainText('try again');
     // Still there, and pressable. `enable` hid it on the way in and the refusal put it back.
     await expect(page.locator('#resume')).toBeVisible();
@@ -4256,8 +4395,9 @@ test('a resume refused by the tier stays on offer, and goes when a capture start
     // assertion on that sentence would pass against a button whose handler did nothing at all.
     await page.evaluate(() => { document.getElementById('stage').textContent = 'cleared'; });
     await page.locator('#resume').click();
-    await expect(page.locator('#stage')).toContainText('spill tier', { timeout: 15000 });
+    await expect(page.locator('#stage')).toContainText('would not take', { timeout: 15000 });
     expect(await page.evaluate(() => window.__cameraOpens)).toBe(0);
+    expect(await page.evaluate(() => window.__resumeCalls)).toBe(2);
 
     // Until something starts. A live offer beside a running capture is a second render loop over
     // the same session one press away, which is the invariant `pump` holds for both buttons.

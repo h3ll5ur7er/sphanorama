@@ -200,13 +200,16 @@ the affected seam region — and re-blends the affected tiles. This is the mecha
 and it is the reason the build is modelled as a graph and not a pipeline run (§4.4).
 
 ### ProjectManager (V3)
-Owns projects across sessions: list, create, delete, and export. Not resume — picking a capture
-back up means holding a live session, and that is `CaptureSessionManager`'s (ADR 0029). It does
-report *that* there is one: `ProjectSummary.hasSession` says a session document exists, which is
-metadata about a project rather than a session anybody can be handed, and it is what lets a client
-offer a resume instead of discovering one by attempting it (ADR 0036). Export means asking
-`IImageCodecAccess` to encode and attach XMP `GPano` metadata, then handing bytes to
-`IExportAccess`. It is the only manager that touches `IExportAccess`.
+Owns projects across sessions: list, create, delete, and export. Not resume — picking a capture back
+up means holding a live session, and that is `CaptureSessionManager`'s (ADR 0029). It does report
+*that* there is one: `ProjectSummary.hasSession` says a session document exists, which is metadata
+about a project rather than a session anybody can be handed, and it is what lets a client offer a
+resume instead of discovering one by attempting it (ADR 0036). `sessionInAnotherTier` says that
+session's document names a spill tier other than the one the frame store holds, which it asks
+`IFrameStoreAccess` for, or frames on a store with no tier, and `sessionUnreadable` that this build
+cannot read its document (ADR 0083). Export means asking `IImageCodecAccess` to encode and attach
+XMP `GPano` metadata, then handing bytes to `IExportAccess`. It is the only manager that touches
+`IExportAccess`.
 
 ## 3.5 The boundary that makes this work
 
@@ -457,19 +460,23 @@ the same predicate `ArmBurst` asks.
 ### UC-5 · Coming back to a capture a phone call interrupted
 
 At load the Capture Client calls `ProjectManager.List()` and looks for the newest summary carrying
-`hasSession`. If a summary carries it the page offers a resume beside the ordinary enable, and a
-listing that failed is not one with nothing to resume: the page says it could not tell, and that a
-new capture would clear a capture that is waiting (ADR 0078). Both offers are the same user
-gesture, because a resume needs the camera and the sensor exactly as a new capture does. Pressed,
-it establishes the motion capability first — a device reporting none is turned away before
+`hasSession` and not `sessionInAnotherTier`, since a capture taken in a tab beside the one holding
+the resident tier went into a tier of its own and cannot come back here (ADR 0083). One whose
+document this build cannot read, `sessionUnreadable`, comes after every readable one in this tier,
+since its refusal leaves only a new capture. If a summary qualifies the page offers a resume beside
+the ordinary enable, and a listing that failed is not one with nothing to resume: the page says it
+could not tell, and that a new capture would clear a capture that is waiting (ADR 0078). A page
+holding a tier of its own, where nothing readable is offered and some session is in another tier,
+says a capture may be waiting that a reload would find (ADR 0083). Both offers are the same user
+gesture, because a resume needs the camera and the sensor exactly as a new capture does. Pressed, it
+establishes the motion capability first — a device reporting none is turned away before
 `getUserMedia`, so nobody answers a camera prompt on the way to being told the session cannot start
 (ADR 0044) — then opens the camera, pushes the lens to the host, and calls
-`CaptureSessionManager.Resume(project)`
-instead of `Create` plus `Begin` — the manager reads the document it wrote, takes the plan that
-document carries cell for cell rather than laying it again, since a later build's planner lays a
-different sphere from the same spec (ADR 0077) — or, for a document from before that, replans from
-its spec and lens — and hands the frames it names back to the store, so
-the cells already captured keep counting (ADR 0029).
+`CaptureSessionManager.Resume(project)` instead of `Create` plus `Begin` — the manager reads the
+document it wrote, takes the plan that document carries cell for cell rather than laying it again,
+since a later build's planner lays a different sphere from the same spec (ADR 0077) — or, for a
+document from before that, replans from its spec and lens — and hands the frames it names back to
+the store, so the cells already captured keep counting (ADR 0029).
 
 A client sequencing two managers, and the boundary is what keeps it honest: the first call answers
 whether to offer, the second is the only thing that hands back a session. A refusal from the second

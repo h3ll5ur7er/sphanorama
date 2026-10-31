@@ -56,7 +56,7 @@ Status FakeSpillSink::Clear() {
 
 Result<uint64_t> FakeSpillSink::Generation() {
   if (fail_generations_) {
-    return Err<uint64_t>(StatusCode::Unsupported, kComponent,
+    return Err<uint64_t>(generation_refusal_, kComponent,
                          "this tier cannot say which capture it holds");
   }
   return Ok(generation_);
