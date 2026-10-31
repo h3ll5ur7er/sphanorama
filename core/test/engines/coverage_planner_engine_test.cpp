@@ -1518,9 +1518,9 @@ TEST(CoverageGaps, AMissingFrameLeavesAGapWhereItWouldHaveLookedAndFillingItClos
 
 // The field report's cause: the page's 66-degree guess against a camera that sees less. The plan
 // was complete for the lens it was laid with, and the frames are not that lens. Aimed at the
-// cells' centres, frames 50 degrees across leave none; 46 leave seams thinner than the distance
-// between directions, 0.9% of the sphere; 42 by 32 leave 6.1%, which is pinned so that where a
-// frame's edge is read moves it.
+// cells' centres, frames 50 degrees across leave none; 46 leave nothing open, but seams thinner
+// than 2.5 degrees, reported as 0.9% of the sphere; 42 by 32 leave 6.1%, which is pinned so that
+// where a frame's edge is read moves it.
 TEST(CoverageGaps, FramesNarrowerThanThePlannedLensLeaveGapsBetweenCellsThatFillingCloses) {
   const CapturePlan plan = Plan(Spec());
   const Intrinsics actual = LensOf(42.0, 32.0);
@@ -1725,9 +1725,11 @@ TEST(CoverageGaps, ADistortedLensIsReadThroughItsDistortion) {
 
 // A barrel lens strong enough that its corners lie past the fold, so `Unproject` has no direction
 // for them: such a frame is asked of its whole half-sphere, and `Project` decides. Asked of none of
-// it, every frame would cover nothing and the capture would read as one wide gap.
+// it, every frame would cover nothing and the capture would read as one wide gap. The plan is laid
+// for the field this lens has, about 76 by 52, so its frames are needed nearly to their edges: laid
+// for 66 by 50 it needed only their middles, and a fallback of 28 degrees passed.
 TEST(CoverageGaps, AFrameWhoseCornersDoNotUnprojectIsAskedOfItsHalfSphere) {
-  const CapturePlan plan = Plan(Spec());
+  const CapturePlan plan = Plan(Spec(76.0, 52.0));
   Intrinsics barrel = LensOf(66.0, 50.0);
   barrel.k1 = -0.3;
   ASSERT_TRUE(IsUsableLens(barrel));
@@ -1784,8 +1786,11 @@ TEST(CoverageGaps, AHoleAtABandsEdgeOrAPoleIsFoundAndFilled) {
   for (const CoverageNode& node : banded.nodes) {
     highest = std::max(highest, ElevationOf(node.targetOrientation));
   }
-  for (const Case& c : {Case{banded, highest, 0.25}, Case{Plan(Spec()), 90.0, 0.05}}) {
-    const Quat at = FromAzimuthElevation(37.0, c.elevation);
+  // At an azimuth where the hole holds none of the directions the engine asks, the band's edge
+  // ring included: at 37 degrees it held some, and the test passed on an engine that asked no
+  // edges at all.
+  for (const Case& c : {Case{banded, highest, 0.05}, Case{Plan(Spec()), 90.0, 0.05}}) {
+    const Quat at = FromAzimuthElevation(74.0, c.elevation);
     const std::vector<PlacedFrame> frames = AHoleAt(c.plan, at, c.eps);
     ASSERT_FALSE(Imaged(frames, Direction(at))) << "the premise: a hole there";
     RingsCoveragePlannerEngine engine;
@@ -1793,6 +1798,55 @@ TEST(CoverageGaps, AHoleAtABandsEdgeOrAPoleIsFoundAndFilled) {
     auto gaps = engine.FindGaps(c.plan, frames, lens);
     ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
     EXPECT_TRUE(Imaged(Filled(frames, gaps.value, lens, 5.0), Direction(at))) << c.elevation;
+  }
+}
+
+// The point of the sphere farthest from every direction the engine asks, about a degree from the
+// nearest, is where a hole has the least to be seen by. Rebuilt here as ADR 0076 lays them, and
+// searched for rather than reasoned: a hole a tenth of a degree across there is found only if a
+// direction near it counts as covered by no one frame, which is what its ring is for. A ring of
+// 0.9 degrees misses it; one of four points rather than eight does not, here, and is left to the
+// hull argument.
+TEST(CoverageGaps, AHoleAtTheFarthestPointFromEveryDirectionAskedIsFound) {
+  std::vector<Vec3> asked;
+  const double golden = std::numbers::pi * (3.0 - std::sqrt(5.0));
+  for (int i = 0; i < 20000; ++i) {
+    const double y = 1.0 - 2.0 * (static_cast<double>(i) + 0.5) / 20000.0;
+    const double radius = std::sqrt(std::max(0.0, 1.0 - y * y));
+    asked.push_back(Vec3{std::cos(golden * i) * radius, y, std::sin(golden * i) * radius});
+  }
+  // Away from the poles and the horizon, which are asked besides; between 20 and 60 degrees up.
+  Vec3 farthest{};
+  double worst = 0.0;
+  const auto fraction = [](double x) { return x - std::floor(x); };
+  for (int k = 0; k < 200000; ++k) {
+    const double y = std::sin((20.0 + 40.0 * fraction(k * 0.6180339887498949)) / kRadToDeg);
+    const double azimuth = 2.0 * std::numbers::pi * fraction(k * 0.7548776662466927);
+    const double radius = std::sqrt(1.0 - y * y);
+    const Vec3 at{std::sin(azimuth) * radius, y, -std::cos(azimuth) * radius};
+    double nearest = -1.0;
+    const int from = std::max(0, static_cast<int>((1.0 - y - 0.03) * 10000.0));
+    const int to = std::min(20000, static_cast<int>((1.0 - y + 0.03) * 10000.0) + 1);
+    for (int i = from; i < to; ++i) nearest = std::max(nearest, Dot(asked[i], at));
+    const double angle = std::acos(std::min(1.0, nearest));
+    if (angle > worst) {
+      worst = angle;
+      farthest = at;
+    }
+  }
+  ASSERT_GT(worst * kRadToDeg, 0.95) << "the premise: a point about a degree from every direction";
+  const CapturePlan plan = Plan(Spec());
+  const Quat at = FromAzimuthElevation(std::atan2(-farthest.x, -farthest.z) * kRadToDeg,
+                                       std::asin(farthest.y) * kRadToDeg);
+  RingsCoveragePlannerEngine engine;
+  const Intrinsics lens = LensOf(66.0, 50.0);
+  for (const double turn : {0.0, 22.5, 45.0, 67.5}) {
+    const Quat turned = Multiply(at, FromAxisAngle(Vec3{0.0, 0.0, 1.0}, turn / kRadToDeg));
+    const std::vector<PlacedFrame> frames = AHoleAt(plan, turned, 0.05);
+    ASSERT_FALSE(Imaged(frames, Direction(at)));
+    auto gaps = engine.FindGaps(plan, frames, lens);
+    ASSERT_TRUE(gaps.ok());
+    EXPECT_TRUE(Imaged(Filled(frames, gaps.value, lens, 5.0), Direction(at))) << turn;
   }
 }
 
@@ -1806,6 +1860,12 @@ TEST(CoverageGaps, RefusesWhatCannotBeJudged) {
   // enough to cover more than the directions are apart if the cone were not counted, and not
   // once it is.
   EXPECT_EQ(engine.FindGaps(plan, {}, Intrinsics{}).status.code, StatusCode::InvalidArgument);
+  // And one whose border folds before its corners: placed, it is asked of its half-sphere; to fill
+  // with, its reach cannot be read, and is refused rather than guessed from its midpoints.
+  Intrinsics folding = lens;
+  folding.k1 = -0.3;
+  ASSERT_TRUE(IsUsableLens(folding));
+  EXPECT_EQ(engine.FindGaps(plan, {}, folding).status.code, StatusCode::InvalidArgument);
   EXPECT_EQ(engine.FindGaps(plan, {}, LensOf(12.0, 12.0)).status.code,
             StatusCode::InvalidArgument);
   // A cone that is not a measurement, each way it can fail to be one.

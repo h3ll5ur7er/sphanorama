@@ -70,8 +70,8 @@ They chose after a build, and new cells.
 - **The plan's overlap hides a wrong lens for longer than expected.** On the default 66 by 50 plan,
   with every frame aimed at its cell's centre:
   - Frames 50 degrees across leave no gap. Aimed at their cones' edges, they do.
-  - Frames 46 across leave seams thinner than the distance between directions, 0.9% of the
-    sphere, and 42 by 32 leave 6.1%.
+  - Frames 46 across leave nothing open, but seams thinner than 2.5 degrees, reported as 0.9% of
+    the sphere; 42 by 32 leave 6.1%.
 - **A seam thinner than about 2.5 degrees is a gap.** A direction near the meeting of two frames
   that overlap by less than the ring's width is covered by neither with its ring around it, so it
   is reported open although every point there is imaged. That is the cost of never missing a
@@ -79,18 +79,18 @@ They chose after a build, and new cells.
 - **Targets overlap, and can be many.** They are gathered greedily, not as a minimum cover, so a
   large gap asks for more fill frames than a careful layout would. With nothing placed on the
   default plan, the plan's own 66 by 50 lens asks for 64 targets, a 30-degree fill lens for 287,
-  and the narrowest accepted, about 15.5 degrees, for 7,263: more than the 2,000 cells a plan may
+  and the narrowest accepted, 15.5 degrees, for 9,342: more than the 2,000 cells a plan may
   hold. Appending fill cells has to bound that.
 - **The solve's world is the capture's.** The priors decide which way a reconstruction faces
   (ADR 0065), so a target is in the same frame as the plan's cells, give or take the solve's error
   against the priors. A sensor drifting badly enough to move that by more than a cone would aim a
   fill cell off its gap. A rebuild after filling shows any gap that is left.
-- **The cost.** Each call projects up to 20,720 directions, and nine times that where a frame
-  covers one, against the frames near them; each target asks only the directions within its reach
-  in elevation. In a native debug build on the default plan: 48 ms with a frame at every cell, and
-  with nothing placed 85 ms for a 30-degree fill lens and 298 ms for the narrowest. Scanning every
-  open direction per target, as the first version did, took 6.2 s at a 2-degree reach, as a
-  review measured.
+- **The cost.** Each call projects up to about 22,200 directions, and nine times that where a frame
+  covers one, against the frames near them; each target asks only the directions within its reach in
+  elevation. In a native debug build on the default plan: 48 ms with a frame at every cell, and with
+  nothing placed about 75 ms for a 30-degree fill lens and 375 ms for the narrowest. Scanning every
+  open direction per target, as the first version did, took 6.2 s at a 2-degree reach, as a review
+  measured.
 - The null planner refuses with `Unsupported`, since one cell is no tessellation to judge the
   sphere against.
 
