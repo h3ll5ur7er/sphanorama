@@ -31,17 +31,26 @@ They chose after a build, and new cells.
   - It answers which parts of the sphere no frame covers, and where to aim to fill each.
   - V4 already lists hole detection as its own (`02-volatility-map.md`), so no component is added.
 - **The directions asked are the plan's.** `FindGaps` asks 20,000 directions spread evenly over the
-  sphere, about a degree and a half apart.
-  - A band answers only for the elevations its rings aim at, as the plan's own check does
-    (ADR 0076).
-  - A direction is covered when some frame's `Project` lands inside that frame.
+  sphere, about a degree and a half apart, and 720 on the horizon, as the plan's own check does
+  (ADR 0076).
+  - A band answers only for the elevations its rings aim at. One of only its horizon ring answers
+    for the horizon alone, and no point of the spread lands there.
+  - The horizon's directions are asked, and weigh nothing in a gap's share of the sphere.
+  - A direction is covered when one frame's `Project` lands inside that frame, for it and for
+    eight directions 1.1 degrees around it. No point of the sphere is more than about 1.012
+    degrees from an asked direction, and the ring's hull holds every point that near. So a point
+    left open always has an open direction that near, and so does every target's share of a gap.
+    Asked of the directions alone, a review found filling left slivers open between them.
 - **A target is one a fill frame covers from anywhere in the cone.** Open directions are gathered
   into targets of one reach each.
-  - The reach is half the fill lens's narrower field, less the plan's cone, less the degree
-    ADR 0076 spends between the directions it asks.
+  - The reach is the circle inscribed in the fill frame, less the plan's cone, less the 1.1
+    degrees between directions. The circle is the nearest of the frame's four edges to its axis,
+    read through `Unproject`, so an off-centre or distorted lens is read as it is: half its field
+    across overstated the near side.
   - A gap wider than one frame comes back as several targets, so aiming at every target closes it.
   - Each target is level, since nothing about a gap says which way up to hold the phone.
-  - A fill lens too narrow to cover from inside the cone is refused.
+  - A fill lens whose reach is below the spacing of the directions, a degree and a half, is
+    refused: every open direction would be its own target.
 - **Next, the build reports its gaps.** `PanoramaBuildManager` asks `FindGaps` after `Refine`,
   through the fitted lens, and the build's progress says where the gaps are. This is not built yet.
 - **Then, filling appends cells to the capture's plan.** `CaptureSessionManager` appends a cell at
@@ -52,21 +61,30 @@ They chose after a build, and new cells.
 
 ## Consequences
 
-- **The plan's overlap hides a wrong lens for longer than expected.** On the default 66 by 50 plan:
-  - With every frame aimed at its cell's centre, frames 46 degrees across leave no gap, and frames
-    42 across leave 24 targets, about 2% of the sphere.
-  - Frames 50 across leave none at the centres, but do leave gaps aimed at their cones' edges.
-- **A gap smaller than the spacing can be missed.** Directions are about a degree and a half apart,
-  so a sliver narrower than that can fall between them. Filling with the degree of margin covers
-  the space between asked directions, as it does for the plan (ADR 0076).
-- **Targets overlap.** They are gathered greedily, not as a minimum cover, so a large gap asks for
-  more fill frames than a careful layout would. With nothing placed, it asks for dozens.
+- **The plan's overlap hides a wrong lens for longer than expected.** On the default 66 by 50 plan,
+  with every frame aimed at its cell's centre:
+  - Frames 50 degrees across leave no gap. Aimed at their cones' edges, they do.
+  - Frames 46 across leave seams thinner than the distance between directions, 0.7% of the
+    sphere, and 42 by 32 leave 5.0%.
+- **A seam thinner than about 2.2 degrees is a gap.** A direction near the meeting of two frames
+  that overlap by less than the ring's width is covered by neither with its ring around it, so it
+  is reported open although every point there is imaged. That is the cost of never missing a
+  sliver. A seam that thin is also one a stitch has little overlap to place.
+- **Targets overlap, and can be many.** They are gathered greedily, not as a minimum cover, so a
+  large gap asks for more fill frames than a careful layout would. With nothing placed on the
+  default plan, the plan's own 66 by 50 lens asks for 63 targets, a 30-degree fill lens for 276,
+  and the narrowest accepted, about 15 degrees, for 7,289: more than the 2,000 cells a plan may
+  hold. Appending fill cells has to bound that.
 - **The solve's world is the capture's.** The priors decide which way a reconstruction faces
   (ADR 0065), so a target is in the same frame as the plan's cells, give or take the solve's error
   against the priors. A sensor drifting badly enough to move that by more than a cone would aim a
   fill cell off its gap. A rebuild after filling shows any gap that is left.
-- Each call projects 20,000 directions against the frames near them. That is about 0.1 s natively
-  in a debug build for a plan of 38 cells with nothing placed, and less with frames placed.
+- **The cost.** Each call projects up to 20,720 directions, and nine times that where a frame
+  covers one, against the frames near them; each target asks only the directions within its reach
+  in elevation. In a native debug build on the default plan: 44 ms with a frame at every cell, and
+  with nothing placed 68 ms for a 30-degree fill lens and 302 ms for the narrowest. Scanning every
+  open direction per target, as the first version did, took 6.2 s at a 2-degree reach, as a
+  review measured.
 - The null planner refuses with `Unsupported`, since one cell is no tessellation to judge the
   sphere against.
 

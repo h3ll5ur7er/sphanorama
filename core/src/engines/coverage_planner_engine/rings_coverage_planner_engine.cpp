@@ -6,6 +6,7 @@
 #include <iterator>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "engines/coverage_planner_engine/guidance_roll.h"
@@ -465,18 +466,38 @@ Result<std::vector<CoverageGap>> RingsCoveragePlannerEngine::FindGaps(
         "a plan with no cells says no directions are its to cover");
   }
   const double cone = plan.spec.acceptanceConeDeg;
-  if (!IsUsableLens(fillLens) || !std::isfinite(cone) || cone <= 0.0) {
+  if (!std::isfinite(cone) || cone <= 0.0) {
     return Err<std::vector<CoverageGap>>(StatusCode::InvalidArgument, kComponent,
-                                         "a gap is judged against a fill lens and a cone");
+                                         "a gap is judged against a cone that is a measurement");
   }
-  // What a fill frame covers wherever in the cone it is aimed: the circle inscribed in it, less the
-  // cone, less the degree the plan's own check spends between the directions it asks (ADR 0076).
-  const double reachDeg =
-      std::min(HorizontalFovDeg(fillLens), VerticalFovDeg(fillLens)) / 2.0 - cone - kMarginDeg;
-  if (!(reachDeg > 0.0)) {
+  // No point of the sphere is farther than about 1.012 degrees from a direction asked below. A
+  // direction is counted covered only where one frame covers it and the ring this far around it,
+  // whose hull holds every point that near, so a point left open always has an open direction
+  // within 1.012 degrees; and a fill frame reaches this far past its target's directions. Asked of
+  // the directions alone, filling left slivers open between them (ADR 0084).
+  constexpr double kBetweenDeg = 1.1;
+  // What a fill frame covers wherever in the cone it is aimed: the circle inscribed in it, the
+  // nearest of its four edges to its axis whatever its centre and distortion, less the cone, less
+  // the distance between directions.
+  double inscribed = std::numbers::pi / 2.0;
+  for (const Pixel& edge : {Pixel{0.0, fillLens.cy}, Pixel{fillLens.width * 1.0, fillLens.cy},
+                            Pixel{fillLens.cx, 0.0}, Pixel{fillLens.cx, fillLens.height * 1.0}}) {
+    const UnprojectedDirection ray = Unproject(fillLens, edge);
+    if (!ray.valid) {
+      return Err<std::vector<CoverageGap>>(StatusCode::InvalidArgument, kComponent,
+                                           "a fill lens has to see to the edges of its frame");
+    }
+    inscribed = std::min(inscribed, std::acos(std::clamp(-ray.direction.z, -1.0, 1.0)));
+  }
+  const double reachDeg = inscribed * kRadToDeg - cone - kBetweenDeg;
+  // And no finer than the directions are apart, about a degree and a half: below that every open
+  // direction is its own target, tens of thousands, more than a plan may hold.
+  constexpr double kSpacingDeg = 1.5;
+  if (!(reachDeg >= kSpacingDeg)) {
     return Err<std::vector<CoverageGap>>(
         StatusCode::InvalidArgument, kComponent,
-        "the fill lens is too narrow to cover from inside the cone");
+        "the fill lens is too narrow to cover, from inside the cone, more than the directions are "
+        "apart");
   }
 
   // Each frame is asked only of directions within the reach of its corners, where `Project`
@@ -507,54 +528,104 @@ Result<std::vector<CoverageGap>> RingsCoveragePlannerEngine::FindGaps(
                                                                          std::numbers::pi / 2.0)),
                         &frame.lens});
   }
+  const auto images = [](const Seen& frame, const Vec3& direction) {
+    if (Dot(frame.axis, direction) < frame.nearEnough) return false;
+    const ProjectedPixel landing =
+        Project(*frame.lens, Rotate(Conjugate(frame.rotation), direction));
+    return landing.valid && landing.pixel.x >= 0.0 && landing.pixel.x <= frame.lens->width &&
+           landing.pixel.y >= 0.0 && landing.pixel.y <= frame.lens->height;
+  };
+  const double between = kBetweenDeg * kDegToRad;
   const auto covered = [&](const Vec3& direction) {
+    const Vec3 side = Normalize(Cross(direction, std::abs(direction.y) < 0.9 ? Vec3{0.0, 1.0, 0.0}
+                                                                            : Vec3{1.0, 0.0, 0.0}));
+    const Vec3 other = Cross(direction, side);
+    Vec3 ring[8];
+    for (int k = 0; k < 8; ++k) {
+      const double around = std::numbers::pi / 4.0 * k;
+      const double c = std::cos(around) * std::sin(between);
+      const double t = std::sin(around) * std::sin(between);
+      ring[k] = Vec3{direction.x * std::cos(between) + side.x * c + other.x * t,
+                     direction.y * std::cos(between) + side.y * c + other.y * t,
+                     direction.z * std::cos(between) + side.z * c + other.z * t};
+    }
     return std::any_of(seen.begin(), seen.end(), [&](const Seen& frame) {
-      if (Dot(frame.axis, direction) < frame.nearEnough) return false;
-      const ProjectedPixel landing =
-          Project(*frame.lens, Rotate(Conjugate(frame.rotation), direction));
-      return landing.valid && landing.pixel.x >= 0.0 && landing.pixel.x <= frame.lens->width &&
-             landing.pixel.y >= 0.0 && landing.pixel.y <= frame.lens->height;
+      return images(frame, direction) &&
+             std::all_of(std::begin(ring), std::end(ring),
+                         [&](const Vec3& near) { return images(frame, near); });
     });
   };
 
-  // The directions the plan answers for, as its own check asks them: a band answers only for the
-  // elevations its rings aim at (ADR 0076). Twenty thousand, about a degree and a half apart.
+  // The directions the plan answers for, as its own check asks them (ADR 0076): twenty thousand
+  // spread over the sphere, about a degree and a half apart, of which a band answers only for the
+  // elevations its rings aim at; and the horizon besides, since a band of only its horizon ring
+  // answers for nothing else and no point of the spread lands there. The horizon's directions are
+  // asked and weigh nothing in a gap's share of the sphere, which is the spread's to say.
   double highest = 0.0;
   for (const CoverageNode& node : plan.nodes) {
     highest = std::max(highest, std::abs(Direction(node.targetOrientation).y));
   }
   constexpr int kSamples = 20000;
+  constexpr int kOnTheHorizon = 720;
+  struct Open {
+    Vec3 direction;
+    bool weighs;
+  };
+  std::vector<Open> open;
   const double golden = std::numbers::pi * (3.0 - std::sqrt(5.0));
-  std::vector<Vec3> open;
   for (int i = 0; i < kSamples; ++i) {
     const double y = 1.0 - 2.0 * (static_cast<double>(i) + 0.5) / kSamples;
     if (std::abs(y) > highest) continue;
     const double radius = std::sqrt(std::max(0.0, 1.0 - y * y));
     const Vec3 direction{std::cos(golden * i) * radius, y, std::sin(golden * i) * radius};
-    if (!covered(direction)) open.push_back(direction);
+    if (!covered(direction)) open.push_back(Open{direction, true});
   }
+  for (int i = 0; i < kOnTheHorizon; ++i) {
+    const double azimuth = 2.0 * std::numbers::pi * (i + 0.5) / kOnTheHorizon;
+    const Vec3 direction{std::sin(azimuth), 0.0, -std::cos(azimuth)};
+    if (!covered(direction)) open.push_back(Open{direction, false});
+  }
+  // Highest first, so the directions within reach of one lie in a run of elevations either side of
+  // it: a reach of r radians moves the height by at most r. Each target then asks only that run,
+  // rather than every direction open, which made a narrow fill lens cost seconds.
+  std::stable_sort(open.begin(), open.end(), [](const Open& a, const Open& b) {
+    return a.direction.y > b.direction.y;
+  });
 
   // Gathered into targets a fill frame each covers: from the first direction still open, aimed at
   // the middle of what is open within reach of it, taking what is within reach of that. A gap wider
   // than a frame comes back as several targets, and filling all of them closes it.
-  const double withinReach = std::cos(reachDeg * kDegToRad);
+  const double reach = reachDeg * kDegToRad;
+  const double withinReach = std::cos(reach);
+  const auto run = [&](const Vec3& around) {
+    const auto from = std::lower_bound(open.begin(), open.end(), around.y + reach,
+                                       [](const Open& o, double y) { return o.direction.y > y; });
+    const auto to = std::upper_bound(from, open.end(), around.y - reach,
+                                     [](double y, const Open& o) { return y > o.direction.y; });
+    return std::pair{static_cast<size_t>(from - open.begin()),
+                     static_cast<size_t>(to - open.begin())};
+  };
   std::vector<bool> taken(open.size(), false);
   std::vector<CoverageGap> gaps;
   for (size_t first = 0; first < open.size(); ++first) {
     if (taken[first]) continue;
+    const Vec3 seed = open[first].direction;
     Vec3 sum{};
-    for (size_t i = 0; i < open.size(); ++i) {
-      if (!taken[i] && Dot(open[i], open[first]) >= withinReach) {
-        sum = Vec3{sum.x + open[i].x, sum.y + open[i].y, sum.z + open[i].z};
+    const auto [seedFrom, seedTo] = run(seed);
+    for (size_t i = seedFrom; i < seedTo; ++i) {
+      const Vec3& d = open[i].direction;
+      if (!taken[i] && Dot(d, seed) >= withinReach) {
+        sum = Vec3{sum.x + d.x, sum.y + d.y, sum.z + d.z};
       }
     }
     Vec3 aim = Normalize(sum);
-    if (!IsUsableVector(aim) || Dot(aim, open[first]) < withinReach) aim = open[first];
+    if (!IsUsableVector(aim) || Dot(aim, seed) < withinReach) aim = seed;
     int members = 0;
-    for (size_t i = 0; i < open.size(); ++i) {
-      if (!taken[i] && Dot(open[i], aim) >= withinReach) {
+    const auto [aimFrom, aimTo] = run(aim);
+    for (size_t i = aimFrom; i < aimTo; ++i) {
+      if (!taken[i] && Dot(open[i].direction, aim) >= withinReach) {
         taken[i] = true;
-        ++members;
+        if (open[i].weighs) ++members;
       }
     }
     CoverageGap gap;

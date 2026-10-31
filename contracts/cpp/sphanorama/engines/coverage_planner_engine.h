@@ -96,11 +96,12 @@ class ICoveragePlannerEngine {
   // its cone under the lens it was laid with, so a gap is that lens or that aim being wrong.
   //
   // Answers for the directions the plan does, its caps only where it has them. Each gap's target
-  // is one a frame through `fillLens` covers wherever in the plan's cone it is aimed, so aiming at
-  // every target closes the sphere; no frames placed is the whole sphere open. Refuses with
-  // `InvalidArgument` a plan with no cells, a fill lens that is unusable or too narrow for the
-  // cone, and a frame that is not a placement; with `Unsupported` where an implementation judges
-  // no coverage.
+  // is one a frame through `fillLens` covers wherever in the plan's cone it is aimed, between the
+  // directions asked as well as at them, so aiming at every target closes the sphere; no frames
+  // placed is the whole sphere open. Refuses with `InvalidArgument` a plan with no cells or whose
+  // cone is not a measurement, a fill lens that does not see to its frame's edges or reaches less
+  // than the directions are apart from inside the cone, and a frame that is not a placement; with
+  // `Unsupported` where an implementation judges no coverage.
   virtual Result<std::vector<CoverageGap>> FindGaps(const CapturePlan&,
                                                     std::span<const PlacedFrame> frames,
                                                     const Intrinsics& fillLens) = 0;
