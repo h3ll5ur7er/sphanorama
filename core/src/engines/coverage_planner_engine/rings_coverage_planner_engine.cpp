@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "engines/coverage_planner_engine/guidance_roll.h"
+#include "utilities/camera_model.h"
 #include "utilities/quaternion.h"
 
 namespace sphanorama {
@@ -454,6 +455,115 @@ Result<std::vector<NodeId>> RingsCoveragePlannerEngine::SuggestRetakes(const Cap
     if (!already) suggestions.push_back(region.node);
   }
   return Ok(std::move(suggestions));
+}
+
+Result<std::vector<CoverageGap>> RingsCoveragePlannerEngine::FindGaps(
+    const CapturePlan& plan, std::span<const PlacedFrame> frames, const Intrinsics& fillLens) {
+  if (plan.nodes.empty()) {
+    return Err<std::vector<CoverageGap>>(
+        StatusCode::InvalidArgument, kComponent,
+        "a plan with no cells says no directions are its to cover");
+  }
+  const double cone = plan.spec.acceptanceConeDeg;
+  if (!IsUsableLens(fillLens) || !std::isfinite(cone) || cone <= 0.0) {
+    return Err<std::vector<CoverageGap>>(StatusCode::InvalidArgument, kComponent,
+                                         "a gap is judged against a fill lens and a cone");
+  }
+  // What a fill frame covers wherever in the cone it is aimed: the circle inscribed in it, less the
+  // cone, less the degree the plan's own check spends between the directions it asks (ADR 0076).
+  const double reachDeg =
+      std::min(HorizontalFovDeg(fillLens), VerticalFovDeg(fillLens)) / 2.0 - cone - kMarginDeg;
+  if (!(reachDeg > 0.0)) {
+    return Err<std::vector<CoverageGap>>(
+        StatusCode::InvalidArgument, kComponent,
+        "the fill lens is too narrow to cover from inside the cone");
+  }
+
+  // Each frame is asked only of directions within the reach of its corners, where `Project`
+  // decides. A corner that does not unproject leaves its whole half-sphere to ask.
+  struct Seen {
+    Quat rotation;
+    Vec3 axis;
+    double nearEnough;
+    const Intrinsics* lens;
+  };
+  std::vector<Seen> seen;
+  seen.reserve(frames.size());
+  for (const PlacedFrame& frame : frames) {
+    if (!IsUsableRotation(frame.rotation) || !IsUsableLens(frame.lens)) {
+      return Err<std::vector<CoverageGap>>(StatusCode::InvalidArgument, kComponent,
+                                           "a placed frame needs a rotation and a lens");
+    }
+    const Quat rotation = Normalize(frame.rotation);
+    double corner = 0.0;
+    for (const Pixel& at : {Pixel{0.0, 0.0}, Pixel{frame.lens.width * 1.0, 0.0},
+                            Pixel{0.0, frame.lens.height * 1.0},
+                            Pixel{frame.lens.width * 1.0, frame.lens.height * 1.0}}) {
+      const UnprojectedDirection ray = Unproject(frame.lens, at);
+      corner = ray.valid ? std::max(corner, std::acos(std::clamp(-ray.direction.z, -1.0, 1.0)))
+                         : std::numbers::pi / 2.0;
+    }
+    seen.push_back(Seen{rotation, Direction(rotation), std::cos(std::min(corner + 0.01,
+                                                                         std::numbers::pi / 2.0)),
+                        &frame.lens});
+  }
+  const auto covered = [&](const Vec3& direction) {
+    return std::any_of(seen.begin(), seen.end(), [&](const Seen& frame) {
+      if (Dot(frame.axis, direction) < frame.nearEnough) return false;
+      const ProjectedPixel landing =
+          Project(*frame.lens, Rotate(Conjugate(frame.rotation), direction));
+      return landing.valid && landing.pixel.x >= 0.0 && landing.pixel.x <= frame.lens->width &&
+             landing.pixel.y >= 0.0 && landing.pixel.y <= frame.lens->height;
+    });
+  };
+
+  // The directions the plan answers for, as its own check asks them: a band answers only for the
+  // elevations its rings aim at (ADR 0076). Twenty thousand, about a degree and a half apart.
+  double highest = 0.0;
+  for (const CoverageNode& node : plan.nodes) {
+    highest = std::max(highest, std::abs(Direction(node.targetOrientation).y));
+  }
+  constexpr int kSamples = 20000;
+  const double golden = std::numbers::pi * (3.0 - std::sqrt(5.0));
+  std::vector<Vec3> open;
+  for (int i = 0; i < kSamples; ++i) {
+    const double y = 1.0 - 2.0 * (static_cast<double>(i) + 0.5) / kSamples;
+    if (std::abs(y) > highest) continue;
+    const double radius = std::sqrt(std::max(0.0, 1.0 - y * y));
+    const Vec3 direction{std::cos(golden * i) * radius, y, std::sin(golden * i) * radius};
+    if (!covered(direction)) open.push_back(direction);
+  }
+
+  // Gathered into targets a fill frame each covers: from the first direction still open, aimed at
+  // the middle of what is open within reach of it, taking what is within reach of that. A gap wider
+  // than a frame comes back as several targets, and filling all of them closes it.
+  const double withinReach = std::cos(reachDeg * kDegToRad);
+  std::vector<bool> taken(open.size(), false);
+  std::vector<CoverageGap> gaps;
+  for (size_t first = 0; first < open.size(); ++first) {
+    if (taken[first]) continue;
+    Vec3 sum{};
+    for (size_t i = 0; i < open.size(); ++i) {
+      if (!taken[i] && Dot(open[i], open[first]) >= withinReach) {
+        sum = Vec3{sum.x + open[i].x, sum.y + open[i].y, sum.z + open[i].z};
+      }
+    }
+    Vec3 aim = Normalize(sum);
+    if (!IsUsableVector(aim) || Dot(aim, open[first]) < withinReach) aim = open[first];
+    int members = 0;
+    for (size_t i = 0; i < open.size(); ++i) {
+      if (!taken[i] && Dot(open[i], aim) >= withinReach) {
+        taken[i] = true;
+        ++members;
+      }
+    }
+    CoverageGap gap;
+    gap.target = FromAzimuthElevation(std::atan2(-aim.x, -aim.z) * kRadToDeg,
+                                      std::asin(std::clamp(aim.y, -1.0, 1.0)) * kRadToDeg);
+    gap.solidAngleFraction = static_cast<double>(members) / kSamples;
+    gaps.push_back(gap);
+  }
+  return Ok(std::move(gaps));
 }
 
 }  // namespace sphanorama

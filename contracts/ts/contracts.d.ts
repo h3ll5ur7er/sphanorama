@@ -257,6 +257,30 @@ export interface CapturePlan {
   spec: CapturePlanSpec;
 }
 
+/**
+ * A frame where a solve placed it, which is what coverage is judged from once a capture is built:
+ * the sensor's pose and the page's lens are the two things a gap comes from, and registration is
+ * what sees past both (ADR 0084).
+ */
+export interface PlacedFrame {
+  /** camera to world, as `GlobalSolution::rotations` */
+  rotation: Quat;
+  /** as the frame was held, `LensForFrame` of the solve's lens */
+  lens: Intrinsics;
+}
+
+/**
+ * Part of the sphere no placed frame covers, and where to aim to fill it. A gap wider than one
+ * frame is answered as several, each one a frame aimed anywhere in the plan's cone around
+ * `target` covers.
+ */
+export interface CoverageGap {
+  /** Looking at the gap, level: nothing about a gap says which way up to hold the phone. */
+  target: Quat;
+  /** Of the whole sphere. */
+  solidAngleFraction: number;
+}
+
 export type NodeState = 'Pending' | 'Capturing' | 'Captured' | 'Satisfied' | 'Flagged' | 'Retaking';
 
 /** ---------------------------------------------------------------- candidates */

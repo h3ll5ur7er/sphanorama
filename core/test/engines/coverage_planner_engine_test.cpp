@@ -17,6 +17,7 @@
 
 #include "engines/coverage_planner_engine/null_coverage_planner_engine.h"
 #include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
+#include "utilities/camera_model.h"
 #include "utilities/quaternion.h"
 
 namespace sphanorama {
@@ -1364,6 +1365,200 @@ TEST(NullCoveragePlanner, SaysTheSameFourThingsAboutAimAndCoverageTheRealOneDoes
   // whatever sits at identity, and never `HoldStill` — a page gating its shutter on that would
   // offer nothing for ever.
   EXPECT_EQ(blind.value.action, GuidanceAction::Seek);
+}
+
+
+// ------------------------------------------------------------------------------ gaps
+//
+// After a build the frames are where the solve placed them, through the lens it fitted, and that
+// is the only place a wrong lens or a drifting pose shows (ADR 0084). The invariant worth having is
+// the one a user acts on: aim a frame at every gap reported, anywhere inside its cone, and the
+// sphere closes.
+
+Intrinsics LensOf(double h, double v) { return LensFromFieldOfView(h, v, 640, 480); }
+
+std::vector<PlacedFrame> AtEveryCell(const CapturePlan& plan, const Intrinsics& lens) {
+  std::vector<PlacedFrame> frames;
+  for (const CoverageNode& node : plan.nodes) {
+    frames.push_back(PlacedFrame{node.targetOrientation, lens});
+  }
+  return frames;
+}
+
+// The frames, and one frame aimed at each gap at the edge of its cone, which is as far off as a
+// user holding still inside it can be. One, because a user takes one: four around the cone cover
+// together what none does alone, and passed with a fill reach that forgot the cone. The side turns
+// with each gap, so no one side is the only one asked. Neighbouring fill frames still cover for
+// each other, so these do not pin how far one reaches; the refusal of a fill lens too narrow for
+// the cone, below, does.
+std::vector<PlacedFrame> Filled(std::vector<PlacedFrame> frames,
+                                const std::vector<CoverageGap>& gaps, const Intrinsics& lens,
+                                double coneDeg) {
+  for (size_t g = 0; g < gaps.size(); ++g) {
+    const double around = 2.0 * std::numbers::pi * static_cast<double>(g % 8) / 8.0;
+    const Quat off = FromAxisAngle(Vec3{std::cos(around), std::sin(around), 0.0},
+                                   coneDeg / kRadToDeg);
+    frames.push_back(PlacedFrame{Multiply(gaps[g].target, off), lens});
+  }
+  return frames;
+}
+
+double Fraction(const std::vector<CoverageGap>& gaps) {
+  double sum = 0.0;
+  for (const CoverageGap& gap : gaps) sum += gap.solidAngleFraction;
+  return sum;
+}
+
+TEST(CoverageGaps, AFrameAtEveryCellOfThePlannedLensLeavesNone) {
+  const CapturePlan plan = Plan(Spec());
+  RingsCoveragePlannerEngine engine;
+  auto gaps = engine.FindGaps(plan, AtEveryCell(plan, LensOf(66.0, 50.0)), LensOf(66.0, 50.0));
+  ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
+  EXPECT_TRUE(gaps.value.empty()) << gaps.value.size() << " gaps, " << Fraction(gaps.value);
+}
+
+TEST(CoverageGaps, AMissingFrameLeavesAGapWhereItWouldHaveLookedAndFillingItCloses) {
+  const CapturePlan plan = Plan(Spec());
+  const Intrinsics lens = LensOf(66.0, 50.0);
+  std::vector<PlacedFrame> frames = AtEveryCell(plan, lens);
+  // A cell on the horizon, so the gap is between neighbours on every side.
+  const auto missing =
+      std::find_if(plan.nodes.begin(), plan.nodes.end(), [](const CoverageNode& n) {
+        return std::abs(ElevationOf(n.targetOrientation)) < 1.0;
+      });
+  ASSERT_NE(missing, plan.nodes.end());
+  const Vec3 there = Direction(missing->targetOrientation);
+  frames.erase(frames.begin() + (missing - plan.nodes.begin()));
+
+  RingsCoveragePlannerEngine engine;
+  auto gaps = engine.FindGaps(plan, frames, lens);
+  ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
+  ASSERT_FALSE(gaps.value.empty());
+  // Every gap is within the missing frame's reach of where it looked, since nothing else is gone.
+  for (const CoverageGap& gap : gaps.value) {
+    const Vec3 at = Direction(gap.target);
+    const double degrees = std::acos(std::clamp(at.x * there.x + at.y * there.y + at.z * there.z,
+                                                -1.0, 1.0)) * kRadToDeg;
+    EXPECT_LT(degrees, 42.0);
+  }
+  EXPECT_GT(Fraction(gaps.value), 0.0);
+
+  auto after = engine.FindGaps(plan, Filled(frames, gaps.value, lens, 5.0), lens);
+  ASSERT_TRUE(after.ok()) << after.status.detail;
+  EXPECT_TRUE(after.value.empty()) << after.value.size() << " left";
+}
+
+// The field report's cause: the page's 66-degree guess against a camera that sees less. The plan
+// was complete for the lens it was laid with, and the frames are not that lens. Aimed at the
+// cells' centres, its overlap holds down to 46 degrees across; at 42, 24 gaps and 2% of the sphere.
+TEST(CoverageGaps, FramesNarrowerThanThePlannedLensLeaveGapsBetweenCellsThatFillingCloses) {
+  const CapturePlan plan = Plan(Spec());
+  const Intrinsics actual = LensOf(42.0, 32.0);
+  RingsCoveragePlannerEngine engine;
+  auto gaps = engine.FindGaps(plan, AtEveryCell(plan, actual), actual);
+  ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
+  ASSERT_FALSE(gaps.value.empty());
+
+  auto after = engine.FindGaps(plan, Filled(AtEveryCell(plan, actual), gaps.value, actual, 5.0),
+                               actual);
+  ASSERT_TRUE(after.ok()) << after.status.detail;
+  EXPECT_TRUE(after.value.empty()) << after.value.size() << " left";
+}
+
+// And aimed anywhere in the cones, as a user holding still inside one does: the same lens leaves
+// gaps where aimed at the centres it left none.
+TEST(CoverageGaps, FramesAtTheirConesEdgeOpenGapsTheCentresDidNot) {
+  const CapturePlan plan = Plan(Spec());
+  const Intrinsics actual = LensOf(50.0, 38.0);
+  RingsCoveragePlannerEngine engine;
+  auto centred = engine.FindGaps(plan, AtEveryCell(plan, actual), actual);
+  ASSERT_TRUE(centred.ok());
+  ASSERT_TRUE(centred.value.empty());
+
+  std::vector<PlacedFrame> edged;
+  for (size_t n = 0; n < plan.nodes.size(); ++n) {
+    const double around = std::numbers::pi / 2.0 * static_cast<double>(n % 4);
+    const Quat off = FromAxisAngle(Vec3{std::cos(around), std::sin(around), 0.0},
+                                   plan.spec.acceptanceConeDeg / kRadToDeg);
+    edged.push_back(PlacedFrame{Multiply(plan.nodes[n].targetOrientation, off), actual});
+  }
+  auto gaps = engine.FindGaps(plan, edged, actual);
+  ASSERT_TRUE(gaps.ok());
+  ASSERT_FALSE(gaps.value.empty());
+  auto after = engine.FindGaps(plan, Filled(edged, gaps.value, actual, 5.0), actual);
+  ASSERT_TRUE(after.ok());
+  EXPECT_TRUE(after.value.empty()) << after.value.size() << " left";
+}
+
+TEST(CoverageGaps, NothingPlacedIsTheWholeSphereAndFillingItCloses) {
+  const CapturePlan plan = Plan(Spec());
+  const Intrinsics lens = LensOf(66.0, 50.0);
+  RingsCoveragePlannerEngine engine;
+  auto gaps = engine.FindGaps(plan, {}, lens);
+  ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
+  EXPECT_NEAR(Fraction(gaps.value), 1.0, 1e-9);
+
+  auto after = engine.FindGaps(plan, Filled({}, gaps.value, lens, 5.0), lens);
+  ASSERT_TRUE(after.ok()) << after.status.detail;
+  EXPECT_TRUE(after.value.empty()) << after.value.size() << " left";
+}
+
+// A band answers for the elevations its rings aim at, as the plan's own check does (ADR 0076): its
+// caps are not a gap.
+TEST(CoverageGaps, ABandsCapsAreNotAGap) {
+  CapturePlanSpec spec = Spec();
+  spec.coverPoles = false;
+  const CapturePlan plan = Plan(spec);
+  const Intrinsics lens = LensOf(66.0, 50.0);
+  RingsCoveragePlannerEngine engine;
+  auto gaps = engine.FindGaps(plan, AtEveryCell(plan, lens), lens);
+  ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
+  EXPECT_TRUE(gaps.value.empty()) << gaps.value.size() << " gaps, " << Fraction(gaps.value);
+  // And with nothing placed, only the band is open.
+  auto band = engine.FindGaps(plan, {}, lens);
+  ASSERT_TRUE(band.ok());
+  EXPECT_GT(Fraction(band.value), 0.3);
+  EXPECT_LT(Fraction(band.value), 0.95);
+}
+
+// A gap's target is a direction, and nothing about the gap says which way up to hold the phone.
+TEST(CoverageGaps, ATargetIsAnAimWithNoRoll) {
+  const CapturePlan plan = Plan(Spec());
+  RingsCoveragePlannerEngine engine;
+  auto gaps = engine.FindGaps(plan, {}, LensOf(66.0, 50.0));
+  ASSERT_TRUE(gaps.ok());
+  for (const CoverageGap& gap : gaps.value) {
+    const Vec3 at = Direction(gap.target);
+    const double azimuth = std::atan2(-at.x, -at.z) * kRadToDeg;
+    const double elevation = std::asin(std::clamp(at.y, -1.0, 1.0)) * kRadToDeg;
+    const Quat level = FromAzimuthElevation(azimuth, elevation);
+    const double dot = level.w * gap.target.w + level.x * gap.target.x + level.y * gap.target.y +
+                       level.z * gap.target.z;
+    EXPECT_NEAR(std::abs(dot), 1.0, 1e-9);
+  }
+}
+
+TEST(CoverageGaps, RefusesWhatCannotBeJudged) {
+  const CapturePlan plan = Plan(Spec());
+  const Intrinsics lens = LensOf(66.0, 50.0);
+  RingsCoveragePlannerEngine engine;
+  // No plan: nothing says which directions are the capture's to cover.
+  EXPECT_EQ(engine.FindGaps(CapturePlan{}, {}, lens).status.code, StatusCode::InvalidArgument);
+  // No fill lens, and one too narrow for the cone to be aimed anywhere in and still cover.
+  EXPECT_EQ(engine.FindGaps(plan, {}, Intrinsics{}).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(engine.FindGaps(plan, {}, LensOf(10.0, 8.0)).status.code, StatusCode::InvalidArgument);
+  // A frame that is not a placement.
+  const std::vector<PlacedFrame> unlensed{PlacedFrame{Quat{}, Intrinsics{}}};
+  EXPECT_EQ(engine.FindGaps(plan, unlensed, lens).status.code, StatusCode::InvalidArgument);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const std::vector<PlacedFrame> unturned{PlacedFrame{Quat{nan, 0.0, 0.0, 0.0}, lens}};
+  EXPECT_EQ(engine.FindGaps(plan, unturned, lens).status.code, StatusCode::InvalidArgument);
+}
+
+TEST(CoverageGaps, TheNullPlannerJudgesNone) {
+  NullCoveragePlannerEngine engine;
+  EXPECT_EQ(engine.FindGaps(CapturePlan{}, {}, LensOf(66.0, 50.0)).status.code,
+            StatusCode::Unsupported);
 }
 
 }  // namespace

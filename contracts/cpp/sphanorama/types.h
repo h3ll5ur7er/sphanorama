@@ -285,6 +285,24 @@ struct CapturePlan {
   CapturePlanSpec spec;
 };
 
+// A frame where a solve placed it, which is what coverage is judged from once a capture is built:
+// the sensor's pose and the page's lens are the two things a gap comes from, and registration is
+// what sees past both (ADR 0084).
+struct PlacedFrame {
+  Quat rotation;     // camera to world, as `GlobalSolution::rotations`
+  Intrinsics lens;   // as the frame was held, `LensForFrame` of the solve's lens
+};
+
+// Part of the sphere no placed frame covers, and where to aim to fill it. A gap wider than one
+// frame is answered as several, each one a frame aimed anywhere in the plan's cone around
+// `target` covers.
+struct CoverageGap {
+  // Looking at the gap, level: nothing about a gap says which way up to hold the phone.
+  Quat target;
+  // Of the whole sphere.
+  double solidAngleFraction = 0;
+};
+
 enum class NodeState : uint8_t { Pending, Capturing, Captured, Satisfied, Flagged, Retaking };
 
 // ---------------------------------------------------------------- candidates

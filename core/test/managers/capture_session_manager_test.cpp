@@ -431,6 +431,10 @@ class CarelessCoveragePlannerEngine final : public ICoveragePlannerEngine {
                                              const GhostReport&) override {
     return Ok(std::vector<NodeId>{});
   }
+  Result<std::vector<CoverageGap>> FindGaps(const CapturePlan&, std::span<const PlacedFrame>,
+                                            const Intrinsics&) override {
+    return Err<std::vector<CoverageGap>>(StatusCode::Unsupported, "test", "judges no gaps");
+  }
 
   // A target the plan can be given as well as a cone, because the two fail the same way and only
   // one of them was reachable. `AngleBetweenDirections` answers a degenerate direction with `0.0`,
@@ -764,6 +768,11 @@ class UnlocatablePlannerEngine final : public ICoveragePlannerEngine {
                                              const GhostReport& ghosts) override {
     return inner_.SuggestRetakes(plan, state, ghosts);
   }
+  Result<std::vector<CoverageGap>> FindGaps(const CapturePlan& plan,
+                                            std::span<const PlacedFrame> frames,
+                                            const Intrinsics& fillLens) override {
+    return inner_.FindGaps(plan, frames, fillLens);
+  }
 
  private:
   NullCoveragePlannerEngine inner_;
@@ -831,6 +840,10 @@ class RefusingCoveragePlannerEngine final : public ICoveragePlannerEngine {
                                              const GhostReport&) override {
     return Err<std::vector<NodeId>>(StatusCode::Unsupported, "test", "cannot suggest");
   }
+  Result<std::vector<CoverageGap>> FindGaps(const CapturePlan&, std::span<const PlacedFrame>,
+                                            const Intrinsics&) override {
+    return Err<std::vector<CoverageGap>>(StatusCode::Unsupported, "test", "judges no gaps");
+  }
 };
 
 // A planner that gets `aimKnown` wrong, which is the one thing the manager must not pass through.
@@ -852,6 +865,11 @@ class BlindClaimingPlannerEngine final : public ICoveragePlannerEngine {
   Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan& plan, const CoverageState& coverage,
                                              const GhostReport& ghosts) override {
     return inner_.SuggestRetakes(plan, coverage, ghosts);
+  }
+  Result<std::vector<CoverageGap>> FindGaps(const CapturePlan& plan,
+                                            std::span<const PlacedFrame> frames,
+                                            const Intrinsics& fillLens) override {
+    return inner_.FindGaps(plan, frames, fillLens);
   }
 
  private:
@@ -4635,6 +4653,11 @@ class TurnedCoveragePlannerEngine final : public ICoveragePlannerEngine {
                                              const GhostReport& ghosts) override {
     return inner_.SuggestRetakes(plan, state, ghosts);
   }
+  Result<std::vector<CoverageGap>> FindGaps(const CapturePlan& plan,
+                                            std::span<const PlacedFrame> frames,
+                                            const Intrinsics& fillLens) override {
+    return inner_.FindGaps(plan, frames, fillLens);
+  }
 
  private:
   ICoveragePlannerEngine& inner_;
@@ -5198,6 +5221,10 @@ class EmptyCoveragePlannerEngine final : public ICoveragePlannerEngine {
                                              const GhostReport&) override {
     return Ok(std::vector<NodeId>{});
   }
+  Result<std::vector<CoverageGap>> FindGaps(const CapturePlan&, std::span<const PlacedFrame>,
+                                            const Intrinsics&) override {
+    return Err<std::vector<CoverageGap>>(StatusCode::Unsupported, "test", "judges no gaps");
+  }
 };
 
 TEST_F(ResumedSession, ABeginWhoseSpecNoResumeWouldTakeIsRefused) {
@@ -5376,6 +5403,11 @@ class SpecRewritingCoveragePlannerEngine final : public ICoveragePlannerEngine {
                                              const GhostReport& ghosts) override {
     return inner_.SuggestRetakes(plan, state, ghosts);
   }
+  Result<std::vector<CoverageGap>> FindGaps(const CapturePlan& plan,
+                                            std::span<const PlacedFrame> frames,
+                                            const Intrinsics& fillLens) override {
+    return inner_.FindGaps(plan, frames, fillLens);
+  }
 
  private:
   ICoveragePlannerEngine& inner_;
@@ -5468,6 +5500,11 @@ class WideningCoveragePlannerEngine final : public ICoveragePlannerEngine {
   Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan& plan, const CoverageState& state,
                                              const GhostReport& ghosts) override {
     return inner_.SuggestRetakes(plan, state, ghosts);
+  }
+  Result<std::vector<CoverageGap>> FindGaps(const CapturePlan& plan,
+                                            std::span<const PlacedFrame> frames,
+                                            const Intrinsics& fillLens) override {
+    return inner_.FindGaps(plan, frames, fillLens);
   }
 
  private:
