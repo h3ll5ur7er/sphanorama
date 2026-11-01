@@ -237,15 +237,13 @@ std::optional<std::string> SpecDefect(const CapturePlanSpec& spec) {
   return std::nullopt;
 }
 
-std::optional<std::string> CandidateCellDefect(const std::vector<CoverageNode>& nodes,
-                                               const std::vector<Candidate>& candidates) {
-  for (const Candidate& candidate : candidates) {
-    const bool known = std::any_of(nodes.begin(), nodes.end(), [&](const CoverageNode& cell) {
+bool FilesEveryCandidate(const std::vector<CoverageNode>& nodes,
+                         const std::vector<Candidate>& candidates) {
+  return std::all_of(candidates.begin(), candidates.end(), [&](const Candidate& candidate) {
+    return std::any_of(nodes.begin(), nodes.end(), [&](const CoverageNode& cell) {
       return cell.id.value == candidate.node.value;
     });
-    if (!known) return "a cell its plan does not have";
-  }
-  return std::nullopt;
+  });
 }
 
 std::optional<std::string> PlanDefect(const std::vector<CoverageNode>& nodes,

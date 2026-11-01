@@ -36,14 +36,14 @@ Three things had to be settled to do that:
     same three rules, which live in `utilities/session_document` so the two readers of one
     document cannot disagree: the spec is one a plan could be laid from (`SpecDefect`), a replan
     is one a document could hold (`PlanDefect`), and every candidate is filed under a cell of the
-    plan (`CandidateCellDefect`). A plan that fails one is not judged: filling appends to it and
+    plan (`FilesEveryCandidate`). A plan that fails one is not judged: filling appends to it and
     resumes, so its targets would be ones nothing can act on.
   - A solve whose rotations are not one a frame fails the build here, as `RenderPreview` would have
     refused it one step later.
-- **A refused judgement does not fail the build.** A planner that cannot replan, or a fill lens
-  `FindGaps` refuses, is kept and answered by `Gaps` with the planner's own status; a plan no
-  resume could take is answered `Unsupported`, as `Resume` answers it. Either way the build
-  completes with its panorama.
+- **A refused judgement does not fail the build.** A plan no resume could take, including one this
+  build's planner cannot replan, is answered `Unsupported`, as `Resume` answers it. Only a
+  judgement `FindGaps` itself refuses, such as a fill lens too narrow, is answered with the
+  planner's own status. Either way the build completes with its panorama.
 - **The page says how much of the sphere is open, and how many frames would complete the plan.** It
   asks once the preview is drawn, and appends one sentence to the build's line: "Nothing the capture
   planned is missing.", "About 3.2% of the sphere is open; 3 more frames would complete the

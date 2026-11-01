@@ -1343,12 +1343,13 @@ export interface PanoramaBuildManager {
    * as gaps. Asked in a step of its own after the solve, so `Poll` stays one step a call.
    * Empty is nothing open that the plan asks for: a plan of bands without caps is judged only up to
    * its highest cell, so its poles are not judged at all. A gap wider than one frame comes back as
-   * several, so the count is of fill frames rather than of holes. A judgement the planner refuses
-   * — a lens too narrow to fill with, a capture whose cells this build cannot replan — is answered
-   * here with the planner's status; a plan `ICaptureSessionManager::Resume` would not take as the
-   * capture's, by the same rules, with `Unsupported`. Either way the build completes regardless:
-   * the panorama does not depend on it. `FailedPrecondition` for a build that has not completed,
-   * or that failed.
+   * several, so the count is of fill frames rather than of holes. A plan
+   * `ICaptureSessionManager::Resume` would not take as the capture's is answered `Unsupported`, as
+   * `Resume` answers it and by the same rules — a spec no plan could be laid from, cells this
+   * build cannot replan or that no document could hold, a candidate filed under no cell — and only
+   * a judgement `FindGaps` itself refuses, such as a fill lens too narrow, with the planner's own
+   * status. Either way the build completes regardless: the panorama does not depend on it.
+   * `FailedPrecondition` for a build that has not completed, or that failed.
    */
   gaps(build: BuildId): Promise<Result<CoverageGap[]>>;
   /**

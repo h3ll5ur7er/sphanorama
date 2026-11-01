@@ -2103,7 +2103,9 @@ TEST_F(PanoramaBuildManagerTest, ACaptureThatPredatesItsCellsIsReplannedToBeJudg
             "this build's planner does not lay the cells this capture was taken in");
 
   // And one this build's planner cannot replan still builds; its gaps say why there are none.
-  planner_.planFailure = Fail(StatusCode::Unsupported, "test", "no such tessellation");
+  // Answered as `Resume` answers it, whatever code the planner refused with: a plan this build
+  // cannot lay is one no resume could take.
+  planner_.planFailure = Fail(StatusCode::InvalidArgument, "test", "no such tessellation");
   auto again = manager_.Start(kProject, BuildSpec{});
   ASSERT_TRUE(again.ok()) << again.status.detail;
   ASSERT_EQ(RunToEnd(again.value).back().stage, BuildStage::Complete);
@@ -2111,7 +2113,8 @@ TEST_F(PanoramaBuildManagerTest, ACaptureThatPredatesItsCellsIsReplannedToBeJudg
   EXPECT_EQ(planner_.plans, 3) << "replanned once a build, refused or not";
   auto gaps = manager_.Gaps(again.value);
   EXPECT_EQ(gaps.status.code, StatusCode::Unsupported);
-  EXPECT_EQ(gaps.status.detail, "no such tessellation");
+  EXPECT_EQ(gaps.status.detail,
+            "this build's planner cannot plan this capture: no such tessellation");
 }
 
 // The plan is judged only where `Resume` would take it as this capture's, on either path: a fill

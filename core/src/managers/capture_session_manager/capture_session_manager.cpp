@@ -500,8 +500,8 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
   }
 
   // Every candidate has to name a cell of this plan: this is where an edited or torn document
-  // naming a cell its own cells do not include is refused (`CandidateCellDefect`, ADR 0077).
-  if (CandidateCellDefect(plan.value.nodes, stored.candidates)) {
+  // naming a cell its own cells do not include is refused (`FilesEveryCandidate`, ADR 0077).
+  if (!FilesEveryCandidate(plan.value.nodes, stored.candidates)) {
     return Err<SessionId>(StatusCode::Unsupported, kComponent,
                           "this project's session document names a cell this plan does not have");
   }

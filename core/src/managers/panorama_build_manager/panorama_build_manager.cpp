@@ -373,8 +373,7 @@ Status PanoramaBuildManager::JudgeGaps(Build& build) {
   if (replanning) {
     Result<CapturePlan> replanned = planner_.Plan(build.plan.spec, build.plannedLens);
     if (!replanned.ok()) {
-      build.gaps = replanned.status;
-      return Status::Ok();
+      return refuse("this build's planner cannot plan this capture: " + replanned.status.detail);
     }
     if (auto defect = PlanDefect(replanned.value.nodes, build.plan.spec)) {
       return refuse("this build's planner laid a plan no resume could read: " + *defect);
@@ -383,7 +382,7 @@ Status PanoramaBuildManager::JudgeGaps(Build& build) {
   }
   // A later planner lays a different tessellation, and a stored plan the decoder took can still
   // leave out a cell a candidate is filed under.
-  if (CandidateCellDefect(build.plan.nodes, build.candidates)) {
+  if (!FilesEveryCandidate(build.plan.nodes, build.candidates)) {
     return refuse(replanning
                       ? "this build's planner does not lay the cells this capture was taken in"
                       : "this capture's document names a cell its plan does not have");
