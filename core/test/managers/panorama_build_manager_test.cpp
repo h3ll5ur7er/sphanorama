@@ -106,7 +106,7 @@ class ScriptedRegistrationEngine final : public IRegistrationEngine {
         continue;
       }
       solution.frames.push_back(prior.frame);
-      solution.rotations.push_back(prior.pose.orientation);
+      solution.rotations.push_back(Normalize(Multiply(turnBy, prior.pose.orientation)));
     }
     // Reversed when asked, so a manager that hands the compositor its own frame order rather than
     // the solution's is caught.
@@ -118,6 +118,7 @@ class ScriptedRegistrationEngine final : public IRegistrationEngine {
       solution.frames.push_back(FrameId{999999});
       solution.rotations.push_back(Quat{});
     }
+    if (dropARotation) solution.rotations.pop_back();
     return Ok(solution);
   }
 
@@ -143,6 +144,11 @@ class ScriptedRegistrationEngine final : public IRegistrationEngine {
   bool placeAStranger = false;
   // The focal length the solve answers, as a share of the one it was handed: a fit (ADR 0066).
   double fitFocalBy = 1.0;
+  // A solve that places a frame and gives it no rotation, which the real one never answers.
+  bool dropARotation = false;
+  // Where the solve places each frame, against where its pose said: a solve's answer is not its
+  // priors, and a reader of one must not be able to pass for a reader of the other.
+  Quat turnBy;
   bool leaveFeaturesPinned = false;
   std::set<std::pair<uint64_t, uint64_t>> unaccepted;
 
@@ -1867,11 +1873,14 @@ TEST_F(PanoramaBuildManagerTest, AFrameWhosePoseWasNotMeasuredIsPairedWithNothin
 // capture wrote down (ADR 0085): the poses and the page's lens are what a gap comes from, so
 // judging by either would find none of what a field capture missed (ADR 0084).
 TEST_F(PanoramaBuildManagerTest, GapsAreJudgedWhereTheSolvePlacedEachFrameThroughTheFittedLens) {
+  // Not the spec's default, so the plan's cone is shown to be the capture's.
+  document_.spec.acceptanceConeDeg = 6.0;
   CaptureRing(4);
   // Held the other way, so its lens is the fitted one turned a quarter (ADR 0082).
   AddCandidate(NodeId{5}, FromAzimuthElevation(120.0, 0.0), kHeight, kWidth);
   WriteDocument();
   registration_.fitFocalBy = 1.1;
+  registration_.turnBy = FromAxisAngle(Vec3{0, 1, 0}, 0.1);
   registration_.dropped = {document_.candidates[1].frame.id.value};
   registration_.reverse = true;
   CoverageGap gap;
@@ -1895,6 +1904,8 @@ TEST_F(PanoramaBuildManagerTest, GapsAreJudgedWhereTheSolvePlacedEachFrameThroug
                      [&](const Candidate& c) { return c.frame.id == solved.frames[i]; });
     ASSERT_NE(held, document_.candidates.end());
     const PlacedFrame& placed = planner_.judgedFrames[i];
+    ASSERT_GT(std::abs(solved.rotations[i].y - held->pose.orientation.y), 1e-3)
+        << "the premise: the solve placed it somewhere its pose did not say";
     EXPECT_EQ(placed.rotation.w, solved.rotations[i].w) << i;
     EXPECT_EQ(placed.rotation.y, solved.rotations[i].y) << i;
     const Intrinsics expected =
@@ -1912,7 +1923,7 @@ TEST_F(PanoramaBuildManagerTest, GapsAreJudgedWhereTheSolvePlacedEachFrameThroug
               document_.nodes[i].targetOrientation.y);
   }
   EXPECT_EQ(planner_.judgedPlan.spec.horizontalFovDeg, kHorizontalFovDeg);
-  EXPECT_EQ(planner_.judgedPlan.spec.acceptanceConeDeg, document_.spec.acceptanceConeDeg);
+  EXPECT_EQ(planner_.judgedPlan.spec.acceptanceConeDeg, 6.0);
 
   auto gaps = manager_.Gaps(build.value);
   ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
@@ -1968,6 +1979,21 @@ TEST_F(PanoramaBuildManagerTest, GapsAreRefusedUntilTheBuildCompletes) {
   EXPECT_EQ(manager_.Gaps(build.value).status.code, StatusCode::NotFound);
 }
 
+// The gaps are asked before the preview, so a solve that gives a frame no rotation has to be
+// refused by the build rather than read past the end of its rotations.
+TEST_F(PanoramaBuildManagerTest, ASolveShortOfARotationFailsTheBuildRatherThanJudgingIt) {
+  CaptureRing(3);
+  registration_.dropARotation = true;
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok());
+  const BuildProgress finished = RunToEnd(build.value).back();
+  ASSERT_EQ(finished.stage, BuildStage::Failed);
+  EXPECT_EQ(finished.failure.code, StatusCode::Internal);
+  EXPECT_EQ(finished.failure.detail, "the solve placed 3 frames and gave 2 rotations");
+  EXPECT_EQ(planner_.judged, 0);
+  EXPECT_EQ(composition_.renders, 0);
+}
+
 TEST_F(PanoramaBuildManagerTest, AFailedBuildHasNoGapsToAnswer) {
   CaptureRing(3);
   composition_.failure = Fail(StatusCode::Internal, "test", "no preview");
@@ -2016,6 +2042,8 @@ TEST_F(PanoramaBuildManagerTest, ACaptureThatPredatesItsCellsIsReplannedToBeJudg
 
   auto build = manager_.Start(kProject, BuildSpec{});
   ASSERT_TRUE(build.ok()) << build.status.detail;
+  // A tessellation is work, and `Start` only checks: the replan waits for its own step.
+  EXPECT_EQ(planner_.plans, 0);
   ASSERT_EQ(RunToEnd(build.value).back().stage, BuildStage::Complete);
   EXPECT_EQ(planner_.plans, 1);
   EXPECT_EQ(planner_.plannedSpec.horizontalFovDeg, kHorizontalFovDeg);

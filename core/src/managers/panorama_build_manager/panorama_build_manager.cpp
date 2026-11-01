@@ -196,14 +196,10 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
   }
   build.previewWidth = std::min(spec.outputWidth, kWidestPreview);
 
-  // The cells the capture wrote down are the plan it was captured against (ADR 0077); one from
-  // before they were written down is replanned from what it carried, as `Resume` replans it. A
-  // planner that cannot is no reason to refuse a build whose panorama does not depend on it, so the
-  // refusal is kept for `Gaps` to give.
-  build.plan = document.nodes.empty() ? planner_.Plan(document.spec, document.lens)
-                                      : Ok(CapturePlan{document.nodes, {}});
-  // The spec the capture was planned with, whichever way its cells came, as `Resume` holds it.
-  if (build.plan.ok()) build.plan.value.spec = document.spec;
+  // Kept for the step after the solve, which judges the gaps against them; a document without
+  // cells is replanned there rather than here, since a tessellation is work and this is the checks.
+  build.plan = CapturePlan{document.nodes, document.spec};
+  build.plannedLens = document.lens;
 
   // Last, since everything above can refuse and the finished build stands until this succeeds.
   if (build_) {
@@ -345,15 +341,32 @@ Result<std::vector<FrameRef>> PanoramaBuildManager::Placed(const Build& build) c
     }
     frames.push_back(*found);
   }
+  // Read in step with `frames` by every caller, and `RenderPreview`'s refusal of a mismatch is too
+  // late for the gaps, which are asked first.
+  if (build.solution.rotations.size() != frames.size()) {
+    return Err<std::vector<FrameRef>>(StatusCode::Internal, kComponent,
+                                      "the solve placed " + std::to_string(frames.size())
+                                          + " frames and gave "
+                                          + std::to_string(build.solution.rotations.size())
+                                          + " rotations");
+  }
   return Ok(std::move(frames));
 }
 
 Status PanoramaBuildManager::JudgeGaps(Build& build) {
-  if (!build.plan.ok()) {
-    build.gaps = build.plan.status;
-    return Status::Ok();
-  }
   SPH_TRY(const std::vector<FrameRef> frames, Placed(build));
+  // The cells the capture wrote down are the plan it was captured against (ADR 0077); one from
+  // before they were written down is replanned from what it carried, as `Resume` replans it, with
+  // the spec it carried. A planner that cannot is no reason to fail a build whose panorama does not
+  // depend on it, so the refusal is what `Gaps` gives.
+  if (build.plan.nodes.empty()) {
+    Result<CapturePlan> replanned = planner_.Plan(build.plan.spec, build.plannedLens);
+    if (!replanned.ok()) {
+      build.gaps = replanned.status;
+      return Status::Ok();
+    }
+    build.plan.nodes = std::move(replanned.value.nodes);
+  }
   // Each frame through the solve's lens as it was held, and the fill frames through it too: where
   // the loops fitted it, it is what the camera sees, and a gap from the guess it replaced shows.
   std::vector<PlacedFrame> placed;
@@ -363,7 +376,7 @@ Status PanoramaBuildManager::JudgeGaps(Build& build) {
         build.solution.rotations[i],
         LensForFrame(build.solution.intrinsics, frames[i].width, frames[i].height)});
   }
-  build.gaps = planner_.FindGaps(build.plan.value, placed, build.solution.intrinsics);
+  build.gaps = planner_.FindGaps(build.plan, placed, build.solution.intrinsics);
   return Status::Ok();
 }
 

@@ -1,7 +1,7 @@
 # 0085 — A build judges its gaps in a step of its own
 
-**Status:** accepted; the second of ADR 0084's three steps, and amends where that ADR said the gaps
-would be reported
+**Status:** accepted; the second of ADR 0084's three steps. It amends where that ADR said the gaps
+would be reported, and adds a step to the build ADR 0070 lays out
 
 ## Context
 
@@ -30,14 +30,22 @@ Three things had to be settled to do that:
   - The fill lens is the solve's lens too. It is the best answer to what the camera sees, and the
     one the fill frames will be taken through.
   - The plan is the cells the capture wrote down, with its spec. A document from before cells were
-    written down is replanned from its spec and lens, as `Resume` replans it.
+    written down is replanned from its spec and lens, as `Resume` replans it. The replan happens in
+    this step rather than in `Start`, which only checks.
+  - A solve that gives a frame no rotation fails the build here, as `RenderPreview` would have
+    refused it one step later.
 - **A refused judgement does not fail the build.** A planner that cannot replan, or a fill lens
   `FindGaps` refuses, is kept and answered by `Gaps` with the planner's own status, and the build
   completes with its panorama.
-- **The page says how many gaps there are, and how much of the sphere.** It asks once the preview
-  is drawn, and appends one sentence to the build's line: "Nothing is missing from the sphere.",
-  "The sphere has 3 gaps, about 3.2% of it.", or why the gaps could not be judged. Where they are
-  is for step 3 to lead the user to.
+- **The page says how much of the plan is open, and how many frames would fill it.** It asks once
+  the preview is drawn, and appends one sentence to the build's line: "Nothing the capture planned
+  is missing.", "About 3.2% of what the capture planned is open; 3 more frames would fill it.", or
+  why the gaps could not be judged. If the call does not answer at all, the sentence says so and
+  the preview stays. Where the gaps are is for step 3 to lead the user to.
+  - It counts frames, not holes: one hole wider than a frame comes back as several targets
+    (ADR 0084), and "50 gaps" for one hole would be wrong.
+  - It says "planned" because the plan is what was judged. A band without caps is judged only up to
+    its highest cell, so its poles are never called missing.
 
 ## Consequences
 
@@ -50,10 +58,12 @@ Three things had to be settled to do that:
   `Resume` already makes.
 - **The answer stays in the core until asked.** A narrow fill lens can mean thousands of targets
   (ADR 0084), and `Poll` is called every step.
-- **Every build pays for the judgement.** In a native debug build it takes 48 ms on the default plan
-  with a frame at every cell. Its cost on a phone, inside the wasm core, is not measured.
+- **Every build pays for the judgement.** On the default plan in a native debug build it took 51 to
+  75 ms here, from nothing placed to a frame at every cell, and a review measured up to 137 ms on
+  another machine. A version-2 capture adds its replan. The cost on a phone, inside the wasm core,
+  is not measured.
 - The page shows a count and a share, not a map. The share comes from `solidAngleFraction`, so a
-  gap of seams only too thin to weigh is "under 0.1%" rather than "0%", which would read as none.
+  gap of seams only too thin to weigh is "Under 0.1%" rather than "0%", which would read as none.
 
 ## Rejected alternatives
 

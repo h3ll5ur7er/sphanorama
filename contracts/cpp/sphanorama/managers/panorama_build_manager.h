@@ -22,7 +22,8 @@ class IPanoramaBuildManager {
   // than it, which an earlier build's `SetSelection` or an edited store can leave.
   //
   // Only the checks happen here. The work is done by `Poll`, one step a call — a frame's features,
-  // a pair, the solve, the preview — so that no call holds the core's one thread for a whole build.
+  // a pair, the solve, its gaps, the preview — so that no call holds the core's one thread for a
+  // whole build. A capture that predates its stored cells is replanned in the gaps' step, not here.
   //
   // `NotFound` for a project that does not exist or holds no capture; `Unsupported` for a document
   // this build cannot read, as `ICaptureSessionManager::Resume` answers; `FailedPrecondition` while
@@ -77,10 +78,12 @@ class IPanoramaBuildManager {
   // except where the loops saw its focal length (ADR 0066), so only there does a wrong lens show
   // as gaps. Asked in a step of its own after the solve, so `Poll` stays one step a call.
   //
-  // Empty is a sphere with nothing open. A judgement the planner refuses — a lens too narrow to
-  // fill with, a capture whose cells this build cannot replan — is answered here with the
-  // planner's status, and the build completes regardless: the panorama does not depend on it.
-  // `FailedPrecondition` for a build that has not completed, or that failed.
+  // Empty is nothing open that the plan asks for: a plan of bands without caps is judged only up to
+  // its highest cell, so its poles are not judged at all. A gap wider than one frame comes back as
+  // several, so the count is of fill frames rather than of holes. A judgement the planner refuses
+  // — a lens too narrow to fill with, a capture whose cells this build cannot replan — is answered
+  // here with the planner's status, and the build completes regardless: the panorama does not
+  // depend on it. `FailedPrecondition` for a build that has not completed, or that failed.
   virtual Result<std::vector<CoverageGap>> Gaps(BuildId build) = 0;
 
   // The mechanism behind both retakes and manual candidate switching: recompute only the

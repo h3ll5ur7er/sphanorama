@@ -4,8 +4,8 @@
  *
  * It decides nothing about the panorama. Which frames, which pairs and which lens are the core's
  * (ADR 0070); what is here is when to ask, how often, and what to put on the page with the answer.
- * The core arrives as four functions rather than the facade, so this can be driven without a
- * worker and so the only calls it can make are the four it is meant to.
+ * The core arrives as `start`, `poll`, `preview` and `gaps` rather than the facade, so this can be
+ * driven without a worker and so those are the only calls it can make.
  */
 import type {
   BuildId, BuildProgress, BuildStage, CoverageGap, FramePreview, Status,
@@ -52,15 +52,18 @@ const doing: Partial<Record<BuildStage, string>> = {
 const why = (status: Status | undefined) => status?.detail || status?.code || 'no reason given';
 
 /**
- * The gaps as a sentence: how many, and how much of the sphere. Where they are is for the capture
- * to lead the user to (ADR 0084), and a list of directions on this line would be read by nobody.
+ * The gaps as a sentence: how much of what the capture planned is open, and how many frames would
+ * fill it. Each entry is a fill frame's target, not a hole — one hole wider than a frame is several
+ * (ADR 0084) — so the count is of frames. And what was judged is the plan, which for a band
+ * without caps is not the whole sphere. Where they are is for the capture to lead the user to.
  */
 export function describeGaps(gaps: readonly CoverageGap[]): string {
-  if (gaps.length === 0) return 'Nothing is missing from the sphere.';
+  if (gaps.length === 0) return 'Nothing the capture planned is missing.';
   const percent = 100 * gaps.reduce((sum, g) => sum + g.solidAngleFraction, 0);
-  // A seam a few directions wide is a gap all the same, and "0%" would read as none.
-  const share = percent < 0.05 ? 'under 0.1%' : `about ${percent.toFixed(1)}%`;
-  return `The sphere has ${gaps.length} gap${gaps.length === 1 ? '' : 's'}, ${share} of it.`;
+  // A seam a few directions wide is open all the same, and "0%" would read as nothing.
+  const share = percent < 0.05 ? 'Under 0.1%' : `About ${percent.toFixed(1)}%`;
+  const frames = gaps.length === 1 ? '1 more frame' : `${gaps.length} more frames`;
+  return `${share} of what the capture planned is open; ${frames} would fill it.`;
 }
 
 /**
@@ -153,7 +156,15 @@ export function createBuildClient(
     const built = `Built: a ${preview.value.width} by ${preview.value.height} preview.`;
     ui.status.textContent = built;
     await yieldToPage();
-    const gaps = await core.gaps(started.value);
+    // Caught here rather than by `build`: the panorama is on screen, and a worker that goes away
+    // now takes only this sentence with it, as a refused judgement does (ADR 0085).
+    let gaps: Answered<readonly CoverageGap[]>;
+    try {
+      gaps = await core.gaps(started.value);
+    } catch (reason: unknown) {
+      console.error('sphanorama build: the gaps call did not answer', reason);
+      gaps = { ok: false, status: { detail: 'the core did not answer' } as Status };
+    }
     ui.status.textContent = gaps.ok
       ? `${built} ${describeGaps(gaps.value)}`
       : `${built} Whether the sphere has gaps could not be judged: ${why(gaps.status)}.`;

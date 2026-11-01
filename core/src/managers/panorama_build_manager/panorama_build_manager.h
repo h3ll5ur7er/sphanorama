@@ -55,9 +55,11 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
     std::vector<FeatureSet> features;
     std::vector<PairwiseResult> estimated;
     GlobalSolution solution;
-    // The cells the capture was planned with, or why there are none to judge against; and once
-    // the step after the solve has run, the gaps, or why there are none to give (ADR 0085).
-    Result<CapturePlan> plan;
+    // What the capture was planned with: its cells, empty in a document that predates them, and
+    // the spec and lens to replan one from. And once the step after the solve has run, the gaps,
+    // or why there are none to give (ADR 0085).
+    CapturePlan plan;
+    Intrinsics plannedLens;
     Result<std::vector<CoverageGap>> gaps;
     std::optional<FrameRef> preview;
     // Capture frames a refusal left out of their tier that the store would not put back yet.
@@ -74,7 +76,7 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
   Status EstimatePair(Build& build, size_t pair);
   Status Solve(Build& build);
   // The solve's frames as the build read them, in the solve's order; `Internal` for one it never
-  // read.
+  // read, or a solve that did not give each frame it placed a rotation.
   Result<std::vector<FrameRef>> Placed(const Build& build) const;
   Status JudgeGaps(Build& build);
   Status Compose(Build& build);

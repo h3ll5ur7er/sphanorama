@@ -167,7 +167,7 @@ describe('building a preview', () => {
       'Built: a 4 by 2 preview.',
     ]);
     expect(ui.status.textContent)
-      .toBe('Built: a 4 by 2 preview. Nothing is missing from the sphere.');
+      .toBe('Built: a 4 by 2 preview. Nothing the capture planned is missing.');
   });
 
   it('shows how far the build has got while it runs', async () => {
@@ -313,21 +313,23 @@ describe('building a preview', () => {
     expect(ui.button.disabled).toBe(false);
   });
 
-  it('says how many gaps the build found, and how much of the sphere they are', async () => {
+  it('says how much of the plan is open, and how many frames would fill it', async () => {
+    // Three targets of one hole read as three frames, which is what they are, rather than as three
+    // holes.
     const { core } = scriptedCore([progress('Complete', 1)], [gap(0.012), gap(0.02), gap(0)]);
     const ui = elements();
     await createBuildClient(ui, core, drawing(), immediately).build();
-    expect(ui.status.textContent).toBe(
-      'Built: a 4 by 2 preview. The sphere has 3 gaps, about 3.2% of it.');
+    expect(ui.status.textContent).toBe('Built: a 4 by 2 preview. About 3.2% of what the capture'
+      + ' planned is open; 3 more frames would fill it.');
     expect(ui.canvas.hidden).toBe(false);
   });
 
-  it('names one gap as one, and a share too small to round as under a tenth', async () => {
+  it('names one frame as one, and a share too small to round as under a tenth', async () => {
     const { core } = scriptedCore([progress('Complete', 1)], [gap(0.0004)]);
     const ui = elements();
     await createBuildClient(ui, core, drawing(), immediately).build();
-    expect(ui.status.textContent).toBe(
-      'Built: a 4 by 2 preview. The sphere has 1 gap, under 0.1% of it.');
+    expect(ui.status.textContent).toBe('Built: a 4 by 2 preview. Under 0.1% of what the capture'
+      + ' planned is open; 1 more frame would fill it.');
   });
 
   it('says why the gaps could not be judged, and keeps the preview it drew', async () => {
@@ -345,6 +347,21 @@ describe('building a preview', () => {
     expect(ui.status.textContent).toBe('Built: a 4 by 2 preview. Whether the sphere has gaps could'
       + ' not be judged: a fill lens has to reach farther than the directions are apart.');
     expect(ui.canvas.hidden).toBe(false);
+  });
+
+  it('keeps the preview it drew when the gaps call does not answer at all', async () => {
+    // The first call after the paint: a worker that goes away here takes only the gaps sentence
+    // with it, not a build whose panorama is on screen.
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { core } = scriptedCore([progress('Complete', 1)]);
+    core.gaps = async () => { throw new Error('the worker went away'); };
+    const ui = elements();
+    await createBuildClient(ui, core, drawing(), immediately).build();
+    expect(ui.status.textContent).toBe('Built: a 4 by 2 preview. Whether the sphere has gaps could'
+      + ' not be judged: the core did not answer.');
+    expect(ui.canvas.hidden).toBe(false);
+    expect(ui.button.disabled).toBe(false);
+    expect(error).toHaveBeenCalled();
   });
 
   it('hides the canvas from the start, whatever the markup said', () => {
