@@ -2067,10 +2067,15 @@ TEST_F(PanoramaBuildManagerTest, ACaptureThatPredatesItsCellsIsReplannedToBeJudg
   for (int poll = 0; poll < 20 && progress.stage != BuildStage::Complete; ++poll) {
     const int plans = planner_.plans;
     const int judged = planner_.judged;
+    const int work = registration_.refines + composition_.renders;
     auto polled = manager_.Poll(build.value);
     ASSERT_TRUE(polled.ok());
     progress = polled.value;
-    if (planner_.plans != plans) plannedAt = poll;
+    if (planner_.plans != plans) {
+      plannedAt = poll;
+      EXPECT_EQ(registration_.refines + composition_.renders, work)
+          << "the replan shared a poll with the solve or the preview";
+    }
     if (planner_.judged != judged) judgedAt = poll;
   }
   ASSERT_EQ(progress.stage, BuildStage::Complete);
@@ -2107,6 +2112,84 @@ TEST_F(PanoramaBuildManagerTest, ACaptureThatPredatesItsCellsIsReplannedToBeJudg
   auto gaps = manager_.Gaps(again.value);
   EXPECT_EQ(gaps.status.code, StatusCode::Unsupported);
   EXPECT_EQ(gaps.status.detail, "no such tessellation");
+}
+
+// The plan is judged only where `Resume` would take it as this capture's, on either path: a fill
+// appends to it and resumes, so targets on a plan no resume could read are targets nothing can
+// act on. Each case completes its build and answers why it was not judged.
+TEST_F(PanoramaBuildManagerTest, APlanNoResumeCouldTakeIsNotJudged) {
+  // Stored cells that leave out a cell a candidate is filed under, which the decoder takes.
+  CaptureRing(3);
+  AddCandidate(NodeId{99}, FromAzimuthElevation(90.0, 0.0));
+  document_.nextCandidate = next_candidate_;
+  ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey,
+                                      EncodeSessionDocument(document_)).ok());
+  SessionDocument read;
+  ASSERT_TRUE(DecodeSessionDocument(EncodeSessionDocument(document_), read));
+  ASSERT_EQ(read.nodes.size(), 3u) << "the premise: no cell 99";
+  auto stored = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(stored.ok()) << stored.status.detail;
+  ASSERT_EQ(RunToEnd(stored.value).back().stage, BuildStage::Complete);
+  EXPECT_EQ(planner_.judged, 0);
+  auto unfiled = manager_.Gaps(stored.value);
+  EXPECT_EQ(unfiled.status.code, StatusCode::Unsupported);
+  EXPECT_EQ(unfiled.status.detail, "this capture's document names a cell its plan does not have");
+}
+
+TEST_F(PanoramaBuildManagerTest, AReplanNoResumeCouldTakeIsNotJudged) {
+  CaptureRing(3);
+  auto text = projects_.ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(text.ok());
+  std::istringstream lines(text.value);
+  std::string older;
+  for (std::string line; std::getline(lines, line);) {
+    if (line.rfind("cell ", 0) != 0) older += line + "\n";
+  }
+  const std::string stamp = "sphanorama-session 3";
+  ASSERT_EQ(older.rfind(stamp, 0), 0u);
+  older.replace(0, stamp.size(), "sphanorama-session 2");
+  ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey, older).ok());
+  // Every cell the candidates name, and one of them twice: a plan no document could hold.
+  for (const uint64_t id : {1, 2, 3, 3}) {
+    CoverageNode cell;
+    cell.id = NodeId{id};
+    cell.targetOrientation = FromAzimuthElevation(30.0 * static_cast<double>(id - 1), 0.0);
+    cell.acceptanceConeDeg = 4.0;
+    planner_.replanned.nodes.push_back(cell);
+  }
+  ASSERT_TRUE(PlanDefect(planner_.replanned.nodes, document_.spec)) << "the premise";
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok()) << build.status.detail;
+  ASSERT_EQ(RunToEnd(build.value).back().stage, BuildStage::Complete);
+  EXPECT_EQ(planner_.judged, 0);
+  auto twice = manager_.Gaps(build.value);
+  EXPECT_EQ(twice.status.code, StatusCode::Unsupported);
+  EXPECT_EQ(twice.status.detail.rfind("this build's planner laid a plan no resume could read: ", 0),
+            0u) << twice.status.detail;
+
+  // And a spec no plan could have been laid from is not replanned at all, as `Resume` refuses it.
+  planner_.replanned.nodes.pop_back();
+  document_.spec.acceptanceConeDeg = 30.0;
+  WriteDocument();
+  auto again = projects_.ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(again.ok());
+  std::istringstream relines(again.value);
+  std::string planless;
+  for (std::string line; std::getline(relines, line);) {
+    if (line.rfind("cell ", 0) != 0) planless += line + "\n";
+  }
+  planless.replace(0, stamp.size(), "sphanorama-session 2");
+  ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey, planless).ok());
+  const int plans = planner_.plans;
+  auto spec = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(spec.ok()) << spec.status.detail;
+  ASSERT_EQ(RunToEnd(spec.value).back().stage, BuildStage::Complete);
+  EXPECT_EQ(planner_.plans, plans) << "replanned a spec no plan could have been laid from";
+  EXPECT_EQ(planner_.judged, 0);
+  auto cone30 = manager_.Gaps(spec.value);
+  EXPECT_EQ(cone30.status.code, StatusCode::Unsupported);
+  EXPECT_EQ(cone30.status.detail,
+            "this capture's document carries an acceptance cone no frame could be taken in");
 }
 
 TEST_F(PanoramaBuildManagerTest, ABuildNobodyStartedIsNotFound) {

@@ -85,6 +85,24 @@ std::string EncodeSessionDocument(const SessionDocument& stored);
 std::optional<std::string> PlanDefect(const std::vector<CoverageNode>& nodes,
                                       const CapturePlanSpec& spec);
 
+// What makes a stored spec one a plan could have been laid from, asked without a planner: a field
+// of view a lens has, an overlap short of a step of nothing, and a cone narrower than half the
+// frame, past which a frame aimed at its edge misses its own cell. The rings planner refuses each.
+// Written to refuse a NaN, though none is read from a document.
+//
+// Short of 180 rather than up to it, which is the camera model's line and not the planner's: at
+// 180 a rectilinear lens has stopped existing, and the build reads this spec through
+// `LensFromFieldOfView`, which refuses it. Up to it began captures that could never be built.
+std::optional<std::string> SpecDefect(const CapturePlanSpec& spec);
+
+// Whether every candidate is filed under a cell of these. The decoder checks each cell and each
+// candidate but not one against the other, and a candidate under a cell the plan lacks is one
+// coverage counts and nothing can aim at (ADR 0077). Asked by `CaptureSessionManager::Resume` and
+// by a build judging the capture's gaps, of stored cells and of a replan alike (ADR 0085), so the
+// two readers of one document cannot disagree about whether its plan is the capture's.
+std::optional<std::string> CandidateCellDefect(const std::vector<CoverageNode>& nodes,
+                                               const std::vector<Candidate>& candidates);
+
 // All or nothing. A line this does not understand fails the whole read, because the alternative
 // is a session that comes back missing the cells whose lines were malformed — and a coverage map
 // that quietly lost a cell is worse than one that refuses to load, which at least says so.

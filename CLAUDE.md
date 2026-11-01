@@ -112,12 +112,12 @@ now but cannot yet say whose lens it fitted, since a capture's document names no
 frame per cell, the manual pick where there is one — and each `Poll` does one step of features,
 pairs, `Refine`, the gaps and `RenderPreview`, so no call holds the core's one thread for a whole
 build (ADR 0070). The gaps are `FindGaps` asked where the solve placed the frames, and the page says
-how much of the sphere is open and how many frames would fill it (ADR 0085); filling them is the
-step after. Over the real engines, the photograph ring with every pose three degrees out builds to a
-preview within 1.23 to 1.56 bytes of the photograph, against 28.6 for the frames placed where the
-poses say. **And a phone builds one**: the browser's runtime selects the real engines, with ORB
-because a preview cannot show what the slower detectors buy, and a button under the review strip
-builds the capture and draws the preview `PanoramaPreview` hands across (ADR 0071). The module
+how much of the sphere is open and how many frames would complete its plan (ADR 0085); filling them
+is the step after. Over the real engines, the photograph ring with every pose three degrees out
+builds to a preview within 1.23 to 1.56 bytes of the photograph, against 28.6 for the frames placed
+where the poses say. **And a phone builds one**: the browser's runtime selects the real engines,
+with ORB because a preview cannot show what the slower detectors buy, and a button under the review
+strip builds the capture and draws the preview `PanoramaPreview` hands across (ADR 0071). The module
 carries the 557 KB now. How long a sphere takes on a phone, and its peak heap, are not measured.
 
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,

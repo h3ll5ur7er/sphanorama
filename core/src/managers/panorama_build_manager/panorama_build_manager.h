@@ -60,8 +60,8 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
     // or why there are none to give (ADR 0085).
     CapturePlan plan;
     Intrinsics plannedLens;
-    // Every cell the capture's candidates name, which a replan has to hold to be this capture's.
-    std::vector<NodeId> namedCells;
+    // Every candidate the capture wrote down, which the plan has to file to be this capture's.
+    std::vector<Candidate> candidates;
     Result<std::vector<CoverageGap>> gaps;
     std::optional<FrameRef> preview;
     // Capture frames a refusal left out of their tier that the store would not put back yet.
@@ -78,7 +78,7 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
   Status EstimatePair(Build& build, size_t pair);
   Status Solve(Build& build);
   // The solve's frames as the build read them, in the solve's order; `Internal` for one it never
-  // read, or a solve that did not give each frame it placed a rotation.
+  // read, or a solve whose rotations are not one a frame.
   Result<std::vector<FrameRef>> Placed(const Build& build) const;
   Status JudgeGaps(Build& build);
   Status Compose(Build& build);

@@ -30,26 +30,32 @@ Three things had to be settled to do that:
   - The fill lens is the solve's lens too. It is the best answer to what the camera sees, and the
     one the fill frames will be taken through.
   - The plan is the cells the capture wrote down, with its spec. A document from before cells were
-    written down is replanned from its spec and lens, as `Resume` replans it, and held to the rule
-    `Resume` holds it to: every cell the capture's candidates name has to be in the replan. A
-    replan without them is a later planner's different tessellation (ADR 0077), and is not judged.
-    The replan happens in this step rather than in `Start`, which only checks.
-  - A solve that gives a frame no rotation fails the build here, as `RenderPreview` would have
+    written down is replanned from its spec and lens, as `Resume` replans it. The replan happens in
+    this step rather than in `Start`, which only checks.
+  - The plan is judged only where `Resume` would take it as this capture's, on either path, by the
+    same three rules, which live in `utilities/session_document` so the two readers of one
+    document cannot disagree: the spec is one a plan could be laid from (`SpecDefect`), a replan
+    is one a document could hold (`PlanDefect`), and every candidate is filed under a cell of the
+    plan (`CandidateCellDefect`). A plan that fails one is not judged: filling appends to it and
+    resumes, so its targets would be ones nothing can act on.
+  - A solve whose rotations are not one a frame fails the build here, as `RenderPreview` would have
     refused it one step later.
 - **A refused judgement does not fail the build.** A planner that cannot replan, or a fill lens
-  `FindGaps` refuses, is kept and answered by `Gaps` with the planner's own status, and the build
+  `FindGaps` refuses, is kept and answered by `Gaps` with the planner's own status; a plan no
+  resume could take is answered `Unsupported`, as `Resume` answers it. Either way the build
   completes with its panorama.
-- **The page says how much of the sphere is open, and how many frames would fill it.** It asks
-  once the preview is drawn, and appends one sentence to the build's line: "Nothing the capture
-  planned is missing.", "About 3.2% of the sphere is open; 3 more frames would fill it.", or why
-  the gaps could not be judged. If the call does not answer at all, the sentence says so and the
-  preview stays. Where the gaps are is for step 3 to lead the user to.
+- **The page says how much of the sphere is open, and how many frames would complete the plan.** It
+  asks once the preview is drawn, and appends one sentence to the build's line: "Nothing the capture
+  planned is missing.", "About 3.2% of the sphere is open; 3 more frames would complete the
+  capture's plan.", or why the gaps could not be judged. If the call does not answer at all, the
+  sentence says so and the preview stays. Where the gaps are is for step 3 to lead the user to.
   - It counts frames, not holes: one hole wider than a frame comes back as several targets
     (ADR 0084), and "50 gaps" for one hole would be wrong.
   - The share is of the whole sphere, as `solidAngleFraction` is. Only the plan's directions are
     judged, so an empty answer is said of the plan: a band without caps is judged only up to its
-    highest cell, and its poles are never called missing. For such a band the share understates
-    how much of the plan is open; the page plans with caps today, where the two are the same.
+    highest cell, and its poles are never called missing. The frames are said to complete the
+    plan rather than the sphere for the same reason. For such a band the share understates how
+    much of the plan is open; the page plans with caps today, where the two are the same.
 
 ## Consequences
 

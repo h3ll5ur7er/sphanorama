@@ -200,7 +200,7 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
   // cells is replanned there rather than here, since a tessellation is work and this is the checks.
   build.plan = CapturePlan{document.nodes, document.spec};
   build.plannedLens = document.lens;
-  for (const auto& [node, candidates] : cells) build.namedCells.push_back(NodeId{node});
+  build.candidates = document.candidates;
 
   // Last, since everything above can refuse and the finished build stands until this succeeds.
   if (build_) {
@@ -356,30 +356,37 @@ Result<std::vector<FrameRef>> PanoramaBuildManager::Placed(const Build& build) c
 
 Status PanoramaBuildManager::JudgeGaps(Build& build) {
   SPH_TRY(const std::vector<FrameRef> frames, Placed(build));
+  // The plan is judged only where `Resume` would take it as this capture's, on either path, and by
+  // the same rules (`utilities/session_document`): filling appends to it and resumes, so targets
+  // on a plan no resume could read are targets nothing can act on. A refusal is no reason to fail
+  // a build whose panorama does not depend on it, so it is what `Gaps` gives.
+  const auto refuse = [&build](const std::string& why) {
+    build.gaps = Err<std::vector<CoverageGap>>(StatusCode::Unsupported, kComponent, why);
+    return Status::Ok();
+  };
+  if (auto defect = SpecDefect(build.plan.spec)) {
+    return refuse("this capture's document carries " + *defect);
+  }
   // The cells the capture wrote down are the plan it was captured against (ADR 0077); one from
-  // before they were written down is replanned from what it carried, as `Resume` replans it, with
-  // the spec it carried. A planner that cannot is no reason to fail a build whose panorama does not
-  // depend on it, so the refusal is what `Gaps` gives.
-  if (build.plan.nodes.empty()) {
+  // before they were written down is replanned from what it carried, as `Resume` replans it.
+  const bool replanning = build.plan.nodes.empty();
+  if (replanning) {
     Result<CapturePlan> replanned = planner_.Plan(build.plan.spec, build.plannedLens);
     if (!replanned.ok()) {
       build.gaps = replanned.status;
       return Status::Ok();
     }
-    // Held to `Resume`'s rule for the same replan: a later planner lays a different tessellation
-    // (ADR 0077), and a replan without the capture's cells is not the plan it was taken against,
-    // nor one that filling, which appends to it and resumes, could act on.
-    for (const NodeId named : build.namedCells) {
-      const bool held = std::any_of(replanned.value.nodes.begin(), replanned.value.nodes.end(),
-                                    [named](const CoverageNode& cell) { return cell.id == named; });
-      if (!held) {
-        build.gaps = Err<std::vector<CoverageGap>>(
-            StatusCode::Unsupported, kComponent,
-            "this build's planner does not lay the cells this capture was taken in");
-        return Status::Ok();
-      }
+    if (auto defect = PlanDefect(replanned.value.nodes, build.plan.spec)) {
+      return refuse("this build's planner laid a plan no resume could read: " + *defect);
     }
     build.plan.nodes = std::move(replanned.value.nodes);
+  }
+  // A later planner lays a different tessellation, and a stored plan the decoder took can still
+  // leave out a cell a candidate is filed under.
+  if (CandidateCellDefect(build.plan.nodes, build.candidates)) {
+    return refuse(replanning
+                      ? "this build's planner does not lay the cells this capture was taken in"
+                      : "this capture's document names a cell its plan does not have");
   }
   // Each frame through the solve's lens as it was held, and the fill frames through it too: where
   // the loops fitted it, it is what the camera sees, and a gap from the guess it replaced shows.

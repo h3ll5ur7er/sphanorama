@@ -222,6 +222,32 @@ bool DecodeSessionDocument(const std::string& text, SessionDocument& out) {
   return true;
 }
 
+std::optional<std::string> SpecDefect(const CapturePlanSpec& spec) {
+  if (!(spec.horizontalFovDeg > 0.0 && spec.horizontalFovDeg < 180.0
+        && spec.verticalFovDeg > 0.0 && spec.verticalFovDeg < 180.0)) {
+    return "a field of view that is not a lens";
+  }
+  if (!(spec.overlapTarget >= 0.0 && spec.overlapTarget < 1.0)) {
+    return "an overlap outside [0, 1)";
+  }
+  if (!(spec.acceptanceConeDeg > 0.0
+        && spec.acceptanceConeDeg < std::min(spec.horizontalFovDeg, spec.verticalFovDeg) / 2.0)) {
+    return "an acceptance cone no frame could be taken in";
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> CandidateCellDefect(const std::vector<CoverageNode>& nodes,
+                                               const std::vector<Candidate>& candidates) {
+  for (const Candidate& candidate : candidates) {
+    const bool known = std::any_of(nodes.begin(), nodes.end(), [&](const CoverageNode& cell) {
+      return cell.id.value == candidate.node.value;
+    });
+    if (!known) return "a cell its plan does not have";
+  }
+  return std::nullopt;
+}
+
 std::optional<std::string> PlanDefect(const std::vector<CoverageNode>& nodes,
                                       const CapturePlanSpec& spec) {
   if (nodes.empty()) return "no cells";

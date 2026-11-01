@@ -255,8 +255,8 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   plan's sphere no placed frame covers, a seam thinner than about 2.5 degrees included, and gives
   targets a fill frame covers from anywhere in the cone. A build asks it in a step after the solve,
   through the solve's lens, and the page says how much of the sphere is open and how many frames
-  would fill it (ADR 0085). Where no lens was fitted, a wrong one goes unseen. Not built yet: the
-  capture appending a cell at each target and resuming.
+  would complete its plan (ADR 0085). Where no lens was fitted, a wrong one goes unseen. Not built
+  yet: the capture appending a cell at each target and resuming.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
   agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the native
   tests use (there is no bench yet, whatever the line above this one used to say), and `Rank`
