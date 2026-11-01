@@ -254,7 +254,7 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   each frame (ADR 0084). `CoveragePlannerEngine::FindGaps` is built: it says which parts of the
   plan's sphere no placed frame covers, a seam thinner than about 2.5 degrees included, and gives
   targets a fill frame covers from anywhere in the cone. A build asks it in a step after the solve,
-  through the solve's lens, and the page says how much of the plan is open and how many frames
+  through the solve's lens, and the page says how much of the sphere is open and how many frames
   would fill it (ADR 0085). Where no lens was fitted, a wrong one goes unseen. Not built yet: the
   capture appending a cell at each target and resuming.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
@@ -967,17 +967,17 @@ The window is narrow, the mechanism predates PR #98, and the same versioned URL 
   1.55 (ORB), 1.38 (AKAZE) and 1.22 (SIFT), and composed under the lens it was handed rather than
   the one it fitted, 14.2 to 14.3. Everything else in this bullet answers `Unsupported`, and no composition
   root selects the engine yet — the build manager below reaches it from tests.
-- `PanoramaBuildManager`: staged progress, low-res preview first, then full render. **The preview
-  is in** (ADR 0070): `Start` reads a project's session document, one frame per cell — the manual
-  pick where one was recorded — and each `Poll` does one step: a frame's features, a pair, the
-  solve, the preview. Over the real engines, the photograph ring with every pose three degrees out
-  builds to within 1.56 (ORB), 1.37 (AKAZE) and 1.23 (SIFT) bytes of the photograph, against 28.6
-  for the frames placed where the poses say. **And it builds in the browser** (ADR 0071): the
-  runtime selects the real engines with ORB — every detector registers to within a quarter of a
-  preview pixel, and ORB extracts three to six times faster — the module carries the 557 KB, and a
-  button under the review strip builds the capture, shows its progress, and draws the 2048-wide
-  preview `PanoramaPreview` hands across. How long a sphere takes on a phone, and the heap it
-  peaks at, are what a phone answers next. Tiles, ghosts and incremental rebuild answer
+- `PanoramaBuildManager`: staged progress, low-res preview first, then full render. **The preview is
+  in** (ADR 0070): `Start` reads a project's session document, one frame per cell — the manual pick
+  where one was recorded — and each `Poll` does one step: a frame's features, a pair, the solve, its
+  gaps (ADR 0085), the preview. Over the real engines, the photograph ring with every pose three
+  degrees out builds to within 1.56 (ORB), 1.37 (AKAZE) and 1.23 (SIFT) bytes of the photograph,
+  against 28.6 for the frames placed where the poses say. **And it builds in the browser**
+  (ADR 0071): the runtime selects the real engines with ORB — every detector registers to within a
+  quarter of a preview pixel, and ORB extracts three to six times faster — the module carries the
+  557 KB, and a button under the review strip builds the capture, shows its progress, and draws the
+  2048-wide preview `PanoramaPreview` hands across. How long a sphere takes on a phone, and the heap
+  it peaks at, are what a phone answers next. Tiles, ghosts and incremental rebuild answer
   `Unsupported`.
 - `ProjectManager` export: JPEG/AVIF with XMP `GPano`.
 

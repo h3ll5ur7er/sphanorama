@@ -52,10 +52,11 @@ const doing: Partial<Record<BuildStage, string>> = {
 const why = (status: Status | undefined) => status?.detail || status?.code || 'no reason given';
 
 /**
- * The gaps as a sentence: how much of what the capture planned is open, and how many frames would
- * fill it. Each entry is a fill frame's target, not a hole — one hole wider than a frame is several
- * (ADR 0084) — so the count is of frames. And what was judged is the plan, which for a band
- * without caps is not the whole sphere. Where they are is for the capture to lead the user to.
+ * The gaps as a sentence: how much of the sphere is open, and how many frames would fill it. Each
+ * entry is a fill frame's target, not a hole — one hole wider than a frame is several (ADR 0084) —
+ * so the count is of frames. The share is of the whole sphere, as `solidAngleFraction` is; only the
+ * plan's directions are judged, which for a band without caps is not the whole sphere, so an empty
+ * answer is said of the plan. Where they are is for the capture to lead the user to.
  */
 export function describeGaps(gaps: readonly CoverageGap[]): string {
   if (gaps.length === 0) return 'Nothing the capture planned is missing.';
@@ -63,7 +64,7 @@ export function describeGaps(gaps: readonly CoverageGap[]): string {
   // A seam a few directions wide is open all the same, and "0%" would read as nothing.
   const share = percent < 0.05 ? 'Under 0.1%' : `About ${percent.toFixed(1)}%`;
   const frames = gaps.length === 1 ? '1 more frame' : `${gaps.length} more frames`;
-  return `${share} of what the capture planned is open; ${frames} would fill it.`;
+  return `${share} of the sphere is open; ${frames} would fill it.`;
 }
 
 /**

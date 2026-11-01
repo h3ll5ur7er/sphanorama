@@ -1,6 +1,8 @@
 # 0084 — Gaps are found after a build, and filled by new cells
 
-**Status:** accepted; the first of three steps, and only `FindGaps` is built
+**Status:** accepted; the first of three steps; amended by
+[0085](0085-a-build-judges-its-gaps-in-a-step-of-its-own.md), which builds the second and answers
+the gaps from `IPanoramaBuildManager::Gaps` rather than from the build's progress
 
 ## Context
 

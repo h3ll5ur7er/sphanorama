@@ -119,6 +119,7 @@ class ScriptedRegistrationEngine final : public IRegistrationEngine {
       solution.rotations.push_back(Quat{});
     }
     if (dropARotation) solution.rotations.pop_back();
+    if (addARotation) solution.rotations.push_back(Quat{});
     return Ok(solution);
   }
 
@@ -146,6 +147,8 @@ class ScriptedRegistrationEngine final : public IRegistrationEngine {
   double fitFocalBy = 1.0;
   // A solve that places a frame and gives it no rotation, which the real one never answers.
   bool dropARotation = false;
+  // And one that gives a rotation to no frame.
+  bool addARotation = false;
   // Where the solve places each frame, against where its pose said: a solve's answer is not its
   // priors, and a reader of one must not be able to pass for a reader of the other.
   Quat turnBy;
@@ -1979,9 +1982,9 @@ TEST_F(PanoramaBuildManagerTest, GapsAreRefusedUntilTheBuildCompletes) {
   EXPECT_EQ(manager_.Gaps(build.value).status.code, StatusCode::NotFound);
 }
 
-// The gaps are asked before the preview, so a solve that gives a frame no rotation has to be
-// refused by the build rather than read past the end of its rotations.
-TEST_F(PanoramaBuildManagerTest, ASolveShortOfARotationFailsTheBuildRatherThanJudgingIt) {
+// The gaps are asked before the preview, so a solve whose rotations are not one a frame has to be
+// refused by the build rather than read past the end of them.
+TEST_F(PanoramaBuildManagerTest, ASolveWhoseRotationsAreNotOneAFrameFailsTheBuild) {
   CaptureRing(3);
   registration_.dropARotation = true;
   auto build = manager_.Start(kProject, BuildSpec{});
@@ -1992,6 +1995,16 @@ TEST_F(PanoramaBuildManagerTest, ASolveShortOfARotationFailsTheBuildRatherThanJu
   EXPECT_EQ(finished.failure.detail, "the solve placed 3 frames and gave 2 rotations");
   EXPECT_EQ(planner_.judged, 0);
   EXPECT_EQ(composition_.renders, 0);
+
+  // Nor one rotation too many: the two are parallel, and a spare one is a solve that is not.
+  registration_.dropARotation = false;
+  registration_.addARotation = true;
+  auto again = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(again.ok());
+  const BuildProgress refused = RunToEnd(again.value).back();
+  ASSERT_EQ(refused.stage, BuildStage::Failed);
+  EXPECT_EQ(refused.failure.detail, "the solve placed 3 frames and gave 4 rotations");
+  EXPECT_EQ(planner_.judged, 0);
 }
 
 TEST_F(PanoramaBuildManagerTest, AFailedBuildHasNoGapsToAnswer) {
@@ -2034,24 +2047,55 @@ TEST_F(PanoramaBuildManagerTest, ACaptureThatPredatesItsCellsIsReplannedToBeJudg
   ASSERT_EQ(older.rfind(stamp, 0), 0u);
   older.replace(0, stamp.size(), "sphanorama-session 2");
   ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey, older).ok());
-  CoverageNode cell;
-  cell.id = NodeId{40};
-  cell.targetOrientation = FromAzimuthElevation(45.0, 30.0);
-  cell.acceptanceConeDeg = 4.0;
-  planner_.replanned.nodes = {cell};
+  // The capture's three cells and one more, so the judged plan is told from the stored one.
+  for (const uint64_t id : {1, 2, 3, 40}) {
+    CoverageNode cell;
+    cell.id = NodeId{id};
+    cell.targetOrientation = FromAzimuthElevation(45.0, 30.0);
+    cell.acceptanceConeDeg = 4.0;
+    planner_.replanned.nodes.push_back(cell);
+  }
 
   auto build = manager_.Start(kProject, BuildSpec{});
   ASSERT_TRUE(build.ok()) << build.status.detail;
-  // A tessellation is work, and `Start` only checks: the replan waits for its own step.
+  // A tessellation is work, and `Start` only checks: the replan waits for the gaps' own step, and
+  // shares that poll with nothing but the judgement it is for.
   EXPECT_EQ(planner_.plans, 0);
-  ASSERT_EQ(RunToEnd(build.value).back().stage, BuildStage::Complete);
+  int plannedAt = -1;
+  int judgedAt = -1;
+  BuildProgress progress;
+  for (int poll = 0; poll < 20 && progress.stage != BuildStage::Complete; ++poll) {
+    const int plans = planner_.plans;
+    const int judged = planner_.judged;
+    auto polled = manager_.Poll(build.value);
+    ASSERT_TRUE(polled.ok());
+    progress = polled.value;
+    if (planner_.plans != plans) plannedAt = poll;
+    if (planner_.judged != judged) judgedAt = poll;
+  }
+  ASSERT_EQ(progress.stage, BuildStage::Complete);
   EXPECT_EQ(planner_.plans, 1);
+  EXPECT_EQ(plannedAt, judgedAt) << "the replan shared a poll with other work";
+  EXPECT_NE(judgedAt, -1);
   EXPECT_EQ(planner_.plannedSpec.horizontalFovDeg, kHorizontalFovDeg);
   EXPECT_EQ(planner_.plannedLens.width, document_.lens.width);
-  ASSERT_EQ(planner_.judgedPlan.nodes.size(), 1u);
-  EXPECT_EQ(planner_.judgedPlan.nodes[0].id, NodeId{40});
+  ASSERT_EQ(planner_.judgedPlan.nodes.size(), 4u);
+  EXPECT_EQ(planner_.judgedPlan.nodes[3].id, NodeId{40});
   EXPECT_EQ(planner_.judgedPlan.spec.verticalFovDeg, kVerticalFovDeg);
   EXPECT_TRUE(manager_.Gaps(build.value).ok());
+
+  // A replan without a cell the capture's candidates name is a different tessellation, which
+  // `Resume` refuses to resume into: not judged, and the build still completes.
+  planner_.replanned.nodes.erase(planner_.replanned.nodes.begin() + 1);
+  auto other = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(other.ok()) << other.status.detail;
+  ASSERT_EQ(RunToEnd(other.value).back().stage, BuildStage::Complete);
+  EXPECT_EQ(planner_.judged, 1) << "judged against a plan this capture was not taken in";
+  EXPECT_EQ(planner_.plans, 2);
+  auto foreign = manager_.Gaps(other.value);
+  EXPECT_EQ(foreign.status.code, StatusCode::Unsupported);
+  EXPECT_EQ(foreign.status.detail,
+            "this build's planner does not lay the cells this capture was taken in");
 
   // And one this build's planner cannot replan still builds; its gaps say why there are none.
   planner_.planFailure = Fail(StatusCode::Unsupported, "test", "no such tessellation");
@@ -2059,6 +2103,7 @@ TEST_F(PanoramaBuildManagerTest, ACaptureThatPredatesItsCellsIsReplannedToBeJudg
   ASSERT_TRUE(again.ok()) << again.status.detail;
   ASSERT_EQ(RunToEnd(again.value).back().stage, BuildStage::Complete);
   EXPECT_EQ(planner_.judged, 1) << "judged against no plan";
+  EXPECT_EQ(planner_.plans, 3) << "replanned once a build, refused or not";
   auto gaps = manager_.Gaps(again.value);
   EXPECT_EQ(gaps.status.code, StatusCode::Unsupported);
   EXPECT_EQ(gaps.status.detail, "no such tessellation");

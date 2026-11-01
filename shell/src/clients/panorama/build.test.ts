@@ -313,14 +313,14 @@ describe('building a preview', () => {
     expect(ui.button.disabled).toBe(false);
   });
 
-  it('says how much of the plan is open, and how many frames would fill it', async () => {
+  it('says how much of the sphere is open, and how many frames would fill it', async () => {
     // Three targets of one hole read as three frames, which is what they are, rather than as three
     // holes.
     const { core } = scriptedCore([progress('Complete', 1)], [gap(0.012), gap(0.02), gap(0)]);
     const ui = elements();
     await createBuildClient(ui, core, drawing(), immediately).build();
-    expect(ui.status.textContent).toBe('Built: a 4 by 2 preview. About 3.2% of what the capture'
-      + ' planned is open; 3 more frames would fill it.');
+    expect(ui.status.textContent).toBe('Built: a 4 by 2 preview. About 3.2% of the sphere is open;'
+      + ' 3 more frames would fill it.');
     expect(ui.canvas.hidden).toBe(false);
   });
 
@@ -328,8 +328,8 @@ describe('building a preview', () => {
     const { core } = scriptedCore([progress('Complete', 1)], [gap(0.0004)]);
     const ui = elements();
     await createBuildClient(ui, core, drawing(), immediately).build();
-    expect(ui.status.textContent).toBe('Built: a 4 by 2 preview. Under 0.1% of what the capture'
-      + ' planned is open; 1 more frame would fill it.');
+    expect(ui.status.textContent).toBe('Built: a 4 by 2 preview. Under 0.1% of the sphere is open;'
+      + ' 1 more frame would fill it.');
   });
 
   it('says why the gaps could not be judged, and keeps the preview it drew', async () => {

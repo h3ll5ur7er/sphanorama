@@ -200,6 +200,7 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
   // cells is replanned there rather than here, since a tessellation is work and this is the checks.
   build.plan = CapturePlan{document.nodes, document.spec};
   build.plannedLens = document.lens;
+  for (const auto& [node, candidates] : cells) build.namedCells.push_back(NodeId{node});
 
   // Last, since everything above can refuse and the finished build stands until this succeeds.
   if (build_) {
@@ -364,6 +365,19 @@ Status PanoramaBuildManager::JudgeGaps(Build& build) {
     if (!replanned.ok()) {
       build.gaps = replanned.status;
       return Status::Ok();
+    }
+    // Held to `Resume`'s rule for the same replan: a later planner lays a different tessellation
+    // (ADR 0077), and a replan without the capture's cells is not the plan it was taken against,
+    // nor one that filling, which appends to it and resumes, could act on.
+    for (const NodeId named : build.namedCells) {
+      const bool held = std::any_of(replanned.value.nodes.begin(), replanned.value.nodes.end(),
+                                    [named](const CoverageNode& cell) { return cell.id == named; });
+      if (!held) {
+        build.gaps = Err<std::vector<CoverageGap>>(
+            StatusCode::Unsupported, kComponent,
+            "this build's planner does not lay the cells this capture was taken in");
+        return Status::Ok();
+      }
     }
     build.plan.nodes = std::move(replanned.value.nodes);
   }

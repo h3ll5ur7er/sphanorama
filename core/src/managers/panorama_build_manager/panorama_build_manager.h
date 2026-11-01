@@ -60,6 +60,8 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
     // or why there are none to give (ADR 0085).
     CapturePlan plan;
     Intrinsics plannedLens;
+    // Every cell the capture's candidates name, which a replan has to hold to be this capture's.
+    std::vector<NodeId> namedCells;
     Result<std::vector<CoverageGap>> gaps;
     std::optional<FrameRef> preview;
     // Capture frames a refusal left out of their tier that the store would not put back yet.
