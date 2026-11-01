@@ -197,4 +197,13 @@ Result<std::vector<NodeId>> NullCoveragePlannerEngine::SuggestRetakes(const Capt
   return Ok(std::move(suggestions));
 }
 
+// One cell is no tessellation to judge the sphere against, so this says so rather than answering a
+// sphere it never laid.
+Result<std::vector<CoverageGap>> NullCoveragePlannerEngine::FindGaps(const CapturePlan&,
+                                                                     std::span<const PlacedFrame>,
+                                                                     const Intrinsics&) {
+  return Err<std::vector<CoverageGap>>(StatusCode::Unsupported, kComponent,
+                                       "the null planner judges no coverage");
+}
+
 }  // namespace sphanorama

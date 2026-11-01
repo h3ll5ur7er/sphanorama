@@ -18,6 +18,9 @@ class NullCoveragePlannerEngine final : public ICoveragePlannerEngine {
                                  std::span<const Candidate> candidates) override;
   Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan& plan, const CoverageState& state,
                                              const GhostReport& ghosts) override;
+  Result<std::vector<CoverageGap>> FindGaps(const CapturePlan& plan,
+                                            std::span<const PlacedFrame> frames,
+                                            const Intrinsics& fillLens) override;
 };
 
 }  // namespace sphanorama
