@@ -465,7 +465,7 @@ struct BuildSpec {
 };
 
 enum class BuildStage : uint8_t {
-  Queued, Features, PairwiseMatching, GlobalSolve, ExposureCompensation,
+  Queued, Features, PairwiseMatching, GlobalSolve, CoverageCheck, ExposureCompensation,
   GhostDetection, SeamFinding, Blending, Projecting, Complete, Failed
 };
 

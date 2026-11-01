@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "sphanorama/engines/composition_engine.h"
+#include "sphanorama/engines/coverage_planner_engine.h"
 #include "sphanorama/engines/registration_engine.h"
 #include "sphanorama/managers/panorama_build_manager.h"
 #include "sphanorama/resource_access/frame_store_access.h"
@@ -19,13 +20,15 @@ namespace sphanorama {
 class PanoramaBuildManager final : public IPanoramaBuildManager {
  public:
   PanoramaBuildManager(IRegistrationEngine& registration, ICompositionEngine& composition,
-                       IFrameStoreAccess& frames, IProjectStoreAccess& projects);
+                       ICoveragePlannerEngine& planner, IFrameStoreAccess& frames,
+                       IProjectStoreAccess& projects);
 
   Result<BuildId> Start(ProjectId project, const BuildSpec& spec) override;
   Result<BuildProgress> Poll(BuildId build) override;
   Result<PanoramaRef> Panorama(BuildId build) override;
   Result<FramePreview> PanoramaPreview(BuildId build) override;
   Result<GhostReport> Ghosts(BuildId build) override;
+  Result<std::vector<CoverageGap>> Gaps(BuildId build) override;
   Status Invalidate(BuildId build, std::span<const NodeId> dirty) override;
   Status Cancel(BuildId build) override;
 
@@ -52,6 +55,10 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
     std::vector<FeatureSet> features;
     std::vector<PairwiseResult> estimated;
     GlobalSolution solution;
+    // The cells the capture was planned with, or why there are none to judge against; and once
+    // the step after the solve has run, the gaps, or why there are none to give (ADR 0085).
+    Result<CapturePlan> plan;
+    Result<std::vector<CoverageGap>> gaps;
     std::optional<FrameRef> preview;
     // Capture frames a refusal left out of their tier that the store would not put back yet.
     std::vector<Misplaced> misplaced;
@@ -66,6 +73,10 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
   Status PutBackOrKeep(Build& build, const FrameRef& frame, Residency found);
   Status EstimatePair(Build& build, size_t pair);
   Status Solve(Build& build);
+  // The solve's frames as the build read them, in the solve's order; `Internal` for one it never
+  // read.
+  Result<std::vector<FrameRef>> Placed(const Build& build) const;
+  Status JudgeGaps(Build& build);
   Status Compose(Build& build);
   // Everything the build holds, given back. Answers the first refusal and keeps what was refused.
   Status Release(Build& build);
@@ -79,6 +90,7 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
 
   IRegistrationEngine& registration_;
   ICompositionEngine& composition_;
+  ICoveragePlannerEngine& planner_;
   IFrameStoreAccess& frames_;
   IProjectStoreAccess& projects_;
   std::optional<Build> build_;

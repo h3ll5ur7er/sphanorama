@@ -71,6 +71,18 @@ class IPanoramaBuildManager {
   // would read as a scene with none.
   virtual Result<GhostReport> Ghosts(BuildId build) = 0;
 
+  // Where a complete build's sphere is open, and where to aim to fill it: the capture's plan
+  // judged against each frame where the solve placed it, through the solve's lens, which is also
+  // the lens a fill frame is judged through (ADR 0084, ADR 0085). That lens is the capture's own
+  // except where the loops saw its focal length (ADR 0066), so only there does a wrong lens show
+  // as gaps. Asked in a step of its own after the solve, so `Poll` stays one step a call.
+  //
+  // Empty is a sphere with nothing open. A judgement the planner refuses — a lens too narrow to
+  // fill with, a capture whose cells this build cannot replan — is answered here with the
+  // planner's status, and the build completes regardless: the panorama does not depend on it.
+  // `FailedPrecondition` for a build that has not completed, or that failed.
+  virtual Result<std::vector<CoverageGap>> Gaps(BuildId build) = 0;
+
   // The mechanism behind both retakes and manual candidate switching: recompute only the
   // transitive closure downstream of the changed cells (docs/04 §4.4). An incremental rebuild
   // must equal a full rebuild bit for bit — that invariant is the safety net under the feature.

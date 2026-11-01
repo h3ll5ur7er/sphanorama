@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "engines/composition_engine/nearest_centre_composition_engine.h"
+#include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
 #include "engines/registration_engine/feature_registration_engine.h"
 #include "managers/panorama_build_manager/panorama_build_manager.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
@@ -169,6 +170,7 @@ class PanoramaBuildAccuracy : public ::testing::TestWithParam<FeatureDetector> {
   MemoryFrameStoreAccess store_{1 << 28, &sink_};
   FakeProjectStoreAccess projects_;
   NearestCentreCompositionEngine composition_{store_};
+  RingsCoveragePlannerEngine planner_;
   Intrinsics lens_;
   std::vector<FrameRef> owned_;
   std::vector<FrameRef> frames_;
@@ -196,7 +198,7 @@ TEST_P(PanoramaBuildAccuracy, ABuiltCaptureDrawsThePhotograph) {
   const Comparison asPosed = Compare(unregistered.value);
 
   FeatureRegistrationEngine registration{store_, GetParam()};
-  PanoramaBuildManager manager{registration, composition_, store_, projects_};
+  PanoramaBuildManager manager{registration, composition_, planner_, store_, projects_};
   BuildSpec spec;
   spec.outputWidth = kPreviewWidth;
   auto build = manager.Start(kProject, spec);
@@ -210,8 +212,14 @@ TEST_P(PanoramaBuildAccuracy, ABuiltCaptureDrawsThePhotograph) {
     ASSERT_LT(++polls, 100);
   }
   ASSERT_EQ(progress.stage, BuildStage::Complete) << progress.failure.detail;
-  // Twelve extractions, the ring's twelve pairs, a solve and a preview.
-  EXPECT_EQ(polls, 26);
+  // Twelve extractions, the ring's twelve pairs, a solve, its gaps and a preview.
+  EXPECT_EQ(polls, 27);
+
+  // The ring was planned as one band of the cells its frames were taken for, and the frames close
+  // it where the solve placed them, through the lens it fitted (ADR 0085).
+  auto gaps = manager.Gaps(build.value);
+  ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
+  EXPECT_TRUE(gaps.value.empty()) << gaps.value.size() << " gaps";
 
   auto panorama = manager.Panorama(build.value);
   ASSERT_TRUE(panorama.ok()) << panorama.status.detail;
@@ -244,7 +252,7 @@ TEST_P(PanoramaBuildAccuracy, ACaptureWithThePhoneTurnedPartwayThroughDrawsThePh
   WriteCapture(poses);
 
   FeatureRegistrationEngine registration{store_, GetParam()};
-  PanoramaBuildManager manager{registration, composition_, store_, projects_};
+  PanoramaBuildManager manager{registration, composition_, planner_, store_, projects_};
   BuildSpec spec;
   spec.outputWidth = kPreviewWidth;
   auto build = manager.Start(kProject, spec);
@@ -258,7 +266,7 @@ TEST_P(PanoramaBuildAccuracy, ACaptureWithThePhoneTurnedPartwayThroughDrawsThePh
     ASSERT_LT(++polls, 100);
   }
   ASSERT_EQ(progress.stage, BuildStage::Complete) << progress.failure.detail;
-  EXPECT_EQ(polls, 26) << "every pair, the turned ones too";
+  EXPECT_EQ(polls, 27) << "every pair, the turned ones too";
 
   auto panorama = manager.Panorama(build.value);
   ASSERT_TRUE(panorama.ok()) << panorama.status.detail;

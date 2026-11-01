@@ -3,7 +3,7 @@
 // and what is worth asserting here is *whether* it is asked to paint, and with what.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
-  BuildId, BuildProgress, BuildStage, FramePreview, Status,
+  BuildId, BuildProgress, BuildStage, CoverageGap, FramePreview, Status,
 } from '../../../../contracts/ts/contracts';
 import {
   type BuildCore, type BuildElements, captureNeedsCore, createBuildClient, yieldWhile,
@@ -31,8 +31,16 @@ const preview: FramePreview = {
   pixels: new Uint8Array(4 * 2 * 4),
 } as FramePreview;
 
-/** A core that answers each poll with the next progress it is given, and records every call. */
-function scriptedCore(polls: BuildProgress[]) {
+/** A gap of this share of the sphere; where it is does not reach the page. */
+function gap(solidAngleFraction: number): CoverageGap {
+  return { target: { w: 1, x: 0, y: 0, z: 0 }, solidAngleFraction } as CoverageGap;
+}
+
+/**
+ * A core that answers each poll with the next progress it is given, a sphere with nothing missing
+ * unless told otherwise, and records every call.
+ */
+function scriptedCore(polls: BuildProgress[], gaps: CoverageGap[] = []) {
   const calls: string[] = [];
   const core: BuildCore = {
     start: async () => { calls.push('start'); return { ok: true, value: 1 as BuildId }; },
@@ -43,6 +51,7 @@ function scriptedCore(polls: BuildProgress[]) {
       return { ok: true, value: next };
     },
     preview: async (build) => { calls.push(`preview ${build}`); return { ok: true, value: preview }; },
+    gaps: async (build) => { calls.push(`gaps ${build}`); return { ok: true, value: gaps }; },
   };
   return { core, calls };
 }
@@ -98,7 +107,7 @@ describe('building a preview', () => {
 
     await client.build();
 
-    expect(calls).toEqual(['start', 'poll 1', 'poll 1', 'poll 1', 'preview 1']);
+    expect(calls).toEqual(['start', 'poll 1', 'poll 1', 'poll 1', 'preview 1', 'gaps 1']);
     expect(paint).toHaveBeenCalledWith(ui.canvas, preview);
     expect(ui.canvas.hidden).toBe(false);
     expect(ui.progress.value).toBe(1);
@@ -125,6 +134,7 @@ describe('building a preview', () => {
       'wait', 'waited', 'poll 1',
       'wait', 'waited', 'poll 1',
       'wait', 'waited', 'preview 1',
+      'wait', 'waited', 'gaps 1',
     ]);
   });
 
@@ -132,7 +142,8 @@ describe('building a preview', () => {
     const said: string[] = [];
     const { core } = scriptedCore([
       progress('Queued', 0), progress('Features', 0.2), progress('PairwiseMatching', 0.4),
-      progress('GlobalSolve', 0.6), progress('Projecting', 0.8), progress('Complete', 1),
+      progress('GlobalSolve', 0.6), progress('CoverageCheck', 0.7), progress('Projecting', 0.8),
+      progress('Complete', 1),
     ]);
     const ui = elements();
     const client = createBuildClient(ui, core, drawing(), async () => {
@@ -148,10 +159,15 @@ describe('building a preview', () => {
       'Building a preview: finding features in each frame.',
       'Building a preview: matching neighbouring frames.',
       'Building a preview: solving for where each frame points.',
+      'Building a preview: checking the sphere for gaps.',
       'Building a preview: drawing the panorama.',
-      // And the wait before the preview is read, which says the same until it is drawn.
+      // And the wait before the preview is read, which says the same until it is drawn, and the
+      // one before its gaps are, which says it is drawn.
       'Building a preview: drawing the panorama.',
+      'Built: a 4 by 2 preview.',
     ]);
+    expect(ui.status.textContent)
+      .toBe('Built: a 4 by 2 preview. Nothing is missing from the sphere.');
   });
 
   it('shows how far the build has got while it runs', async () => {
@@ -243,7 +259,7 @@ describe('building a preview', () => {
     refuse = false;
     await client.build();
 
-    expect(calls).toEqual(['start', 'start', 'poll 1', 'preview 1']);
+    expect(calls).toEqual(['start', 'start', 'poll 1', 'preview 1', 'gaps 1']);
     expect(ui.status.textContent).toMatch(/built/i);
     expect(ui.canvas.hidden).toBe(false);
   });
@@ -295,6 +311,40 @@ describe('building a preview', () => {
     expect(paint).not.toHaveBeenCalled();
     expect(ui.canvas.hidden).toBe(true);
     expect(ui.button.disabled).toBe(false);
+  });
+
+  it('says how many gaps the build found, and how much of the sphere they are', async () => {
+    const { core } = scriptedCore([progress('Complete', 1)], [gap(0.012), gap(0.02), gap(0)]);
+    const ui = elements();
+    await createBuildClient(ui, core, drawing(), immediately).build();
+    expect(ui.status.textContent).toBe(
+      'Built: a 4 by 2 preview. The sphere has 3 gaps, about 3.2% of it.');
+    expect(ui.canvas.hidden).toBe(false);
+  });
+
+  it('names one gap as one, and a share too small to round as under a tenth', async () => {
+    const { core } = scriptedCore([progress('Complete', 1)], [gap(0.0004)]);
+    const ui = elements();
+    await createBuildClient(ui, core, drawing(), immediately).build();
+    expect(ui.status.textContent).toBe(
+      'Built: a 4 by 2 preview. The sphere has 1 gap, under 0.1% of it.');
+  });
+
+  it('says why the gaps could not be judged, and keeps the preview it drew', async () => {
+    // The panorama does not depend on the judgement, so a refused one is said and the picture
+    // stays.
+    const { core, calls } = scriptedCore([progress('Complete', 1)]);
+    core.gaps = async (build) => {
+      calls.push(`gaps ${build}`);
+      return { ok: false, status: { code: 'InvalidArgument', component: 'RingsCoveragePlanner',
+        detail: 'a fill lens has to reach farther than the directions are apart' } as Status };
+    };
+    const ui = elements();
+    await createBuildClient(ui, core, drawing(), immediately).build();
+    expect(calls).toEqual(['start', 'poll 1', 'preview 1', 'gaps 1']);
+    expect(ui.status.textContent).toBe('Built: a 4 by 2 preview. Whether the sphere has gaps could'
+      + ' not be judged: a fill lens has to reach farther than the directions are apart.');
+    expect(ui.canvas.hidden).toBe(false);
   });
 
   it('hides the canvas from the start, whatever the markup said', () => {

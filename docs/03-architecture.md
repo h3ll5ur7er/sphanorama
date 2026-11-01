@@ -190,9 +190,11 @@ before the final render.
 
 **What it builds today is the preview** (ADR 0070). `Start` reads the document through
 `utilities/session_document`, one frame per cell, and refuses what it can before a pixel is read;
-each `Poll` then does one step — a frame's features, a pair, the solve, the preview — so the core's
-one thread is never held for a whole build. `Invalidate` and `Ghosts` answer `Unsupported` until the
-graph below exists, so in UC-2 and UC-3 the `Invalidate` step is a new `Start` for now.
+each `Poll` then does one step — a frame's features, a pair, the solve, its gaps, the preview — so
+the core's one thread is never held for a whole build. The gaps are `CoveragePlannerEngine`'s
+judgement of where the solve placed the frames, which `Gaps` answers (ADR 0085). `Invalidate` and
+`Ghosts` answer `Unsupported` until the graph below exists, so in UC-2 and UC-3 the `Invalidate`
+step is a new `Start` for now.
 
 Its distinguishing responsibility is **incremental invalidation**: `Invalidate(buildId, dirtyNodes)`
 recomputes only the sub-graph a retake touched — the changed cell, its neighbours' pairwise edges,

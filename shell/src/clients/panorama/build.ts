@@ -4,11 +4,11 @@
  *
  * It decides nothing about the panorama. Which frames, which pairs and which lens are the core's
  * (ADR 0070); what is here is when to ask, how often, and what to put on the page with the answer.
- * The core arrives as three functions rather than the facade, so this can be driven without a
- * worker and so the only calls it can make are the three it is meant to.
+ * The core arrives as four functions rather than the facade, so this can be driven without a
+ * worker and so the only calls it can make are the four it is meant to.
  */
 import type {
-  BuildId, BuildProgress, BuildStage, FramePreview, Status,
+  BuildId, BuildProgress, BuildStage, CoverageGap, FramePreview, Status,
 } from '../../../../contracts/ts/contracts';
 
 /** A value, or a failure carrying the core's status — which, unlike the review strip, this shows. */
@@ -19,6 +19,7 @@ export interface BuildCore {
   start(): Promise<Answered<BuildId>>;
   poll(build: BuildId): Promise<Answered<BuildProgress>>;
   preview(build: BuildId): Promise<Answered<FramePreview>>;
+  gaps(build: BuildId): Promise<Answered<readonly CoverageGap[]>>;
 }
 
 export interface BuildElements {
@@ -44,10 +45,23 @@ const doing: Partial<Record<BuildStage, string>> = {
   Features: 'finding features in each frame',
   PairwiseMatching: 'matching neighbouring frames',
   GlobalSolve: 'solving for where each frame points',
+  CoverageCheck: 'checking the sphere for gaps',
   Projecting: 'drawing the panorama',
 };
 
 const why = (status: Status | undefined) => status?.detail || status?.code || 'no reason given';
+
+/**
+ * The gaps as a sentence: how many, and how much of the sphere. Where they are is for the capture
+ * to lead the user to (ADR 0084), and a list of directions on this line would be read by nobody.
+ */
+export function describeGaps(gaps: readonly CoverageGap[]): string {
+  if (gaps.length === 0) return 'Nothing is missing from the sphere.';
+  const percent = 100 * gaps.reduce((sum, g) => sum + g.solidAngleFraction, 0);
+  // A seam a few directions wide is a gap all the same, and "0%" would read as none.
+  const share = percent < 0.05 ? 'under 0.1%' : `about ${percent.toFixed(1)}%`;
+  return `The sphere has ${gaps.length} gap${gaps.length === 1 ? '' : 's'}, ${share} of it.`;
+}
 
 /**
  * A wait before each call to the core that does not end while `busy` says the capture needs it.
@@ -136,7 +150,13 @@ export function createBuildClient(
       return;
     }
     ui.canvas.hidden = false;
-    ui.status.textContent = `Built: a ${preview.value.width} by ${preview.value.height} preview.`;
+    const built = `Built: a ${preview.value.width} by ${preview.value.height} preview.`;
+    ui.status.textContent = built;
+    await yieldToPage();
+    const gaps = await core.gaps(started.value);
+    ui.status.textContent = gaps.ok
+      ? `${built} ${describeGaps(gaps.value)}`
+      : `${built} Whether the sphere has gaps could not be judged: ${why(gaps.status)}.`;
   }
 
   return {

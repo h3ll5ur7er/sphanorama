@@ -36,6 +36,8 @@ void Encode(Writer& out, const CoverageNode& value);
 bool Decode(Reader& in, CoverageNode& value);
 void Encode(Writer& out, const CapturePlan& value);
 bool Decode(Reader& in, CapturePlan& value);
+void Encode(Writer& out, const CoverageGap& value);
+bool Decode(Reader& in, CoverageGap& value);
 void Encode(Writer& out, const QualityScore& value);
 bool Decode(Reader& in, QualityScore& value);
 void Encode(Writer& out, const Candidate& value);
@@ -237,6 +239,17 @@ inline bool Decode(Reader& in, CapturePlan& value) {
     value.nodes.resize(count);
     for (auto& item : value.nodes) { if (!Decode(in, item)) return false; } }
   if (!Decode(in, value.spec)) return false;
+  return in.ok();
+}
+
+inline void Encode(Writer& out, const CoverageGap& value) {
+  Encode(out, value.target);
+  out.PutF64(static_cast<double>(value.solidAngleFraction));
+}
+
+inline bool Decode(Reader& in, CoverageGap& value) {
+  if (!Decode(in, value.target)) return false;
+  value.solidAngleFraction = static_cast<decltype(value.solidAngleFraction)>(in.GetF64());
   return in.ok();
 }
 

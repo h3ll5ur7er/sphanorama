@@ -821,6 +821,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         start: () => core.panoramaBuild.start(buildProject as ProjectId, PREVIEW_SPEC),
         poll: (build) => core.panoramaBuild.poll(build),
         preview: (build) => core.panoramaBuild.panoramaPreview(build),
+        gaps: (build) => core.panoramaBuild.gaps(build),
       }, paintPreviewOnCanvas, yieldWhile(() => captureBusy()));
       buildElements.button.onclick = () => { void client.build(); };
       builder = client;

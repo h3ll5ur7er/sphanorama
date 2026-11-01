@@ -221,6 +221,18 @@ export function createPanoramaBuildManagerProxy(call: FacadeCall) {
         'malformed response: PanoramaBuildManager.ghosts returned a value that did not decode') } as const;
       return { ok: true, value } as const;
     },
+    async gaps(build: C.BuildId) {
+      const args = new Writer();
+      args.f64(build);
+      const raw = await call('PanoramaBuildManager.gaps', args.finish());
+      const input = new Reader(raw);
+      const status = decodeStatus(input);
+      if (status.code !== 'Ok') return { ok: false, status } as const;
+      const value = Array.from({ length: input.count() }, () => codec.decodeCoverageGap(input));
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: PanoramaBuildManager.gaps returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
+    },
     async invalidate(build: C.BuildId, dirty: C.NodeId[]) {
       const args = new Writer();
       args.f64(build);

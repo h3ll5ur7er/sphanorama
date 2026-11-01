@@ -24,9 +24,10 @@ std::string Named(const char* what, uint64_t id) {
 
 PanoramaBuildManager::PanoramaBuildManager(IRegistrationEngine& registration,
                                            ICompositionEngine& composition,
+                                           ICoveragePlannerEngine& planner,
                                            IFrameStoreAccess& frames,
                                            IProjectStoreAccess& projects)
-    : registration_(registration), composition_(composition), frames_(frames),
+    : registration_(registration), composition_(composition), planner_(planner), frames_(frames),
       projects_(projects) {}
 
 Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& spec) {
@@ -195,6 +196,15 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
   }
   build.previewWidth = std::min(spec.outputWidth, kWidestPreview);
 
+  // The cells the capture wrote down are the plan it was captured against (ADR 0077); one from
+  // before they were written down is replanned from what it carried, as `Resume` replans it. A
+  // planner that cannot is no reason to refuse a build whose panorama does not depend on it, so the
+  // refusal is kept for `Gaps` to give.
+  build.plan = document.nodes.empty() ? planner_.Plan(document.spec, document.lens)
+                                      : Ok(CapturePlan{document.nodes, {}});
+  // The spec the capture was planned with, whichever way its cells came, as `Resume` holds it.
+  if (build.plan.ok()) build.plan.value.spec = document.spec;
+
   // Last, since everything above can refuse and the finished build stands until this succeeds.
   if (build_) {
     if (Status released = Release(*build_); !released.ok()) return released;
@@ -207,7 +217,7 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
 }
 
 size_t PanoramaBuildManager::StepCount(const Build& build) const {
-  return build.frames.size() + build.pairs.size() + 2;
+  return build.frames.size() + build.pairs.size() + 3;
 }
 
 Result<BuildProgress> PanoramaBuildManager::Poll(BuildId id) {
@@ -229,6 +239,7 @@ Status PanoramaBuildManager::Step(Build& build) {
   if (build.done < frames) return ExtractFeatures(build, build.done);
   if (build.done < frames + pairs) return EstimatePair(build, build.done - frames);
   if (build.done == frames + pairs) return Solve(build);
+  if (build.done == frames + pairs + 1) return JudgeGaps(build);
   return Compose(build);
 }
 
@@ -321,18 +332,43 @@ Status PanoramaBuildManager::Solve(Build& build) {
   return Status::Ok();
 }
 
-Status PanoramaBuildManager::Compose(Build& build) {
+Result<std::vector<FrameRef>> PanoramaBuildManager::Placed(const Build& build) const {
   std::vector<FrameRef> frames;
   frames.reserve(build.solution.frames.size());
   for (const FrameId id : build.solution.frames) {
     const auto found = std::find_if(build.frames.begin(), build.frames.end(),
                                     [id](const FrameRef& frame) { return frame.id == id; });
     if (found == build.frames.end()) {
-      return Fail(StatusCode::Internal, kComponent,
-                  "the solve placed " + Named("frame", id.value) + ", which the build never read");
+      return Err<std::vector<FrameRef>>(StatusCode::Internal, kComponent,
+                                        "the solve placed " + Named("frame", id.value)
+                                            + ", which the build never read");
     }
     frames.push_back(*found);
   }
+  return Ok(std::move(frames));
+}
+
+Status PanoramaBuildManager::JudgeGaps(Build& build) {
+  if (!build.plan.ok()) {
+    build.gaps = build.plan.status;
+    return Status::Ok();
+  }
+  SPH_TRY(const std::vector<FrameRef> frames, Placed(build));
+  // Each frame through the solve's lens as it was held, and the fill frames through it too: where
+  // the loops fitted it, it is what the camera sees, and a gap from the guess it replaced shows.
+  std::vector<PlacedFrame> placed;
+  placed.reserve(frames.size());
+  for (size_t i = 0; i < frames.size(); ++i) {
+    placed.push_back(PlacedFrame{
+        build.solution.rotations[i],
+        LensForFrame(build.solution.intrinsics, frames[i].width, frames[i].height)});
+  }
+  build.gaps = planner_.FindGaps(build.plan.value, placed, build.solution.intrinsics);
+  return Status::Ok();
+}
+
+Status PanoramaBuildManager::Compose(Build& build) {
+  SPH_TRY(const std::vector<FrameRef> frames, Placed(build));
   // Asked before the call, so a refusal that leaves a frame out of place can be put right
   // (`RenderPreview`): the frames are the capture's, not the build's. A tier that cannot be asked
   // is a frame that could not be, so the call is not made.
@@ -451,6 +487,8 @@ void PanoramaBuildManager::Report(Build& build) {
     build.progress.stage = BuildStage::PairwiseMatching;
   } else if (build.done == frames + pairs) {
     build.progress.stage = BuildStage::GlobalSolve;
+  } else if (build.done == frames + pairs + 1) {
+    build.progress.stage = BuildStage::CoverageCheck;
   } else {
     build.progress.stage = BuildStage::Projecting;
   }
@@ -512,6 +550,15 @@ Result<GhostReport> PanoramaBuildManager::Ghosts(BuildId id) {
   SPH_TRY(Build* const build, Find(id));
   (void)build;
   return Err<GhostReport>(StatusCode::Unsupported, kComponent, "nothing detects movers yet");
+}
+
+Result<std::vector<CoverageGap>> PanoramaBuildManager::Gaps(BuildId id) {
+  SPH_TRY(Build* const build, Find(id));
+  if (build->progress.stage != BuildStage::Complete) {
+    return Err<std::vector<CoverageGap>>(StatusCode::FailedPrecondition, kComponent,
+                                         "the build has not completed");
+  }
+  return build->gaps;
 }
 
 Status PanoramaBuildManager::Invalidate(BuildId id, std::span<const NodeId>) {
