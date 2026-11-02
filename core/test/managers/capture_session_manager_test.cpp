@@ -443,8 +443,8 @@ TEST_F(CaptureSession, GapsFromABuildStartedBeforeTheLastFrameAreRefused) {
   auto refused = filling.FillGaps(started);
   EXPECT_EQ(refused.status.code, StatusCode::FailedPrecondition);
   EXPECT_EQ(refused.status.detail,
-            "these gaps were found in the capture as it was before its latest frames; build "
-            "again, then fill");
+            "these gaps were found in another capture, or in this one before its latest frames; "
+            "build again, then fill");
   EXPECT_EQ(filling.GetPlan().value.nodes.size(), cells.size());
   ASSERT_TRUE(filling.End().ok());
 }
@@ -504,7 +504,9 @@ TEST_F(CaptureSession, GapsFromAnotherProjectsCaptureAreRefused) {
 TEST_F(CaptureSession, AStaleFillWhoseCatchUpTheStoreRefusesSaysSo) {
   Begin();
   ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
-  FoundGaps stale = Found({GapAt(90.0, 0.0)});
+  // No gaps, so the catch-up is the only write on the path: one it got past would be refused at
+  // the fill's own write with the same code.
+  FoundGaps stale = Found({});
   stale.judged.nextCandidate -= 1;
   projects->RefuseWritesOf(kSessionDocumentKey, StatusCode::CodecFailure);
   EXPECT_EQ(manager->FillGaps(stale).status.code, StatusCode::CodecFailure);

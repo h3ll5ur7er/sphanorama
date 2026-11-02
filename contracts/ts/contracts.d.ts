@@ -12,8 +12,8 @@
  *
  * Identifiers are branded numbers rather than bigints; they are minted by the core and stay well
  * below 2^53. Content hashes are bigint, because the bits a double drops are the ones that decide
- * whether a build stage is reused; so is a capture's counter in `CaptureRevision`, which is only
- * compared for equality and which a stored document may carry past 2^53.
+ * whether a build stage is reused; so is a capture's counter in `CaptureRevision`, kept exact so
+ * that comparing it for equality needs no argument about its range.
  */
 
 export type Result<T> = { ok: true; value: T } | { ok: false; status: Status };
@@ -291,10 +291,11 @@ export interface CoverageGap {
  * Which state of a capture something was judged against, as its session document said: the
  * project, the session within it — sessions are counted per core, so another tab's can share one
  * — and how far its candidate counter had gone. Every frame a capture takes steps the counter, so
- * two equal ones are the same capture with the same frames written down; a fill may step it past
- * a pick, and its cells are unshot until a frame does. A build's gaps are fillable only while the
- * capture is still the one it read (ADR 0086). An offered frame steps it too but is never written
- * down, which is why a fill does not count a cell it alone covers as shot.
+ * two equal ones have taken no frame since; a replace-retake lets frames go without stepping it,
+ * and a cell it empties is unshot. A fill may step it past a pick, and its cells are unshot until
+ * a frame does. A build's gaps are fillable only while the capture is still the one it read
+ * (ADR 0086). An offered frame steps it too but is never written down, which is why a fill does
+ * not count a cell it alone covers as shot.
  */
 export interface CaptureRevision {
   project: ProjectId;
@@ -1303,7 +1304,9 @@ export interface CaptureSessionManager {
    * is fixed for its length; while any cell of the plan is still to shoot, its fill cells
    * included, since a build of such a capture finds those cells open and the guide already leads
    * there — and shot as a build sees it, so a cell only an offered frame covers, which is never
-   * written down, is still to shoot; and for gaps judged against a capture other than this one as
+   * written down, is still to shoot. Guidance counts that cell done and leads nowhere near it, so
+   * it is shot by a burst armed by hand, which is the client that offered the frame's to arm; and
+   * for gaps judged against a capture other than this one as
    * it stands — another project's or session's, or this one before a frame it now has. A cell shot
    * since the build read the document, during the build or under a checkpoint the store refused,
    * is open in its gaps and would be filled beside itself. That refusal writes the capture down

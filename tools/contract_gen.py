@@ -29,8 +29,8 @@ SCALARS = {
     "int8_t": "number", "int16_t": "number", "int32_t": "number",
     "uint8_t": "number", "uint16_t": "number", "uint32_t": "number",
     # int64_t is a count or a timestamp in these contracts and stays a JS number; uint64_t is a
-    # content hash, or a counter compared only for equality (`CaptureRevision`, ADR 0086) — both
-    # values where the low 11 bits a double drops are the ones that matter.
+    # content hash, where the low 11 bits a double drops are the ones that matter, or a counter
+    # compared only for equality (`CaptureRevision`, ADR 0086), kept exact so that needs no range.
     "int64_t": "number",
     "uint64_t": "bigint",
     "std::string": "string",
@@ -533,7 +533,7 @@ WIRE_KINDS = {
     "int8_t": "i32", "int16_t": "i32", "int32_t": "i32",
     "uint8_t": "i32", "uint16_t": "i32", "uint32_t": "i32",
     "int64_t": "f64",     # counts and timestamps; stays a JS number, as the mirror documents
-    "uint64_t": "u64",    # a content hash or an equality-compared counter: the low bits matter
+    "uint64_t": "u64",    # a content hash, or an equality-compared counter kept exact
     "double": "f64", "float": "f64",
     "std::string": "string", "std::string_view": "string",
     "void": "void",
@@ -652,8 +652,8 @@ PREAMBLE = """/**
  *
  * Identifiers are branded numbers rather than bigints; they are minted by the core and stay well
  * below 2^53. Content hashes are bigint, because the bits a double drops are the ones that decide
- * whether a build stage is reused; so is a capture's counter in `CaptureRevision`, which is only
- * compared for equality and which a stored document may carry past 2^53.
+ * whether a build stage is reused; so is a capture's counter in `CaptureRevision`, kept exact so
+ * that comparing it for equality needs no argument about its range.
  */
 
 export type Result<T> = { ok: true; value: T } | { ok: false; status: Status };

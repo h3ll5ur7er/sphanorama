@@ -135,8 +135,8 @@ describe('round trips', () => {
   });
 
   it('round-trips a capture\'s counter past what a double holds', () => {
-    // Compared only for equality, so one bit lost on the way would refuse every fill of a capture
-    // whose stored counter is past 2^53 (ADR 0086): it crosses as eight raw bytes, not a double.
+    // A document's counter is a `uint64_t`, and crosses as eight raw bytes rather than a double so
+    // that comparing it for equality needs no argument about its range (ADR 0086).
     const writer = new Writer();
     const found: C.FoundGaps = {
       gaps: [{ target: { w: 0.5, x: 0.5, y: -0.5, z: 0.5 }, solidAngleFraction: 0.125 }],

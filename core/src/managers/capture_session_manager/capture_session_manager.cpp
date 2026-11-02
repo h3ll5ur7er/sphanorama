@@ -1510,8 +1510,8 @@ Result<CapturePlan> CaptureSessionManager::FillGaps(const FoundGaps& found) {
       || found.judged.nextCandidate != next_candidate_) {
     if (Status written = WriteSessionDocument(); !written.ok()) return written;
     return Err<CapturePlan>(StatusCode::FailedPrecondition, kComponent,
-                            "these gaps were found in the capture as it was before its latest "
-                            "frames; build again, then fill");
+                            "these gaps were found in another capture, or in this one before "
+                            "its latest frames; build again, then fill");
   }
   const std::vector<CoverageGap>& gaps = found.gaps;
   if (gaps.empty()) return Ok(plan_);

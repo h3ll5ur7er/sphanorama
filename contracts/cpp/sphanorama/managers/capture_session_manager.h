@@ -267,7 +267,9 @@ class ICaptureSessionManager {
   // is fixed for its length; while any cell of the plan is still to shoot, its fill cells
   // included, since a build of such a capture finds those cells open and the guide already leads
   // there — and shot as a build sees it, so a cell only an offered frame covers, which is never
-  // written down, is still to shoot; and for gaps judged against a capture other than this one as
+  // written down, is still to shoot. Guidance counts that cell done and leads nowhere near it, so
+  // it is shot by a burst armed by hand, which is the client that offered the frame's to arm; and
+  // for gaps judged against a capture other than this one as
   // it stands — another project's or session's, or this one before a frame it now has. A cell shot
   // since the build read the document, during the build or under a checkpoint the store refused,
   // is open in its gaps and would be filled beside itself. That refusal writes the capture down
