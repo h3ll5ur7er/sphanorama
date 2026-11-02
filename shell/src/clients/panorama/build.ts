@@ -120,6 +120,10 @@ export function createBuildClient(
   ui: BuildElements, core: BuildCore, paint: PaintPanorama,
   yieldToPage: () => Promise<void> = yieldWhile(() => false),
   filled: (plan: CapturePlan) => void = () => {},
+  // Whether the capture could act on a fill now: its loop is running, so there is a guide to lead
+  // to the new cells, and every planned cell is shot, so a gap is not a cell the guide already
+  // leads to (ADR 0086). Asked when the offer is made and again when it is pressed.
+  canFill: () => boolean = () => true,
 ): { build(): Promise<void>; fill(): Promise<void> } {
   // One of the two at a time, and either holds both buttons: a build started under a fill judges
   // a plan the fill is changing, and a fill pressed under a build fills the last build's gaps.
@@ -186,7 +190,7 @@ export function createBuildClient(
     ui.status.textContent = gaps.ok
       ? `${built} ${describeGaps(gaps.value)}`
       : `${built} Whether the sphere has gaps could not be judged: ${why(gaps.status)}.`;
-    if (gaps.ok && gaps.value.length > 0) {
+    if (gaps.ok && gaps.value.length > 0 && canFill()) {
       found = gaps.value;
       ui.fill.hidden = false;
     }
@@ -234,6 +238,11 @@ export function createBuildClient(
     },
     async fill() {
       if (running || found.length === 0) return;
+      if (!canFill()) {
+        found = [];
+        ui.fill.hidden = true;
+        return;
+      }
       running = true;
       hold(true);
       try {

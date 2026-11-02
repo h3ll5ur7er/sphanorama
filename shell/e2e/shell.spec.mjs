@@ -954,20 +954,22 @@ test('a capture builds into a preview the page draws', async ({ page }) => {
     expect(drawn.mirroredLit, `its reflection in the horizon, ${JSON.stringify(mirrored)}`)
       .toBe(false);
 
-    // And the gaps reach the capture: one press appends a cell at each to the live session's plan
-    // (ADR 0086), through the page sequencing the two managers, and the offer goes with it.
-    const planned = await page.evaluate(async () =>
-      (await window.sphanoramaCore.captureSession.getPlan()).value.nodes.length);
-    const frames = Number((await page.locator('#build-status').textContent())
-      .match(/(\d+) more frames/)[1]);
-    await expect(page.locator('#build-fill')).toBeVisible();
-    await page.locator('#build-fill').click();
-    await expect(page.locator('#build-status')).toContainText(
-      `Added ${frames} cells to the capture's plan`, { timeout: 15000 });
+    // And a fill is not offered: one cell of a sphere leaves the rest of the plan to shoot, which
+    // the guide already leads to (ADR 0086). Asked of the core across the worker too, with a gap
+    // where the build says one is, so the refusal is the core's and the plan is left as it was.
     await expect(page.locator('#build-fill')).toBeHidden();
-    const grown = await page.evaluate(async () =>
-      (await window.sphanoramaCore.captureSession.getPlan()).value.nodes.length);
-    expect(grown).toBe(planned + frames);
+    const refused = await page.evaluate(async () => {
+      const core = window.sphanoramaCore.captureSession;
+      const before = (await core.getPlan()).value.nodes.length;
+      const answer = await core.fillGaps([
+        { target: { w: 1, x: 0, y: 0, z: 0 }, solidAngleFraction: 0.01 },
+      ]);
+      const after = (await core.getPlan()).value.nodes.length;
+      return { ok: answer.ok, detail: answer.ok ? '' : answer.status.detail, before, after };
+    });
+    expect(refused.ok).toBe(false);
+    expect(refused.detail).toMatch(/cells of the plan are still to shoot/);
+    expect(refused.after).toBe(refused.before);
   } finally {
     await server.close();
   }

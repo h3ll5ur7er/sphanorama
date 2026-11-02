@@ -1069,11 +1069,11 @@ export interface CaptureSessionManager {
    * them. A pick on a cell the plan lacks is not read, and no build reads it either. A pick the
    * project store cannot read refuses this with the store's status, camera closed.
    * `InvalidArgument` for a spec a resume would not take, and then `Internal` for a plan whose
-   * cells a resume could not read: no cells, or one under an identity no counter issues, on a ring
-   * below zero, aimed by something other than a unit rotation, with a cone that is not a positive
-   * angle under a right angle and inside the spec's, or under another cell's identity. Either would
-   * be written down at the first checkpoint as a document nothing resumes or builds from, so both
-   * refuse before the tier is emptied (ADR 0077).
+   * cells a resume could not read: no cells or more than 2000, or one under an identity no counter
+   * issues, on a ring below zero, aimed by something other than a unit rotation, with a cone that
+   * is not a positive angle under a right angle and inside the spec's, or under another cell's
+   * identity. Either would be written down at the first checkpoint as a document nothing resumes or
+   * builds from, so both refuse before the tier is emptied (ADR 0077).
    */
   begin(project: ProjectId, spec: CapturePlanSpec): Promise<Result<SessionId>>;
   /**
@@ -1269,16 +1269,22 @@ export interface CaptureSessionManager {
    * Appends a cell at each gap's target to the session's plan, so guidance leads there, and
    * answers the plan that results (ADR 0084, ADR 0086). The gaps are a build's of this capture
    * (`IPanoramaBuildManager::Gaps`), which a client hands across: the two managers never call each
-   * other. Each new cell is aimed at its target, held level, with the capture's cone, under an
-   * identity past every cell the plan has, on a ring of its own past the plan's; and the plan is
-   * written down at once, so a resume finds it.
+   * other. Each new cell is aimed at its target as given — a build answers level ones — with the
+   * capture's cone, under an identity past every cell the plan has, on a ring of its own past the
+   * plan's. The candidate counter steps past any pick recorded under a new identity, as `Begin`
+   * does. And the plan is written down before it is answered, so a resume finds it.
    * Additive and nothing else: no cell is moved, renumbered or dropped, so every candidate stays
    * under the cell it was filed under, and a plan with fill cells is one `Resume` takes as stored.
    * No gaps adds nothing and answers the plan as it was.
-   * `FailedPrecondition` with no session in progress, and while a burst is armed or firing, whose
-   * cell is fixed for its length. `InvalidArgument` for a target that is not a rotation, and for
-   * more cells than a plan may hold (`kMostCellsAPlanHolds`) — refused whole rather than filled in
-   * part, since part of a gap is not a sphere any closer to complete.
+   * `FailedPrecondition` with no session in progress; while a burst is armed or firing, whose cell
+   * is fixed for its length; and while any cell of the plan is still to shoot, its fill cells
+   * included. A build of such a capture finds those cells' directions open and the guide already
+   * leads there, so a fill would put a second cell beside each, and a second press would fill the
+   * same gaps twice. `InvalidArgument` for a target that is not a rotation, for a plan whose
+   * identities or rings leave no room past them, and for more than 2000 cells in all — refused
+   * whole rather than filled in part, since part of a gap is not a sphere any closer to complete.
+   * The store's own status where it would not write the plan down or read a pick. Any refusal
+   * leaves the plan, the counter and the document as they were.
    */
   fillGaps(gaps: CoverageGap[]): Promise<Result<CapturePlan>>;
   end(): Promise<Result<void>>;

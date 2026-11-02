@@ -259,19 +259,83 @@ CoverageGap GapAt(double azimuthDeg, double elevationDeg, double share = 0.01) {
   return gap;
 }
 
+// Three cells whose highest identity and highest ring are on neither the first nor the last, so a
+// fill that reads past "the plan's" from one cell rather than all of them is told apart. The null
+// planner's one cell is first, last and highest at once.
+class ScatteredCoveragePlannerEngine final : public ICoveragePlannerEngine {
+ public:
+  static constexpr uint64_t kHighestId = 9;
+  static constexpr int32_t kHighestRing = 3;
+
+  Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override {
+    SPH_TRY(CapturePlan plan, inner_.Plan(spec, lens));
+    const CoverageNode laid = plan.nodes.front();
+    plan.nodes.clear();
+    for (const auto& [id, ring, azimuth] : {std::tuple{uint64_t{4}, 0, 0.0},
+                                            std::tuple{kHighestId, kHighestRing, 120.0},
+                                            std::tuple{uint64_t{2}, 1, 240.0}}) {
+      CoverageNode cell = laid;
+      cell.id = NodeId{id};
+      cell.ringIndex = ring;
+      cell.targetOrientation = FromAzimuthElevation(azimuth, 0.0);
+      plan.nodes.push_back(cell);
+    }
+    return Ok(std::move(plan));
+  }
+  Result<CaptureGuidance> Locate(const PoseSample& current, const CapturePlan& plan,
+                                 const CoverageState& coverage) override {
+    return inner_.Locate(current, plan, coverage);
+  }
+  Result<CoverageState> Evaluate(const CapturePlan& plan,
+                                 std::span<const Candidate> candidates) override {
+    return inner_.Evaluate(plan, candidates);
+  }
+  Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan& plan, const CoverageState& state,
+                                             const GhostReport& ghosts) override {
+    return inner_.SuggestRetakes(plan, state, ghosts);
+  }
+  Result<std::vector<CoverageGap>> FindGaps(const CapturePlan& plan,
+                                            std::span<const PlacedFrame> frames,
+                                            const Intrinsics& fillLens) override {
+    return inner_.FindGaps(plan, frames, fillLens);
+  }
+
+ private:
+  NullCoveragePlannerEngine inner_;
+};
+
+// Aims at each cell of the plan and shoots it, which a fill waits for.
+void ShootEveryCell(ICaptureSessionManager& manager, AimablePoseEngine& pose, ManualClock& clock) {
+  for (const CoverageNode& cell : manager.GetPlan().value.nodes) {
+    pose.LookAt(cell.targetOrientation);
+    ImuSample sample;
+    sample.hasOrientation = true;
+    sample.timestampNs = clock.MonotonicNs();
+    ASSERT_TRUE(manager.OnMotion(std::span<const ImuSample>(&sample, 1)).ok());
+    const Status fired = FireBurstOn(manager, clock, cell.id, BurstSpec{});
+    ASSERT_TRUE(fired.ok()) << "cell " << cell.id.value << ": " << fired.detail;
+  }
+}
+
 // A cell at each target, appended under identities past the plan's on a ring of its own, with the
 // capture's cone, and written down at once: guidance leads there and a resume finds it.
 TEST_F(CaptureSession, FillingGapsAppendsACellAtEachTarget) {
-  Begin();
-  const CapturePlan before = manager->GetPlan().value;
-  uint64_t highestId = 0;
-  int32_t highestRing = 0;
-  for (const CoverageNode& node : before.nodes) {
-    highestId = std::max(highestId, node.id.value);
-    highestRing = std::max(highestRing, node.ringIndex);
-  }
-  const std::vector<CoverageGap> gaps{GapAt(90.0, 20.0), GapAt(200.0, -35.0)};
-  auto filled = manager->FillGaps(gaps);
+  ScatteredCoveragePlannerEngine scattered;
+  auto frames = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
+  FakeCameraAccess filling_camera(frames);
+  CaptureSessionManager filling(scattered, pose, quality, preview, filling_camera, *sensor,
+                                *frames, *projects, clock);
+  ASSERT_TRUE(filling.Begin(kProject, Spec()).ok());
+  ShootEveryCell(filling, pose, clock);
+  const CapturePlan before = filling.GetPlan().value;
+  ASSERT_EQ(before.nodes.size(), 3u);
+  // A rotation, though not a unit one: the cell is aimed where it points and stored as a unit
+  // quaternion, which is what a document holds a cell's target to.
+  CoverageGap scaled = GapAt(200.0, -35.0);
+  scaled.target = Quat{2.0 * scaled.target.w, 2.0 * scaled.target.x, 2.0 * scaled.target.y,
+                       2.0 * scaled.target.z};
+  const std::vector<CoverageGap> gaps{GapAt(90.0, 20.0), scaled};
+  auto filled = filling.FillGaps(gaps);
   ASSERT_TRUE(filled.ok()) << filled.status.detail;
   ASSERT_EQ(filled.value.nodes.size(), before.nodes.size() + 2);
   for (size_t i = 0; i < before.nodes.size(); ++i) {
@@ -280,14 +344,16 @@ TEST_F(CaptureSession, FillingGapsAppendsACellAtEachTarget) {
   }
   for (size_t g = 0; g < gaps.size(); ++g) {
     const CoverageNode& cell = filled.value.nodes[before.nodes.size() + g];
-    EXPECT_EQ(cell.id.value, highestId + 1 + g);
-    EXPECT_EQ(cell.ringIndex, highestRing + 1);
+    EXPECT_EQ(cell.id.value, ScatteredCoveragePlannerEngine::kHighestId + 1 + g);
+    EXPECT_EQ(cell.ringIndex, ScatteredCoveragePlannerEngine::kHighestRing + 1);
     EXPECT_EQ(cell.acceptanceConeDeg, Spec().acceptanceConeDeg);
-    EXPECT_NEAR(Dot(Direction(cell.targetOrientation), Direction(gaps[g].target)), 1.0, 1e-12);
+    EXPECT_NEAR(Norm(cell.targetOrientation), 1.0, 1e-12);
+    const Quat unit = Normalize(gaps[g].target);
+    EXPECT_NEAR(Dot(Direction(cell.targetOrientation), Direction(unit)), 1.0, 1e-12);
   }
   // What the session now answers, and what it wrote down.
-  EXPECT_EQ(manager->GetPlan().value.nodes.size(), before.nodes.size() + 2);
-  auto coverage = manager->Coverage();
+  EXPECT_EQ(filling.GetPlan().value.nodes.size(), before.nodes.size() + 2);
+  auto coverage = filling.Coverage();
   ASSERT_TRUE(coverage.ok());
   EXPECT_EQ(coverage.value.nodesTotal, static_cast<int32_t>(before.nodes.size()) + 2);
   auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
@@ -295,6 +361,72 @@ TEST_F(CaptureSession, FillingGapsAppendsACellAtEachTarget) {
   SessionDocument stored;
   ASSERT_TRUE(DecodeSessionDocument(written.value, stored));
   EXPECT_EQ(stored.nodes.size(), before.nodes.size() + 2);
+  ASSERT_TRUE(filling.End().ok());
+}
+
+// A build of a capture with cells still to shoot finds their directions open, and the guide already
+// leads to them: a fill then would put a second cell beside each, and one pressed after they were
+// shot would lead back to directions already taken. So a fill waits until the plan is shot — its
+// own cells included, which is what keeps a second press from filling the same gaps twice.
+TEST_F(CaptureSession, FillingIsRefusedWhileCellsOfThePlanAreStillToShoot) {
+  Begin();
+  const std::vector<CoverageGap> gaps{GapAt(90.0, 0.0)};
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  auto early = manager->FillGaps(gaps);
+  EXPECT_EQ(early.status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(early.status.detail, "1 cell of the plan is still to shoot; fill once it is");
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  ASSERT_TRUE(manager->FillGaps(gaps).ok());
+  // The fill's own cell is now the one still to shoot.
+  EXPECT_EQ(manager->FillGaps(gaps).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells + 1);
+}
+
+// A fill cell takes an identity no cell had, and a pick recorded under that identity by an earlier
+// capture of this project names a candidate this one never issued: the counter steps past it, as
+// `Begin` and `Resume` step it past every pick of their plan (ADR 0070).
+TEST_F(CaptureSession, FillingStepsTheCandidateCounterPastAPickOnAFillCell) {
+  Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  uint64_t highest = 0;
+  for (const CoverageNode& node : manager->GetPlan().value.nodes) {
+    highest = std::max(highest, node.id.value);
+  }
+  ASSERT_TRUE(projects->WriteDocument(kProject, SelectionDocumentKey(NodeId{highest + 1}), "50")
+                  .ok());
+  auto filled = manager->FillGaps(std::vector<CoverageGap>{GapAt(90.0, 0.0)});
+  ASSERT_TRUE(filled.ok()) << filled.status.detail;
+  const CoverageNode cell = filled.value.nodes.back();
+  ASSERT_EQ(cell.id.value, highest + 1) << "the premise: the pick is under the fill cell";
+  pose.LookAt(cell.targetOrientation);
+  ImuSample sample;
+  sample.hasOrientation = true;
+  sample.timestampNs = clock.MonotonicNs();
+  ASSERT_TRUE(manager->OnMotion(std::span<const ImuSample>(&sample, 1)).ok());
+  const Status fired = FireBurst(cell.id, BurstSpec{});
+  ASSERT_TRUE(fired.ok()) << fired.detail;
+  auto shot = manager->Candidates(cell.id);
+  ASSERT_TRUE(shot.ok());
+  ASSERT_FALSE(shot.value.empty());
+  for (const Candidate& candidate : shot.value) EXPECT_GT(candidate.id.value, 50u);
+}
+
+// "Written down at once" is a promise a resume depends on, so a write the store refuses refuses the
+// fill: the plan, the document and the counter are as they were.
+TEST_F(CaptureSession, AFillTheStoreWillNotWriteDownIsRefused) {
+  Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  auto before = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(before.ok());
+  projects->RefuseWritesOf(kSessionDocumentKey);
+  auto filled = manager->FillGaps(std::vector<CoverageGap>{GapAt(90.0, 0.0)});
+  EXPECT_EQ(filled.status.code, StatusCode::StorageQuotaExceeded) << filled.status.detail;
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+  auto after = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value, before.value);
 }
 
 TEST_F(CaptureSession, NoGapsFillsNothing) {
@@ -321,6 +453,7 @@ TEST_F(CaptureSession, FillingIsRefusedWithoutASessionOrDuringABurst) {
 // closer to complete, and a cell aimed nowhere is one no camera is inside.
 TEST_F(CaptureSession, FillingIsRefusedForATargetThatIsNotARotationOrTooManyCells) {
   Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
   const size_t cells = manager->GetPlan().value.nodes.size();
   auto before = projects->ReadDocument(kProject, kSessionDocumentKey);
   ASSERT_TRUE(before.ok());
@@ -5149,6 +5282,33 @@ TEST(SessionDocument, APlansCellsAreMeasurementsWhateverItsSpecSays) {
 
 }
 
+// One bound at every door (ADR 0086): a fill refuses past it, and so does the decoder, which is
+// the door a document past it would come in by — edited, or written before the bound moved.
+TEST_F(ResumedSession, RefusesADocumentCarryingMoreCellsThanAPlanHolds) {
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  SessionDocument document;
+  ASSERT_TRUE(DecodeSessionDocument(written.value, document));
+  ASSERT_EQ(document.nodes.size(), 1u) << "the premise: the cells below are all the others";
+
+  std::string full = written.value;
+  for (uint64_t id = 2; id <= kMostCellsAPlanHolds; ++id) {
+    full += "cell " + std::to_string(id) + " 1 1 0 0 0 5\n";
+  }
+  ASSERT_TRUE(DecodeSessionDocument(full, document));
+  EXPECT_EQ(document.nodes.size(), kMostCellsAPlanHolds);
+  const std::string over =
+      full + "cell " + std::to_string(kMostCellsAPlanHolds + 1) + " 1 1 0 0 0 5\n";
+  EXPECT_FALSE(DecodeSessionDocument(over, document));
+}
+
 TEST_F(ResumedSession, RefusesADocumentWhoseCellsCannotBeAimedAt) {
   // A stored cell is acted on without a planner to vouch for it: guidance aims at it, coverage
   // counts it. Each of these is a cell no planner lays, and a document carrying one was edited.
@@ -5717,6 +5877,24 @@ std::vector<UnreadableCell> UnreadableCells() {
   cells.push_back({5.0, Quat{}, NodeId{1}, -1, false});
   cells.push_back({5.0, Quat{}, NodeId{1}, 0, true});
   return cells;
+}
+
+// A plan whose identities or rings are at the top of their range has no room for a cell past them:
+// refused for that, rather than for the gaps, and without stepping a ring index past `INT32_MAX`.
+TEST_F(CaptureSession, APlanWithNoRoomPastItsCellsIsNotFilled) {
+  for (const auto& [id, ring] : {std::pair{(uint64_t{1} << 53) - 1, 0},
+                                 std::pair{uint64_t{7}, std::numeric_limits<int32_t>::max()}}) {
+    CarelessCoveragePlannerEngine topmost(Spec().acceptanceConeDeg);
+    topmost.FileAs(NodeId{id}, ring);
+    CaptureSessionManager manager(topmost, pose, quality, preview, *camera, *sensor, *store,
+                                  *projects, clock);
+    ASSERT_TRUE(manager.Begin(kProject, Spec()).ok()) << id << " " << ring;
+    auto filled = manager.FillGaps(std::vector<CoverageGap>{GapAt(90.0, 0.0)});
+    EXPECT_EQ(filled.status.code, StatusCode::InvalidArgument) << id << " " << ring;
+    EXPECT_EQ(filled.status.detail, "this plan leaves no room for a cell past its own")
+        << id << " " << ring;
+    ASSERT_TRUE(manager.End().ok());
+  }
 }
 
 std::unique_ptr<CarelessCoveragePlannerEngine> Laying(const UnreadableCell& cell) {

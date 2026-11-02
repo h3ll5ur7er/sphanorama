@@ -509,11 +509,17 @@ describe('filling the gaps a build found', () => {
     const client = createBuildClient(ui, core, drawing(), async () => {
       waits.push(calls.at(-1) ?? '');
     }, filled);
+    // The core's answer and no other: a plan made up here, an empty one say, would pass a check
+    // that `filled` was called, and the page would take it as the plan.
+    const grown = { nodes: [{ id: 7 }], spec: {} } as unknown as CapturePlan;
+    const asking = core.fill;
+    core.fill = async (asked) => { await asking(asked); return { ok: true, value: grown }; };
     await client.build();
     await client.fill();
     expect(calls.at(-1)).toBe('fill 2');
     expect(waits.at(-1)).toBe('gaps 1');
     expect(filled).toHaveBeenCalledTimes(1);
+    expect(filled.mock.calls[0][0]).toBe(grown);
     expect(ui.status.textContent).toBe(
       'Added 2 cells to the capture\'s plan: follow the guide to them, then build again.');
     expect(ui.fill.hidden).toBe(true);
@@ -521,7 +527,8 @@ describe('filling the gaps a build found', () => {
   });
 
   it('says why a fill was refused, and leaves it to press again', async () => {
-    const { core } = scriptedCore([progress('Complete', 1)], [gap(0.01)]);
+    const { core, calls } = scriptedCore([progress('Complete', 1)], [gap(0.01)]);
+    const succeed = core.fill;
     core.fill = async () => ({ ok: false, status: { code: 'FailedPrecondition',
       detail: 'a burst is under way; fill once it is done' } as Status });
     const ui = elements();
@@ -534,11 +541,19 @@ describe('filling the gaps a build found', () => {
     expect(filled).not.toHaveBeenCalled();
     expect(ui.fill.hidden).toBe(false);
     expect(ui.fill.disabled).toBe(false);
+    // And a press does ask again, with the gaps the refusal left in place.
+    core.fill = succeed;
+    await client.fill();
+    expect(calls.at(-1)).toBe('fill 1');
+    expect(filled).toHaveBeenCalledTimes(1);
+    expect(ui.status.textContent).toBe(
+      'Added 1 cell to the capture\'s plan: follow the guide to them, then build again.');
   });
 
   it('says so when the fill call does not answer, and leaves it to press again', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { core } = scriptedCore([progress('Complete', 1)], [gap(0.01)]);
+    const { core, calls } = scriptedCore([progress('Complete', 1)], [gap(0.01)]);
+    const succeed = core.fill;
     core.fill = async () => { throw new Error('the worker went away'); };
     const ui = elements();
     const client = createBuildClient(ui, core, drawing(), immediately);
@@ -548,6 +563,10 @@ describe('filling the gaps a build found', () => {
       .toBe('The gaps could not be added to the plan: the core did not answer.');
     expect(ui.fill.hidden).toBe(false);
     expect(ui.button.disabled).toBe(false);
+    core.fill = succeed;
+    await client.fill();
+    expect(calls.at(-1)).toBe('fill 1');
+    expect(ui.fill.hidden).toBe(true);
   });
 
   it('withdraws the offer when a new build starts, whose gaps it may not find', async () => {
@@ -587,5 +606,27 @@ describe('filling the gaps a build found', () => {
     await first;
     expect(calls.filter((c) => c.startsWith('fill'))).toEqual(['fill 1']);
     expect(calls.filter((c) => c === 'start')).toEqual(['start']);
+  });
+
+  it('offers to fill only while the capture can act on it', async () => {
+    // A capture with cells still to shoot is led to them already, and one that has stopped has no
+    // guide to lead anywhere: either way a press would be refused or answered with nothing to do.
+    const { core, calls } = scriptedCore([progress('Complete', 1), progress('Complete', 1)],
+      [gap(0.01)]);
+    const ui = elements();
+    let can = false;
+    const client = createBuildClient(ui, core, drawing(), immediately, () => {}, () => can);
+    await client.build();
+    expect(ui.fill.hidden).toBe(true);
+    await client.fill();
+    expect(calls.some((c) => c.startsWith('fill'))).toBe(false);
+    can = true;
+    await client.build();
+    expect(ui.fill.hidden).toBe(false);
+    // And asked again at the press: a loop that stopped since the build withdraws the offer.
+    can = false;
+    await client.fill();
+    expect(calls.some((c) => c.startsWith('fill'))).toBe(false);
+    expect(ui.fill.hidden).toBe(true);
   });
 });

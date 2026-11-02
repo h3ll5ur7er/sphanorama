@@ -25,9 +25,16 @@ Three more things had to be settled:
   and answers the plan that results. There is no resume, because the session never stopped.
   - `FailedPrecondition` with no session, and while a burst is armed or firing. The page holds its
     calls through a burst anyway (ADR 0071).
+  - `FailedPrecondition`, too, while any cell of the plan is still to shoot, fill cells included.
+    A build of a capture with unshot cells finds their directions open, and the guide already
+    leads there: a fill would put a second cell beside each, and one pressed after they were shot
+    would lead back to directions already taken. Counting fill cells is what stops a second
+    press from filling the same gaps twice.
 - **The client sequences the two managers.** The build client already holds the gaps. It offers a
   button, "Add the gaps to the plan", whose press hands them to `FillGaps`. The loop then takes the
-  grown plan, and the map and markers draw the new cells.
+  grown plan, and the map and markers draw the new cells once coverage of it has been read.
+  - The offer is made only while the capture could act on it: its loop is running, so there is a
+    guide to lead to the new cells, and every planned cell is shot. It is asked again at the press.
 - **A new cell:**
   - is aimed at its target, which `FindGaps` already answers level;
   - takes the capture's cone;
@@ -36,25 +43,36 @@ Three more things had to be settled:
 
   Nothing existing moves, so every candidate stays under the cell it was filed under. A plan with
   fill cells is one `Resume` takes as stored, and one a build judges its gaps against.
+  - A new identity can be one an earlier capture of the same project used, with a pick recorded
+    under it. The candidate counter steps past every pick of the grown plan, as `Begin` and
+    `Resume` step past theirs (ADR 0070), so no pick names a frame this capture issues.
+  - A plan whose identities or rings are at the top of their range is refused, rather than
+    stepped past it.
 - **Bounded by one number:** `kMostCellsAPlanHolds`, 2000. It is the planner's existing limit, now
   in `utilities/session_document`, and `PlanDefect` refuses a plan over it. So the planner, the
   decoder, `Begin` and a fill all hold one bound. A fill that would pass it is refused whole, since
   part of a gap is not a sphere any closer to complete.
-- **Held to `PlanDefect` before it is kept.** A refusal leaves the plan and the document as they
-  were, and what is written down is what a resume can read. A target that is not a rotation is
-  refused explicitly, because `Normalize` would answer the identity for it.
+- **Held to `PlanDefect` before it is kept, and written down before it is answered.** A refusal
+  leaves the plan, the counter and the document as they were, and what is written down is what a
+  resume can read. A store that will not write the plan down refuses the fill with its own status,
+  rather than leaving fill cells only the tab knows of. A target that is not a rotation is refused
+  explicitly, because `Normalize` would answer the identity for it.
 
 ## Consequences
 
 - **The loop's plan can change under it.** The page's render loop held its plan as a constant. It
-  now takes a grown plan in place: the cones and the count are re-derived, and the coverage map is
-  redrawn. Nothing else in the loop holds a cell by position.
+  now takes a grown plan in place: the cones and the count are read from the plan rather than
+  copied beside it, and the coverage map is redrawn. Nothing else in the loop holds a cell by
+  position. No test drives the page through an accepted fill, since the end-to-end suite would have
+  to shoot every cell of a plan first; the core's fill and the client that hands its plan on are
+  tested, and the loop's taking it is not.
 - **The guidance leads to fill cells as to any other.** They have no candidates, so `Locate` names
   the nearest as needed and the dwell fires on it. A fill cell aimed between two shot cells may be
   reached inside another cell's cone first, which is aim-first targeting as ADR 0041 decided.
-- **Filling twice appends twice.** A second build finds whatever the first fill's frames left open,
-  and its fill adds cells for that. Nothing deduplicates against cells already added and not yet
-  shot. A press per build is the expected rhythm, and the page withdraws the offer once used.
+- **A fill is a step at the end of a capture, not during it.** It waits until every planned cell
+  is shot, so a capture's gaps are filled once its plan is done, and filled again only after the
+  fill cells are shot and a new build finds what they left. A gap a build finds while cells are
+  still to shoot is mostly those cells, and the guide is already leading to them.
 - **A narrow fill lens is refused rather than truncated.** With nothing placed, a 15.5-degree fill
   lens asks for 9,342 targets (ADR 0084), far past the bound. The page says why. A partial fill
   would need a rule for which gaps come first, and nothing decides that yet.

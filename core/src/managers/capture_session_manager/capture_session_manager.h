@@ -52,6 +52,8 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // cell is committed rather than only at End: a burst that finished is evidence, and a crash
   // costs whatever happened after the last one of these.
   void Checkpoint() const;
+  // What `Checkpoint` writes, with the store's answer, for the caller whose answer depends on it.
+  Status WriteSessionDocument() const;
   // Everything both entry points do once a plan exists: the pose the session starts from, the
   // sensor, the preview. It closes the camera itself if the pose engine refuses, because by here
   // the camera is already open and a session that cannot start must not leave the indicator lit.
@@ -166,9 +168,9 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   // pose does: a manager is the only thing allowed to be stateful (docs/03 §3.3 rule 4).
   bool firing_ = false;
   NodeId burst_node_;
-  // The armed cell's direction and cone, kept from the arm rather than looked up per frame: the
-  // plan does not change during a session, and a lookup would need an answer for a cell that is
-  // not there, which nothing can reach.
+  // The armed cell's direction and cone, kept from the arm rather than looked up per frame: no cell
+  // changes during a session — a fill only appends, and not while a burst is armed (ADR 0086) —
+  // and a lookup would need an answer for a cell that is not there, which nothing can reach.
   Quat burst_aim_{};
   double burst_cone_deg_ = 0.0;
   BurstSpec burst_spec_;

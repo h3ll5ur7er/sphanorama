@@ -45,6 +45,9 @@ Status FakeProjectStoreAccess::WriteDocument(ProjectId project, std::string_view
     return Fail(StatusCode::InvalidArgument, kComponent, "project id is unset");
   }
   if (key.empty()) return Fail(StatusCode::InvalidArgument, kComponent, "document key is empty");
+  if (!unwritable_.empty() && key == unwritable_) {
+    return Fail(unwritable_code_, kComponent, "this document cannot be written");
+  }
   projects_[project.value][std::string(key)] = std::string(value);
   highest_ = std::max(highest_, project.value);
   ++write_count_;
