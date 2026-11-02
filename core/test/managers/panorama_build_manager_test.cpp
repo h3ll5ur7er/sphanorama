@@ -402,7 +402,7 @@ class PanoramaBuildManagerTest : public ::testing::Test {
 
   // The plan a capture writes down beside its candidates (ADR 0077): a cell under every id a
   // candidate names, where `CaptureRing` aims it, and one at least, since no plan has none. A
-  // build reads none of it; a document without it is one a build refuses.
+  // build judges its gaps against it (ADR 0085), and the decoder refuses a document without it.
   static void LayCells(SessionDocument& document) {
     std::set<uint64_t> ids{1};
     for (const Candidate& candidate : document.candidates) ids.insert(candidate.node.value);
@@ -2137,6 +2137,24 @@ TEST_F(PanoramaBuildManagerTest, APlanNoResumeCouldTakeIsNotJudged) {
   auto unfiled = manager_.Gaps(stored.value);
   EXPECT_EQ(unfiled.status.code, StatusCode::Unsupported);
   EXPECT_EQ(unfiled.status.detail, "this capture's document names a cell its plan does not have");
+}
+
+// And a stored spec no plan could have been laid from, which the decoder takes with its cells:
+// `Resume` refuses it on either path, and so is it not judged on either.
+TEST_F(PanoramaBuildManagerTest, AStoredSpecNoPlanCouldHaveBeenLaidFromIsNotJudged) {
+  document_.spec.acceptanceConeDeg = 30.0;
+  CaptureRing(3);
+  SessionDocument read;
+  ASSERT_TRUE(DecodeSessionDocument(EncodeSessionDocument(document_), read));
+  ASSERT_EQ(read.nodes.size(), 3u) << "the premise: stored cells";
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok()) << build.status.detail;
+  ASSERT_EQ(RunToEnd(build.value).back().stage, BuildStage::Complete);
+  EXPECT_EQ(planner_.judged, 0);
+  auto gaps = manager_.Gaps(build.value);
+  EXPECT_EQ(gaps.status.code, StatusCode::Unsupported);
+  EXPECT_EQ(gaps.status.detail,
+            "this capture's document carries an acceptance cone no frame could be taken in");
 }
 
 TEST_F(PanoramaBuildManagerTest, AReplanNoResumeCouldTakeIsNotJudged) {
