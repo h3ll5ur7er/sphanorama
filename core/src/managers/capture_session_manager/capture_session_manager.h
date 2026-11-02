@@ -54,6 +54,8 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   void Checkpoint() const;
   // What `Checkpoint` writes, with the store's answer, for the caller whose answer depends on it.
   Status WriteSessionDocument() const;
+  // The candidates a document holds: the session's own bursts', never an offered frame's.
+  std::vector<Candidate> WrittenCandidates() const;
   // Everything both entry points do once a plan exists: the pose the session starts from, the
   // sensor, the preview. It closes the camera itself if the pose engine refuses, because by here
   // the camera is already open and a session that cannot start must not leave the indicator lit.

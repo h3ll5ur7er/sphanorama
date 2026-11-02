@@ -1,6 +1,8 @@
 # ADR 0013 — The boundary marshals a generated binary codec, not JSON or FlatBuffers
 
-**Status:** accepted. Refines the FlatBuffers intent in `docs/04` §4.6.
+**Status:** accepted. Refines the FlatBuffers intent in `docs/04` §4.6. Amended by
+[0086](0086-a-fill-appends-cells-to-the-live-session.md): a `uint64_t` is no longer only a content
+hash, since `CaptureRevision` crosses a counter as one, compared only for equality.
 
 ## Context
 Structured calls have to cross between the TypeScript client and the C++ core. `docs/04` said

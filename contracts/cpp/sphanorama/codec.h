@@ -258,11 +258,13 @@ inline bool Decode(Reader& in, CoverageGap& value) {
 }
 
 inline void Encode(Writer& out, const CaptureRevision& value) {
+  out.PutF64(static_cast<double>(value.project.value));
   out.PutF64(static_cast<double>(value.session.value));
   out.PutU64(value.nextCandidate);
 }
 
 inline bool Decode(Reader& in, CaptureRevision& value) {
+  value.project.value = in.GetId();
   value.session.value = in.GetId();
   value.nextCandidate = in.GetU64();
   return in.ok();

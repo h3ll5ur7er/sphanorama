@@ -63,7 +63,8 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
     // Every candidate the capture wrote down, which the plan has to file to be this capture's.
     std::vector<Candidate> candidates;
     Result<std::vector<CoverageGap>> gaps;
-    // The capture those gaps describe: the session and counter of the document `Start` read.
+    // The capture those gaps describe: the project, and the session and counter of the document
+    // `Start` read.
     CaptureRevision judged;
     std::optional<FrameRef> preview;
     // Capture frames a refusal left out of their tier that the store would not put back yet.

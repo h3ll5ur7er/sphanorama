@@ -212,12 +212,14 @@ export function decodeCoverageGap(input: Reader): C.CoverageGap {
 }
 
 export function encodeCaptureRevision(out: Writer, value: C.CaptureRevision): void {
+  out.f64(value.project);
   out.f64(value.session);
   out.u64(value.nextCandidate);
 }
 
 export function decodeCaptureRevision(input: Reader): C.CaptureRevision {
   return {
+    project: input.f64() as C.ProjectId,
     session: input.f64() as C.SessionId,
     nextCandidate: input.u64(),
   };

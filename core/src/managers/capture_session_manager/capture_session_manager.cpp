@@ -594,6 +594,14 @@ void CaptureSessionManager::ResetDwell() {
   dwell_marked_ns_ = clock_.MonotonicNs();
 }
 
+std::vector<Candidate> CaptureSessionManager::WrittenCandidates() const {
+  std::vector<Candidate> written;
+  for (const Candidate& candidate : AllCandidates()) {
+    if (burst_owned_.count(candidate.id.value) != 0) written.push_back(candidate);
+  }
+  return written;
+}
+
 Status CaptureSessionManager::WriteSessionDocument() const {
   // Which tier these frames are in, asked at the moment the claim is written down rather than
   // remembered from the start of the session. The answer belongs to the tier, and this is the
@@ -613,9 +621,7 @@ Status CaptureSessionManager::WriteSessionDocument() const {
   stored.spec = plan_.spec;
   stored.lens = lens_;
   stored.nodes = plan_.nodes;
-  for (const Candidate& candidate : AllCandidates()) {
-    if (burst_owned_.count(candidate.id.value) != 0) stored.candidates.push_back(candidate);
-  }
+  stored.candidates = WrittenCandidates();
   return projects_.WriteDocument(project_, kSessionDocumentKey, EncodeSessionDocument(stored));
 }
 
@@ -1482,8 +1488,10 @@ Result<CapturePlan> CaptureSessionManager::FillGaps(const FoundGaps& found) {
   // A build of a capture with cells still to shoot finds their directions open, and the guide
   // already leads there; filled now, each would get a second cell beside it, and filled after they
   // were shot, cells at directions already taken. The plan's own fill cells count too, which is
-  // what keeps a second press from filling the same gaps again.
-  SPH_TRY(const CoverageState coverage, planner_.Evaluate(plan_, AllCandidates()));
+  // what keeps a second press from filling the same gaps again. Shot as a build can see it: an
+  // offered frame is never written down, so a cell it alone covers is open to every build, and
+  // its gap would be filled on top of it.
+  SPH_TRY(const CoverageState coverage, planner_.Evaluate(plan_, WrittenCandidates()));
   if (const int32_t unshot = coverage.nodesTotal - coverage.nodesSatisfied; unshot > 0) {
     return Err<CapturePlan>(StatusCode::FailedPrecondition, kComponent,
                             unshot == 1 ? "1 cell of the plan is still to shoot; fill once it is"
@@ -1498,7 +1506,8 @@ Result<CapturePlan> CaptureSessionManager::FillGaps(const FoundGaps& found) {
   // refusal is held to it too. Written down before the refusal, since a capture with every cell
   // shot fires no burst to checkpoint it, and a document left behind would leave every later
   // build as stale as this one.
-  if (found.judged.session != session_ || found.judged.nextCandidate != next_candidate_) {
+  if (found.judged.project != project_ || found.judged.session != session_
+      || found.judged.nextCandidate != next_candidate_) {
     if (Status written = WriteSessionDocument(); !written.ok()) return written;
     return Err<CapturePlan>(StatusCode::FailedPrecondition, kComponent,
                             "these gaps were found in the capture as it was before its latest "

@@ -24,24 +24,28 @@ Three more things had to be settled:
 - **`ICaptureSessionManager::FillGaps(found)` appends to the live session's plan**, writes it
   down, and answers the plan that results. There is no resume, because the session never stopped.
   `found` is `IPanoramaBuildManager::Gaps`' answer whole: the gaps, and the capture they were
-  judged against — the session and candidate counter of the document `Start` read, a
-  `CaptureRevision`.
+  judged against — the project, and the session and candidate counter of the document `Start`
+  read, a `CaptureRevision`. The project is there because sessions are counted per core, so
+  another tab's capture of another project can share a session number.
   - `FailedPrecondition` with no session, and while a burst is armed or firing. The page holds its
     calls through a burst anyway (ADR 0071).
   - `FailedPrecondition`, too, while any cell of the plan is still to shoot, fill cells included.
     A build of a capture with unshot cells finds their directions open, and the guide already
     leads there: a fill would put a second cell beside each, and one pressed after they were shot
     would lead back to directions already taken. Counting fill cells is what stops a second
-    press from filling the same gaps twice.
+    press from filling the same gaps twice. A cell counts as shot only by a frame the document
+    holds: an offered frame is never written down, so a cell it alone covers is open to every
+    build, and its gap would be filled on top of it.
   - `FailedPrecondition`, too, for gaps judged against a capture other than the session as it
-    stands: another session, or this one before a frame it now has. Every frame steps the
-    counter, so equal revisions are the same frames. A cell shot since the build read the
-    document — during the build, or under a checkpoint the store refused — is open in its gaps,
-    and filling it would put a cell beside itself; the same stale gaps pressed twice are refused
-    twice. The capture is written down before this refusal, since a capture with every cell shot
-    fires no burst to checkpoint it and every later build would read the same stale document; it
-    is the one refusal that changes the document. An offered frame is not written down, so a
-    build does not see it and a cell it alone covers reads as open.
+    stands: another project's or session's, or this one before a frame it now has. Every frame steps
+    the counter, so equal revisions are the same frames written down. A cell shot since the build
+    read the document — during the build, or under a checkpoint the store refused — is open in its
+    gaps, and filling it would put a cell beside itself; the same stale gaps pressed twice are
+    refused twice. The capture is written down before this refusal, since a capture with every cell
+    shot fires no burst to checkpoint it and every later build would read the same stale document;
+    it is the one refusal that changes the document. A pick is not part of the revision: switching
+    one changes which of a shot cell's frames a build places, by less than the cell's cone, and
+    never whether the cell is shot, which is what a fill guards.
   - A precondition is asked before the argument is, so an empty fill is refused while the capture
     could not take one, rather than answered with the plan.
 - **The client sequences the two managers.** The build client already holds the gaps. It offers a
@@ -78,6 +82,11 @@ Three more things had to be settled:
 
 ## Consequences
 
+- **The first `uint64_t` on the wire that is not a content hash.** `CaptureRevision::nextCandidate`
+  is a counter, and it crosses as eight raw bytes, a `bigint` on the page, while the identities the
+  same counter issues cross as branded doubles. Compared only for equality, it must not lose a bit:
+  the decoder refuses only zero there, so a stored counter can be past 2^53. ADR 0013's encoding
+  rule is amended to say so.
 - **The loop's plan can change under it.** The page's render loop held its plan as a constant. It
   now takes a grown plan in place: the cones and the count are read from the plan rather than
   copied beside it, and the coverage map is redrawn. Nothing else in the loop holds a cell by
@@ -112,6 +121,7 @@ capture a build judged. It needs no contract change, and it was the first fix fo
 store refused. But it asks the document as it is *now*, and the gaps describe the document the
 build read: the catch-up write that refusal makes is the same write that lets the same stale gaps
 through on a second press, and a build started before the last cell was shot reads a document the
-burst has since brought up to date. It also could not catch up a cell an offered frame alone
-covers, which the document never files, and it read a store's refused read as a document behind.
-A revision is compared rather than read, so neither of those can arise.
+burst has since brought up to date. It also read a store's refused read as a document behind, and
+it could not catch up a cell an offered frame alone covers, which the document never files. A
+revision is compared rather than read, so the first cannot arise; the second is why a fill counts
+as shot only what the document holds.

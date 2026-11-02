@@ -8,8 +8,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  decodeCaptureGuidance, decodeCapturePlan, decodeFramePreview,
-  encodeCaptureGuidance, encodeCapturePlan, encodeFramePreview,
+  decodeCaptureGuidance, decodeCapturePlan, decodeFoundGaps, decodeFramePreview,
+  encodeCaptureGuidance, encodeCapturePlan, encodeFoundGaps, encodeFramePreview,
 } from './codec.generated';
 import { Reader, Writer } from './wire';
 import type * as C from '../../../contracts/ts/contracts';
@@ -132,6 +132,22 @@ describe('round trips', () => {
     };
     encodePlan(writer, plan);
     expect(decodeCapturePlan(new Reader(writer.finish()))).toEqual(plan);
+  });
+
+  it('round-trips a capture\'s counter past what a double holds', () => {
+    // Compared only for equality, so one bit lost on the way would refuse every fill of a capture
+    // whose stored counter is past 2^53 (ADR 0086): it crosses as eight raw bytes, not a double.
+    const writer = new Writer();
+    const found: C.FoundGaps = {
+      gaps: [{ target: { w: 0.5, x: 0.5, y: -0.5, z: 0.5 }, solidAngleFraction: 0.125 }],
+      judged: {
+        project: 4 as C.ProjectId, session: 7 as C.SessionId, nextCandidate: 2n ** 53n + 1n,
+      },
+    };
+    encodeFoundGaps(writer, found);
+    const back = decodeFoundGaps(new Reader(writer.finish()));
+    expect(back).toEqual(found);
+    expect(back.judged.nextCandidate).toBe(9007199254740993n);
   });
 
   it('round-trips an empty array', () => {

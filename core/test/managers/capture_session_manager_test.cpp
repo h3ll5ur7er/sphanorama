@@ -237,6 +237,7 @@ class CaptureSession : public ::testing::Test {
     found.gaps = std::move(gaps);
     auto text = projects->ReadDocument(kProject, kSessionDocumentKey);
     SessionDocument stored;
+    found.judged.project = kProject;
     if (text.ok() && DecodeSessionDocument(text.value, stored)) {
       found.judged.session = SessionId{stored.session};
       found.judged.nextCandidate = stored.nextCandidate;
@@ -446,6 +447,67 @@ TEST_F(CaptureSession, GapsFromABuildStartedBeforeTheLastFrameAreRefused) {
             "again, then fill");
   EXPECT_EQ(filling.GetPlan().value.nodes.size(), cells.size());
   ASSERT_TRUE(filling.End().ok());
+}
+
+// A frame taken under a checkpoint the store refused, on a cell the document already files: the
+// document is behind by a frame, not by a cell, and the revision tells the two apart where asking
+// whether the document files every cell would not.
+TEST_F(CaptureSession, GapsFromADocumentBehindByARetakeAreRefused) {
+  Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  const FoundGaps before = Found({GapAt(90.0, 0.0)});
+  projects->RefuseWritesOf(kSessionDocumentKey);
+  ASSERT_TRUE(manager->RequestRetake(FirstNode(), /*replace=*/false).ok());
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  projects->RefuseWritesOf("");
+  const FoundGaps stale = Found({GapAt(90.0, 0.0)});
+  ASSERT_EQ(stale.judged.nextCandidate, before.judged.nextCandidate)
+      << "the premise: the document never heard of the retake";
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  EXPECT_EQ(manager->FillGaps(stale).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+}
+
+// A cell an offered frame alone covers is shot to the session and open to a build, since an
+// offered frame is never written down: its gap would be filled on top of it. So a fill counts as
+// shot only what a build can see, and waits for a burst there.
+TEST_F(CaptureSession, ACellOnlyAnOfferedFrameCoversIsStillToShootForAFill) {
+  Begin();
+  auto frame = store->Allocate(4, 4, PixelFormat::RGBA8);
+  ASSERT_TRUE(frame.ok());
+  ASSERT_TRUE(manager->OfferFrame(FirstNode(), frame.value, PoseSample{}).ok());
+  auto coverage = manager->Coverage();
+  ASSERT_TRUE(coverage.ok());
+  ASSERT_EQ(coverage.value.nodesSatisfied, coverage.value.nodesTotal)
+      << "the premise: the session holds the cell as shot";
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  auto refused = manager->FillGaps(Found({GapAt(0.0, 0.0)}));
+  EXPECT_EQ(refused.status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(refused.status.detail, "1 cell of the plan is still to shoot; fill once it is");
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+}
+
+// Session identities are counted per core, so two tabs on two projects both begin session 1; the
+// project is what tells one capture's gaps from another's.
+TEST_F(CaptureSession, GapsFromAnotherProjectsCaptureAreRefused) {
+  Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  FoundGaps elsewhere = Found({GapAt(90.0, 0.0)});
+  elsewhere.judged.project = ProjectId{kProject.value + 1};
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  EXPECT_EQ(manager->FillGaps(elsewhere).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+}
+
+// The catch-up write is the store's too: refused, the fill answers with the store's status, since
+// "build again" would send the user round a loop no build can leave while the store refuses.
+TEST_F(CaptureSession, AStaleFillWhoseCatchUpTheStoreRefusesSaysSo) {
+  Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  FoundGaps stale = Found({GapAt(90.0, 0.0)});
+  stale.judged.nextCandidate -= 1;
+  projects->RefuseWritesOf(kSessionDocumentKey, StatusCode::CodecFailure);
+  EXPECT_EQ(manager->FillGaps(stale).status.code, StatusCode::CodecFailure);
 }
 
 // Gaps judged against another session's capture — another tab's, or one begun since — are not this

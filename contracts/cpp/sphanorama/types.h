@@ -307,11 +307,14 @@ struct CoverageGap {
 };
 
 // Which state of a capture something was judged against, as its session document said: the
-// session, and how far its candidate counter had gone. Every frame a capture takes steps the
-// counter, so two equal ones are the same capture with the same frames — a fill's cells change
-// the plan without stepping it, but are unshot until a frame does — and a build's gaps are
-// fillable only while the capture is still the one it read (ADR 0086).
+// project, the session within it — sessions are counted per core, so another tab's can share one
+// — and how far its candidate counter had gone. Every frame a capture takes steps the counter, so
+// two equal ones are the same capture with the same frames written down; a fill may step it past
+// a pick, and its cells are unshot until a frame does. A build's gaps are fillable only while the
+// capture is still the one it read (ADR 0086). An offered frame steps it too but is never written
+// down, which is why a fill does not count a cell it alone covers as shot.
 struct CaptureRevision {
+  ProjectId project;
   SessionId session;
   uint64_t nextCandidate = 0;
 };

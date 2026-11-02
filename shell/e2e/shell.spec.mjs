@@ -964,7 +964,7 @@ test('a capture builds into a preview the page draws', async ({ page }) => {
       const before = (await core.getPlan()).value.nodes.length;
       const answer = await core.fillGaps({
         gaps: [{ target: { w: 1, x: 0, y: 0, z: 0 }, solidAngleFraction: 0.01 }],
-        judged: { session: 1, nextCandidate: 1n },
+        judged: { project: 1, session: 1, nextCandidate: 1n },
       });
       const after = (await core.getPlan()).value.nodes.length;
       return { ok: answer.ok, detail: answer.ok ? '' : answer.status.detail, before, after };

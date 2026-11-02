@@ -201,6 +201,7 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
   build.plan = CapturePlan{document.nodes, document.spec};
   build.plannedLens = document.lens;
   build.candidates = document.candidates;
+  build.judged.project = project;
   build.judged.session = SessionId{document.session};
   build.judged.nextCandidate = document.nextCandidate;
 

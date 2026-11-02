@@ -102,7 +102,7 @@ Context sentence twelve lines above a banner that is in fact above it. Corrected
 | [0010](0010-resource-access-contract-suites.md) | Resource access is verified by one shared contract suite per interface |
 | [0011](0011-single-threaded-build-for-github-pages.md) | Two WASM builds; GitHub Pages gets the single-threaded one |
 | [0012](0012-c-abi-boundary-not-embind.md) | The WASM boundary is a C ABI over the shared heap, not Embind |
-| [0013](0013-generated-binary-codec.md) | The boundary marshals a generated binary codec, not JSON or FlatBuffers |
+| [0013](0013-generated-binary-codec.md) | The boundary marshals a generated binary codec, not JSON or FlatBuffers; **amended by [0086](0086-a-fill-appends-cells-to-the-live-session.md)**, under which a `uint64_t` can be a counter compared for equality as well as a content hash |
 | [0014](0014-synchronous-ports-over-a-resident-host.md) | Resource-access ports are synchronous over a resident host; the composition root is exempt from the layer rules; **amended by [0079](0079-the-page-says-whether-it-is-saving-now.md)**, which reports a failing persist through `persistFailing()` and removes `lastPersistError()` |
 | [0015](0015-absolute-orientation-in-the-imu-sample.md) | `ImuSample` carries an optional absolute orientation; the browser adapter fills it and converts the frame |
 | [0016](0016-pose-state-is-a-value-the-manager-owns.md) | Pose state is a contract value the manager owns; `IPoseEngine` is a pure function of it |

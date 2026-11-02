@@ -43,7 +43,7 @@ function gap(solidAngleFraction: number): CoverageGap {
  * unless told otherwise, and records every call.
  */
 /** The capture a build judged, as its document said; the client hands it back untouched. */
-const judged = { session: 3, nextCandidate: 41n } as unknown as CaptureRevision;
+const judged = { project: 2, session: 3, nextCandidate: 41n } as unknown as CaptureRevision;
 
 function scriptedCore(polls: BuildProgress[], gaps: CoverageGap[] = []) {
   const calls: string[] = [];

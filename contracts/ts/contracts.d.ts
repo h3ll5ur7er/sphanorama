@@ -12,7 +12,8 @@
  *
  * Identifiers are branded numbers rather than bigints; they are minted by the core and stay well
  * below 2^53. Content hashes are bigint, because the bits a double drops are the ones that decide
- * whether a build stage is reused.
+ * whether a build stage is reused; so is a capture's counter in `CaptureRevision`, which is only
+ * compared for equality and which a stored document may carry past 2^53.
  */
 
 export type Result<T> = { ok: true; value: T } | { ok: false; status: Status };
@@ -288,12 +289,15 @@ export interface CoverageGap {
 
 /**
  * Which state of a capture something was judged against, as its session document said: the
- * session, and how far its candidate counter had gone. Every frame a capture takes steps the
- * counter, so two equal ones are the same capture with the same frames — a fill's cells change
- * the plan without stepping it, but are unshot until a frame does — and a build's gaps are
- * fillable only while the capture is still the one it read (ADR 0086).
+ * project, the session within it — sessions are counted per core, so another tab's can share one
+ * — and how far its candidate counter had gone. Every frame a capture takes steps the counter, so
+ * two equal ones are the same capture with the same frames written down; a fill may step it past
+ * a pick, and its cells are unshot until a frame does. A build's gaps are fillable only while the
+ * capture is still the one it read (ADR 0086). An offered frame steps it too but is never written
+ * down, which is why a fill does not count a cell it alone covers as shot.
  */
 export interface CaptureRevision {
+  project: ProjectId;
   session: SessionId;
   nextCandidate: bigint;
 }
@@ -1298,12 +1302,14 @@ export interface CaptureSessionManager {
    * `FailedPrecondition` with no session in progress; while a burst is armed or firing, whose cell
    * is fixed for its length; while any cell of the plan is still to shoot, its fill cells
    * included, since a build of such a capture finds those cells open and the guide already leads
-   * there; and for gaps judged against a capture other than this one as it stands — another
-   * session, or this one before a frame it now has. A cell shot since the build read the
-   * document, during the build or under a checkpoint the store refused, is open in its gaps and
-   * would be filled beside itself. That refusal writes the capture down first, so the next build
-   * reads it as it stands, and is the one refusal that changes the document. An offered frame is
-   * not written down, so a build does not see it and a cell it alone covers reads as open.
+   * there — and shot as a build sees it, so a cell only an offered frame covers, which is never
+   * written down, is still to shoot; and for gaps judged against a capture other than this one as
+   * it stands — another project's or session's, or this one before a frame it now has. A cell shot
+   * since the build read the document, during the build or under a checkpoint the store refused,
+   * is open in its gaps and would be filled beside itself. That refusal writes the capture down
+   * first, so the next build reads it as it stands, and is the one refusal that changes the
+   * document. A pick is not part of the revision: it changes which of a shot cell's frames a build
+   * places, never whether the cell is shot.
    * A precondition is asked before the argument is. `InvalidArgument` for a target that is not a
    * rotation, for a plan whose identities or rings leave no room past them, and for more than
    * 2000 cells in all — refused whole rather than filled in part, since part of a gap is not a
