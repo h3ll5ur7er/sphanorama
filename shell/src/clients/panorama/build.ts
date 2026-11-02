@@ -4,11 +4,11 @@
  *
  * It decides nothing about the panorama. Which frames, which pairs and which lens are the core's
  * (ADR 0070); what is here is when to ask, how often, and what to put on the page with the answer.
- * The core arrives as three functions rather than the facade, so this can be driven without a
- * worker and so the only calls it can make are the three it is meant to.
+ * The core arrives as `start`, `poll`, `preview` and `gaps` rather than the facade, so this can be
+ * driven without a worker and so those are the only calls it can make.
  */
 import type {
-  BuildId, BuildProgress, BuildStage, FramePreview, Status,
+  BuildId, BuildProgress, BuildStage, CoverageGap, FramePreview, Status,
 } from '../../../../contracts/ts/contracts';
 
 /** A value, or a failure carrying the core's status — which, unlike the review strip, this shows. */
@@ -19,6 +19,7 @@ export interface BuildCore {
   start(): Promise<Answered<BuildId>>;
   poll(build: BuildId): Promise<Answered<BuildProgress>>;
   preview(build: BuildId): Promise<Answered<FramePreview>>;
+  gaps(build: BuildId): Promise<Answered<readonly CoverageGap[]>>;
 }
 
 export interface BuildElements {
@@ -44,10 +45,28 @@ const doing: Partial<Record<BuildStage, string>> = {
   Features: 'finding features in each frame',
   PairwiseMatching: 'matching neighbouring frames',
   GlobalSolve: 'solving for where each frame points',
+  CoverageCheck: 'checking the sphere for gaps',
   Projecting: 'drawing the panorama',
 };
 
 const why = (status: Status | undefined) => status?.detail || status?.code || 'no reason given';
+
+/**
+ * The gaps as a sentence: how much of the sphere is open, and how many frames would complete the
+ * capture's plan. Each entry is a fill frame's target, not a hole — one hole wider than a frame is
+ * several (ADR 0084) — so the count is of frames. The share is of the whole sphere, as
+ * `solidAngleFraction` is; only the plan's directions are judged, which for a band without caps is
+ * not the whole sphere, so the frames and an empty answer are said of the plan. Where they are is
+ * for the capture to lead the user to.
+ */
+export function describeGaps(gaps: readonly CoverageGap[]): string {
+  if (gaps.length === 0) return 'Nothing the capture planned is missing.';
+  const percent = 100 * gaps.reduce((sum, g) => sum + g.solidAngleFraction, 0);
+  // A seam a few directions wide is open all the same, and "0%" would read as nothing.
+  const share = percent < 0.05 ? 'Under 0.1%' : `About ${percent.toFixed(1)}%`;
+  const frames = gaps.length === 1 ? '1 more frame' : `${gaps.length} more frames`;
+  return `${share} of the sphere is open; ${frames} would complete the capture's plan.`;
+}
 
 /**
  * A wait before each call to the core that does not end while `busy` says the capture needs it.
@@ -136,7 +155,21 @@ export function createBuildClient(
       return;
     }
     ui.canvas.hidden = false;
-    ui.status.textContent = `Built: a ${preview.value.width} by ${preview.value.height} preview.`;
+    const built = `Built: a ${preview.value.width} by ${preview.value.height} preview.`;
+    ui.status.textContent = built;
+    await yieldToPage();
+    // Caught here rather than by `build`: the panorama is on screen, and a worker that goes away
+    // now takes only this sentence with it, as a refused judgement does (ADR 0085).
+    let gaps: Answered<readonly CoverageGap[]>;
+    try {
+      gaps = await core.gaps(started.value);
+    } catch (reason: unknown) {
+      console.error('sphanorama build: the gaps call did not answer', reason);
+      gaps = { ok: false, status: { detail: 'the core did not answer' } as Status };
+    }
+    ui.status.textContent = gaps.ok
+      ? `${built} ${describeGaps(gaps.value)}`
+      : `${built} Whether the sphere has gaps could not be judged: ${why(gaps.status)}.`;
   }
 
   return {

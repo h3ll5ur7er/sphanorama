@@ -22,7 +22,8 @@ class IPanoramaBuildManager {
   // than it, which an earlier build's `SetSelection` or an edited store can leave.
   //
   // Only the checks happen here. The work is done by `Poll`, one step a call — a frame's features,
-  // a pair, the solve, the preview — so that no call holds the core's one thread for a whole build.
+  // a pair, the solve, its gaps, the preview — so that no call holds the core's one thread for a
+  // whole build. A capture that predates its stored cells is replanned in the gaps' step, not here.
   //
   // `NotFound` for a project that does not exist or holds no capture; `Unsupported` for a document
   // this build cannot read, as `ICaptureSessionManager::Resume` answers; `FailedPrecondition` while
@@ -70,6 +71,23 @@ class IPanoramaBuildManager {
   // `Unsupported` for a build that exists, because nothing detects movers yet — an empty report
   // would read as a scene with none.
   virtual Result<GhostReport> Ghosts(BuildId build) = 0;
+
+  // Where a complete build's sphere is open, and where to aim to fill it: the capture's plan
+  // judged against each frame where the solve placed it, through the solve's lens, which is also
+  // the lens a fill frame is judged through (ADR 0084, ADR 0085). That lens is the capture's own
+  // except where the loops saw its focal length (ADR 0066), so only there does a wrong lens show
+  // as gaps. Asked in a step of its own after the solve, so `Poll` stays one step a call.
+  //
+  // Empty is nothing open that the plan asks for: a plan of bands without caps is judged only up to
+  // its highest cell, so its poles are not judged at all. A gap wider than one frame comes back as
+  // several, so the count is of fill frames rather than of holes. A plan
+  // `ICaptureSessionManager::Resume` would not take as the capture's is answered `Unsupported`, as
+  // `Resume` answers it and by the same rules — a spec no plan could be laid from, cells this
+  // build cannot replan or that no document could hold, a candidate filed under no cell — and only
+  // a judgement `FindGaps` itself refuses, such as a fill lens too narrow, with the planner's own
+  // status. Either way the build completes regardless: the panorama does not depend on it.
+  // `FailedPrecondition` for a build that has not completed, or that failed.
+  virtual Result<std::vector<CoverageGap>> Gaps(BuildId build) = 0;
 
   // The mechanism behind both retakes and manual candidate switching: recompute only the
   // transitive closure downstream of the changed cells (docs/04 §4.4). An incremental rebuild

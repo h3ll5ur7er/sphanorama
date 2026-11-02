@@ -6343,9 +6343,91 @@ TEST_F(ResumedSession, AResumeWritesDownACounterAPickMoved) {
   EXPECT_GT(after.nextCandidate, unseen);
 }
 
+// Replans as the inner planner does, under other identities: a later planner's different
+// tessellation, which ADR 0077 stores cells to survive.
+class RenumberingCoveragePlannerEngine final : public ICoveragePlannerEngine {
+ public:
+  explicit RenumberingCoveragePlannerEngine(ICoveragePlannerEngine& inner) : inner_(inner) {}
+  Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override {
+    auto plan = inner_.Plan(spec, lens);
+    if (!plan.ok()) return plan;
+    for (CoverageNode& node : plan.value.nodes) node.id = NodeId{node.id.value + 1000};
+    return plan;
+  }
+  Result<CaptureGuidance> Locate(const PoseSample& current, const CapturePlan& plan,
+                                 const CoverageState& coverage) override {
+    return inner_.Locate(current, plan, coverage);
+  }
+  Result<CoverageState> Evaluate(const CapturePlan& plan,
+                                 std::span<const Candidate> candidates) override {
+    return inner_.Evaluate(plan, candidates);
+  }
+  Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan& plan, const CoverageState& state,
+                                             const GhostReport& ghosts) override {
+    return inner_.SuggestRetakes(plan, state, ghosts);
+  }
+  Result<std::vector<CoverageGap>> FindGaps(const CapturePlan& plan,
+                                            std::span<const PlacedFrame> frames,
+                                            const Intrinsics& fillLens) override {
+    return inner_.FindGaps(plan, frames, fillLens);
+  }
+
+ private:
+  ICoveragePlannerEngine& inner_;
+};
+
+// `FilesEveryCandidate` asked of a version-2 document's replan, which is the case ADR 0077 stores
+// cells for: a later planner lays other cells, and a candidate filed under none of them is refused,
+// not resumed.
+TEST_F(ResumedSession, RefusesAReplanThatDoesNotLayTheCellsTheCaptureWasTakenIn) {
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  std::istringstream lines(written.value);
+  std::string older;
+  for (std::string line; std::getline(lines, line);) {
+    if (line.rfind("cell ", 0) != 0) older += line + "\n";
+  }
+  const std::string stamp = "sphanorama-session 3";
+  ASSERT_EQ(older.rfind(stamp, 0), 0u);
+  older.replace(0, stamp.size(), "sphanorama-session 2");
+  ASSERT_NE(older.find("candidate "), std::string::npos) << "the premise: a candidate to file";
+
+  for (const bool renumbered : {false, true}) {
+    ASSERT_TRUE(projects->WriteDocument(kProject, kSessionDocumentKey, older).ok());
+    RenumberingCoveragePlannerEngine later(planner);
+    auto second_store = NewStore();
+    FakeCameraAccess second_camera(second_store);
+    CaptureSessionManager second(renumbered ? static_cast<ICoveragePlannerEngine&>(later)
+                                            : static_cast<ICoveragePlannerEngine&>(planner),
+                                 pose, quality, preview, second_camera, *sensor, *second_store,
+                                 *projects, clock);
+    const Result<SessionId> resumed = second.Resume(kProject);
+    if (!renumbered) {
+      // The control: the same document, replanned into its own cells, resumes.
+      EXPECT_TRUE(resumed.ok()) << resumed.status.detail;
+      if (resumed.ok()) {
+        ASSERT_TRUE(second.End().ok());
+      }
+      continue;
+    }
+    EXPECT_EQ(resumed.status.code, StatusCode::Unsupported) << resumed.status.detail;
+    EXPECT_EQ(resumed.status.detail,
+              "this project's session document names a cell this plan does not have");
+    EXPECT_EQ(second_camera.Opens(), 0);
+  }
+}
+
 TEST_F(ResumedSession, RefusesADocumentNamingACellThePlanDoesNotHave) {
   // A document naming a candidate under a cell its own cells do not include, which only an edited
-  // or torn one does, and nothing but `Resume` compares the two (ADR 0077). A candidate filed under
+  // or torn one does, and which the decoder does not compare (ADR 0077); `Resume` and a build
+  // judging its gaps do, through `FilesEveryCandidate` (ADR 0085). A candidate filed under
   // a cell the sphere does not have is one `Coverage` counts and nothing can ever aim at — a
   // capture that can never finish, with no way to see why.
   auto first_store = NewStore();

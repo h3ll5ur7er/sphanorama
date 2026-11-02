@@ -912,6 +912,10 @@ test('a capture builds into a preview the page draws', async ({ page }) => {
     await expect(page.locator('#build-status')).toContainText(/built/i, { timeout: 60000 });
     const canvas = page.locator('#build-canvas[data-preview="ready"]');
     await expect(canvas).toBeVisible();
+    // One cell of a sphere leaves most of it open, judged by the browser's own planner where the
+    // solve placed the frame (ADR 0085) — the one place that judgement crosses the worker.
+    const open = /About [\d.]+% of the sphere is open; \d+ more frames would complete the/;
+    await expect(page.locator('#build-status')).toContainText(open, { timeout: 15000 });
 
     // Where the cell's centre lands, and the point opposite it, by `utilities/equirect`'s
     // convention: the camera looks down -Z, longitude 0 is -Z and grows toward +X, +Y is up.

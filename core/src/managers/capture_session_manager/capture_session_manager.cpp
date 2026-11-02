@@ -14,29 +14,6 @@ namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "CaptureSessionManager";
 
-// What makes a stored spec one a plan could have been laid from, asked without a planner: a field
-// of view a lens has, an overlap short of a step of nothing, and a cone narrower than half the
-// frame, past which a frame aimed at its edge misses its own cell. The rings planner refuses each.
-// Written to refuse a NaN, though none is read from a document.
-//
-// Short of 180 rather than up to it, which is the camera model's line and not the planner's: at
-// 180 a rectilinear lens has stopped existing, and the build reads this spec through
-// `LensFromFieldOfView`, which refuses it. Up to it began captures that could never be built.
-std::optional<std::string> SpecDefect(const CapturePlanSpec& spec) {
-  if (!(spec.horizontalFovDeg > 0.0 && spec.horizontalFovDeg < 180.0
-        && spec.verticalFovDeg > 0.0 && spec.verticalFovDeg < 180.0)) {
-    return "a field of view that is not a lens";
-  }
-  if (!(spec.overlapTarget >= 0.0 && spec.overlapTarget < 1.0)) {
-    return "an overlap outside [0, 1)";
-  }
-  if (!(spec.acceptanceConeDeg > 0.0
-        && spec.acceptanceConeDeg < std::min(spec.horizontalFovDeg, spec.verticalFovDeg) / 2.0)) {
-    return "an acceptance cone no frame could be taken in";
-  }
-  return std::nullopt;
-}
-
 // The first identity from `next` on that no recorded pick names. Picks outlive the counter that
 // issued them — a new tab's counter restarts at 1, and a pick an earlier build's door recorded, or
 // an edited one, can stand past the document's counter — and an identity issued again hands the
@@ -522,19 +499,11 @@ Result<SessionId> CaptureSessionManager::Resume(ProjectId project) {
                               + *defect);
   }
 
-  // Every candidate has to name a cell of this plan. The decoder checks each cell and each
-  // candidate but not one against the other, so this is where an edited or torn document naming a
-  // cell its own cells do not include is refused (ADR 0077); one naming a node the sphere does not
-  // have would put candidates somewhere `Coverage` counts and nothing can ever aim at.
-  for (const Candidate& candidate : stored.candidates) {
-    const bool known = std::any_of(plan.value.nodes.begin(), plan.value.nodes.end(),
-                                   [&candidate](const CoverageNode& planned) {
-                                     return planned.id.value == candidate.node.value;
-                                   });
-    if (!known) {
-      return Err<SessionId>(StatusCode::Unsupported, kComponent,
-                            "this project's session document names a cell this plan does not have");
-    }
+  // Every candidate has to name a cell of this plan: this is where an edited or torn document
+  // naming a cell its own cells do not include is refused (`FilesEveryCandidate`, ADR 0077).
+  if (!FilesEveryCandidate(plan.value.nodes, stored.candidates)) {
+    return Err<SessionId>(StatusCode::Unsupported, kComponent,
+                          "this project's session document names a cell this plan does not have");
   }
 
   SPH_TRY(const uint64_t next, PastEveryPick(projects_, project, plan.value, stored.nextCandidate));

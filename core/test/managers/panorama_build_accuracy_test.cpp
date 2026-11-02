@@ -11,6 +11,7 @@
  */
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -18,6 +19,7 @@
 #include <vector>
 
 #include "engines/composition_engine/nearest_centre_composition_engine.h"
+#include "engines/coverage_planner_engine/rings_coverage_planner_engine.h"
 #include "engines/registration_engine/feature_registration_engine.h"
 #include "managers/panorama_build_manager/panorama_build_manager.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
@@ -96,7 +98,8 @@ class PanoramaBuildAccuracy : public ::testing::TestWithParam<FeatureDetector> {
     return poses;
   }
 
-  void WriteCapture(const std::vector<Quat>& poses) {
+  // With `unshot`, cells the plan held that no frame was taken for.
+  void WriteCapture(const std::vector<Quat>& poses, const std::vector<Quat>& unshot = {}) {
     ASSERT_TRUE(projects_.WriteDocument(kProject, "title", "a hangar").ok());
     auto generation = store_.TierGeneration();
     ASSERT_TRUE(generation.ok());
@@ -116,10 +119,17 @@ class PanoramaBuildAccuracy : public ::testing::TestWithParam<FeatureDetector> {
       candidate.pose.confidence = 1.0;
       document.candidates.push_back(candidate);
       // The cell each frame was taken for, where it was taken: a capture writes its plan down
-      // beside its candidates (ADR 0077), and the build reads none of it.
+      // beside its candidates (ADR 0077), and the build judges its gaps against it (ADR 0085).
       CoverageNode cell;
       cell.id = candidate.node;
       cell.targetOrientation = poses[i];
+      cell.acceptanceConeDeg = document.spec.acceptanceConeDeg;
+      document.nodes.push_back(cell);
+    }
+    for (const Quat& aim : unshot) {
+      CoverageNode cell;
+      cell.id = NodeId{document.nodes.size() + 1};
+      cell.targetOrientation = aim;
       cell.acceptanceConeDeg = document.spec.acceptanceConeDeg;
       document.nodes.push_back(cell);
     }
@@ -169,6 +179,7 @@ class PanoramaBuildAccuracy : public ::testing::TestWithParam<FeatureDetector> {
   MemoryFrameStoreAccess store_{1 << 28, &sink_};
   FakeProjectStoreAccess projects_;
   NearestCentreCompositionEngine composition_{store_};
+  RingsCoveragePlannerEngine planner_;
   Intrinsics lens_;
   std::vector<FrameRef> owned_;
   std::vector<FrameRef> frames_;
@@ -196,7 +207,7 @@ TEST_P(PanoramaBuildAccuracy, ABuiltCaptureDrawsThePhotograph) {
   const Comparison asPosed = Compare(unregistered.value);
 
   FeatureRegistrationEngine registration{store_, GetParam()};
-  PanoramaBuildManager manager{registration, composition_, store_, projects_};
+  PanoramaBuildManager manager{registration, composition_, planner_, store_, projects_};
   BuildSpec spec;
   spec.outputWidth = kPreviewWidth;
   auto build = manager.Start(kProject, spec);
@@ -210,8 +221,17 @@ TEST_P(PanoramaBuildAccuracy, ABuiltCaptureDrawsThePhotograph) {
     ASSERT_LT(++polls, 100);
   }
   ASSERT_EQ(progress.stage, BuildStage::Complete) << progress.failure.detail;
-  // Twelve extractions, the ring's twelve pairs, a solve and a preview.
-  EXPECT_EQ(polls, 26);
+  // Twelve extractions, the ring's twelve pairs, a solve, its gaps and a preview.
+  EXPECT_EQ(polls, 27);
+
+  // The ring was planned as one band of the cells its frames were taken for, which the poses'
+  // three-degree tilts make a band about three degrees either side of the horizon, and the frames
+  // close it (ADR 0085). The poles are no cell's, so they are not judged. A ring this wide closes
+  // its band for poses a few degrees out too, so which rotations and lens the judgement reads is
+  // the scripted test's to say.
+  auto gaps = manager.Gaps(build.value);
+  ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
+  EXPECT_TRUE(gaps.value.empty()) << gaps.value.size() << " gaps";
 
   auto panorama = manager.Panorama(build.value);
   ASSERT_TRUE(panorama.ok()) << panorama.status.detail;
@@ -241,10 +261,13 @@ TEST_P(PanoramaBuildAccuracy, ACaptureWithThePhoneTurnedPartwayThroughDrawsThePh
     frames_[i] = turned.value;
     poses[i] = test::RolledClockwise(poses[i]);
   }
-  WriteCapture(poses);
+  // And a cell sixty degrees up that nobody shot, which opens the band to its elevation: the gaps
+  // are then above and below the ring and none on it, which an answer nobody judged — empty, or
+  // the ring's own — cannot pass for.
+  WriteCapture(poses, {FromAzimuthElevation(15.0, 60.0)});
 
   FeatureRegistrationEngine registration{store_, GetParam()};
-  PanoramaBuildManager manager{registration, composition_, store_, projects_};
+  PanoramaBuildManager manager{registration, composition_, planner_, store_, projects_};
   BuildSpec spec;
   spec.outputWidth = kPreviewWidth;
   auto build = manager.Start(kProject, spec);
@@ -258,7 +281,19 @@ TEST_P(PanoramaBuildAccuracy, ACaptureWithThePhoneTurnedPartwayThroughDrawsThePh
     ASSERT_LT(++polls, 100);
   }
   ASSERT_EQ(progress.stage, BuildStage::Complete) << progress.failure.detail;
-  EXPECT_EQ(polls, 26) << "every pair, the turned ones too";
+  EXPECT_EQ(polls, 27) << "every pair, the turned ones too";
+
+  auto gaps = manager.Gaps(build.value);
+  ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
+  EXPECT_FALSE(gaps.value.empty());
+  double lowest = 90.0;
+  for (const CoverageGap& gap : gaps.value) {
+    const double elevation = std::asin(Direction(gap.target).y) * 180.0 / std::numbers::pi;
+    lowest = std::min(lowest, std::abs(elevation));
+  }
+  std::printf("[gaps-turned] detector=%d gaps=%zu lowest=%.2f\n", static_cast<int>(GetParam()),
+              gaps.value.size(), lowest);
+  EXPECT_GT(lowest, 15.0) << "a gap on the ring the frames close";
 
   auto panorama = manager.Panorama(build.value);
   ASSERT_TRUE(panorama.ok()) << panorama.status.detail;

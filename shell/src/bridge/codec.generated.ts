@@ -14,7 +14,7 @@ export const TessellationStrategyValues: C.TessellationStrategy[] = ['Rings', 'G
 export const GuidanceActionValues: C.GuidanceAction[] = ['Seek', 'HoldStill', 'Firing', 'CellDone', 'SphereDone', 'TooFast', 'AlreadyCaptured', 'Fire'];
 export const ProjectionValues: C.Projection[] = ['Equirectangular', 'Cubemap'];
 export const QualityTierValues: C.QualityTier[] = ['Preview', 'Standard', 'Maximum'];
-export const BuildStageValues: C.BuildStage[] = ['Queued', 'Features', 'PairwiseMatching', 'GlobalSolve', 'ExposureCompensation', 'GhostDetection', 'SeamFinding', 'Blending', 'Projecting', 'Complete', 'Failed'];
+export const BuildStageValues: C.BuildStage[] = ['Queued', 'Features', 'PairwiseMatching', 'GlobalSolve', 'CoverageCheck', 'ExposureCompensation', 'GhostDetection', 'SeamFinding', 'Blending', 'Projecting', 'Complete', 'Failed'];
 export const EncodeFormatValues: C.EncodeFormat[] = ['Jpeg', 'Avif', 'Png'];
 export const FrameVerdictValues: C.FrameVerdict[] = ['Accepted', 'RejectedQuality', 'RejectedPose', 'BurstComplete'];
 
@@ -196,6 +196,18 @@ export function decodeCapturePlan(input: Reader): C.CapturePlan {
   return {
     nodes: Array.from({ length: input.count() }, () => decodeCoverageNode(input)),
     spec: decodeCapturePlanSpec(input),
+  };
+}
+
+export function encodeCoverageGap(out: Writer, value: C.CoverageGap): void {
+  encodeQuat(out, value.target);
+  out.f64(value.solidAngleFraction);
+}
+
+export function decodeCoverageGap(input: Reader): C.CoverageGap {
+  return {
+    target: decodeQuat(input),
+    solidAngleFraction: input.f64(),
   };
 }
 

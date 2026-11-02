@@ -1,7 +1,9 @@
 # 0070 — A build reads the capture's document, and is paced one step per `Poll`
 
 **Status:** accepted; amended by [0082](0082-a-lens-is-read-as-each-frame-was-held.md), under which
-the lens is long edge across and each frame is read through it as that frame was held
+the lens is long edge across and each frame is read through it as that frame was held; amended by
+[0085](0085-a-build-judges-its-gaps-in-a-step-of-its-own.md), which adds a step after the solve that
+judges the capture's gaps
 
 ## Context
 
