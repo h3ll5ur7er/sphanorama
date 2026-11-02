@@ -6376,8 +6376,9 @@ class RenumberingCoveragePlannerEngine final : public ICoveragePlannerEngine {
   ICoveragePlannerEngine& inner_;
 };
 
-// The same rule of a version-2 document's replan, which is the case ADR 0077 stores cells for: a
-// later planner lays other cells, and a candidate filed under none of them is refused, not resumed.
+// `FilesEveryCandidate` asked of a version-2 document's replan, which is the case ADR 0077 stores
+// cells for: a later planner lays other cells, and a candidate filed under none of them is refused,
+// not resumed.
 TEST_F(ResumedSession, RefusesAReplanThatDoesNotLayTheCellsTheCaptureWasTakenIn) {
   auto first_store = NewStore();
   FakeCameraAccess first_camera(first_store);
@@ -6425,7 +6426,8 @@ TEST_F(ResumedSession, RefusesAReplanThatDoesNotLayTheCellsTheCaptureWasTakenIn)
 
 TEST_F(ResumedSession, RefusesADocumentNamingACellThePlanDoesNotHave) {
   // A document naming a candidate under a cell its own cells do not include, which only an edited
-  // or torn one does, and nothing but `Resume` compares the two (ADR 0077). A candidate filed under
+  // or torn one does, and which the decoder does not compare (ADR 0077); `Resume` and a build
+  // judging its gaps do, through `FilesEveryCandidate` (ADR 0085). A candidate filed under
   // a cell the sphere does not have is one `Coverage` counts and nothing can ever aim at — a
   // capture that can never finish, with no way to see why.
   auto first_store = NewStore();

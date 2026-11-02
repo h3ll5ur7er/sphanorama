@@ -119,7 +119,7 @@ class PanoramaBuildAccuracy : public ::testing::TestWithParam<FeatureDetector> {
       candidate.pose.confidence = 1.0;
       document.candidates.push_back(candidate);
       // The cell each frame was taken for, where it was taken: a capture writes its plan down
-      // beside its candidates (ADR 0077), and the build reads none of it.
+      // beside its candidates (ADR 0077), and the build judges its gaps against it (ADR 0085).
       CoverageNode cell;
       cell.id = candidate.node;
       cell.targetOrientation = poses[i];
