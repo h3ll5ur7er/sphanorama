@@ -1,7 +1,9 @@
 # 0077 — A capture keeps the plan it was begun with
 
 **Status:** accepted; amends [0029](0029-a-session-is-resumed-by-the-manager-that-owns-one.md) and
-[0076](0076-the-planner-checks-its-own-plan.md), whose open item on resuming it closes
+[0076](0076-the-planner-checks-its-own-plan.md), whose open item on resuming it closes; extended by
+[0086](0086-a-fill-appends-cells-to-the-live-session.md), under which a fill appends cells to the
+plan and moves none
 
 ## Context
 

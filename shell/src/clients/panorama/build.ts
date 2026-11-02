@@ -4,11 +4,13 @@
  *
  * It decides nothing about the panorama. Which frames, which pairs and which lens are the core's
  * (ADR 0070); what is here is when to ask, how often, and what to put on the page with the answer.
- * The core arrives as `start`, `poll`, `preview` and `gaps` rather than the facade, so this can be
- * driven without a worker and so those are the only calls it can make.
+ * The core arrives as `start`, `poll`, `preview`, `gaps` and `fill` rather than the facade, so this
+ * can be driven without a worker and so those are the only calls it can make. `fill` is the capture
+ * manager's, and this is the client that sequences the two: the managers never call each other, so
+ * the gaps one finds reach the other through here (ADR 0086).
  */
 import type {
-  BuildId, BuildProgress, BuildStage, CoverageGap, FramePreview, Status,
+  BuildId, BuildProgress, BuildStage, CapturePlan, CoverageGap, FramePreview, Status,
 } from '../../../../contracts/ts/contracts';
 
 /** A value, or a failure carrying the core's status — which, unlike the review strip, this shows. */
@@ -20,6 +22,7 @@ export interface BuildCore {
   poll(build: BuildId): Promise<Answered<BuildProgress>>;
   preview(build: BuildId): Promise<Answered<FramePreview>>;
   gaps(build: BuildId): Promise<Answered<readonly CoverageGap[]>>;
+  fill(gaps: readonly CoverageGap[]): Promise<Answered<CapturePlan>>;
 }
 
 export interface BuildElements {
@@ -27,6 +30,8 @@ export interface BuildElements {
   status: HTMLElement;
   progress: HTMLProgressElement;
   canvas: HTMLCanvasElement;
+  /** Offered only while the last build's gaps are there to fill. */
+  fill: HTMLButtonElement;
 }
 
 /**
@@ -114,9 +119,20 @@ export function captureNeedsCore(capture: CaptureState): boolean {
 export function createBuildClient(
   ui: BuildElements, core: BuildCore, paint: PaintPanorama,
   yieldToPage: () => Promise<void> = yieldWhile(() => false),
-): { build(): Promise<void> } {
+  filled: (plan: CapturePlan) => void = () => {},
+): { build(): Promise<void>; fill(): Promise<void> } {
+  // One of the two at a time, and either holds both buttons: a build started under a fill judges
+  // a plan the fill is changing, and a fill pressed under a build fills the last build's gaps.
   let running = false;
+  // The last build's gaps, and only while its offer stands.
+  let found: readonly CoverageGap[] = [];
   ui.canvas.hidden = true;
+  ui.fill.hidden = true;
+
+  const hold = (held: boolean) => {
+    ui.button.disabled = held;
+    ui.fill.disabled = held;
+  };
 
   async function run(): Promise<void> {
     ui.progress.value = 0;
@@ -170,18 +186,40 @@ export function createBuildClient(
     ui.status.textContent = gaps.ok
       ? `${built} ${describeGaps(gaps.value)}`
       : `${built} Whether the sphere has gaps could not be judged: ${why(gaps.status)}.`;
+    if (gaps.ok && gaps.value.length > 0) {
+      found = gaps.value;
+      ui.fill.hidden = false;
+    }
+  }
+
+  async function fillFound(): Promise<void> {
+    await yieldToPage();
+    const answer = await core.fill(found);
+    if (!answer.ok) {
+      ui.status.textContent = `The gaps could not be added to the plan: ${why(answer.status)}.`;
+      return;
+    }
+    const cells = found.length === 1 ? '1 cell' : `${found.length} cells`;
+    found = [];
+    ui.fill.hidden = true;
+    filled(answer.value);
+    ui.status.textContent =
+      `Added ${cells} to the capture's plan: follow the guide to them, then build again.`;
   }
 
   return {
     async build() {
       if (running) return;
       running = true;
-      ui.button.disabled = true;
+      hold(true);
       // Out of sight until this build has something to show: last time's picture under this
       // time's progress, or this time's failure, would be read as this one's. The mark goes too, or
-      // a painter that drew nothing this time would be read by last time's.
+      // a painter that drew nothing this time would be read by last time's. And last time's gaps
+      // with them, which this build may no longer find.
       ui.canvas.hidden = true;
       delete ui.canvas.dataset.preview;
+      found = [];
+      ui.fill.hidden = true;
       try {
         await run();
       } catch (reason: unknown) {
@@ -191,7 +229,22 @@ export function createBuildClient(
         ui.status.textContent = 'The build stopped: the core did not answer.';
       } finally {
         running = false;
-        ui.button.disabled = false;
+        hold(false);
+      }
+    },
+    async fill() {
+      if (running || found.length === 0) return;
+      running = true;
+      hold(true);
+      try {
+        await fillFound();
+      } catch (reason: unknown) {
+        // The offer stands: nothing was added that the core said, and pressing again asks again.
+        console.error('sphanorama build: the fill call did not answer', reason);
+        ui.status.textContent = 'The gaps could not be added to the plan: the core did not answer.';
+      } finally {
+        running = false;
+        hold(false);
       }
     },
   };

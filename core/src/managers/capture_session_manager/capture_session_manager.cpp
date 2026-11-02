@@ -1458,6 +1458,51 @@ Status CaptureSessionManager::RequestRetake(NodeId node, bool replace) {
   return Status::Ok();
 }
 
+Result<CapturePlan> CaptureSessionManager::FillGaps(std::span<const CoverageGap> gaps) {
+  if (Status session = RequireSession(); !session.ok()) return session;
+  // A burst's cell and the cells around it are what its frames are judged against; a plan that
+  // grows under it is one more thing a burst would have to be robust to for no gain, since the
+  // page holds its calls until the burst is done.
+  if (firing_) {
+    return Err<CapturePlan>(StatusCode::FailedPrecondition, kComponent,
+                            "a burst is under way; fill once it is done");
+  }
+  if (gaps.empty()) return Ok(plan_);
+  uint64_t highest = 0;
+  int32_t ring = 0;
+  for (const CoverageNode& node : plan_.nodes) {
+    highest = std::max(highest, node.id.value);
+    ring = std::max(ring, node.ringIndex);
+  }
+  // Appended to a copy and held to the rule a stored plan is — which is also what refuses more
+  // cells than a plan may hold — so a refusal leaves the plan and the document as they were, and
+  // what is written down is what a resume can read (ADR 0077).
+  CapturePlan filled = plan_;
+  filled.nodes.reserve(plan_.nodes.size() + std::min(gaps.size(), kMostCellsAPlanHolds + 1));
+  for (const CoverageGap& gap : gaps) {
+    if (filled.nodes.size() > kMostCellsAPlanHolds) break;
+    // Asked before `Normalize`, which answers the identity for what is not a rotation: a cell aimed
+    // straight ahead for a target nobody gave.
+    if (!IsUsableRotation(gap.target)) {
+      return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
+                              "a gap whose target is not a rotation");
+    }
+    CoverageNode cell;
+    cell.id = NodeId{++highest};
+    cell.ringIndex = ring + 1;
+    cell.targetOrientation = Normalize(gap.target);
+    cell.acceptanceConeDeg = plan_.spec.acceptanceConeDeg;
+    filled.nodes.push_back(cell);
+  }
+  if (auto defect = PlanDefect(filled.nodes, filled.spec)) {
+    return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
+                            "these gaps make a plan no resume could read: " + *defect);
+  }
+  plan_ = std::move(filled);
+  Checkpoint();
+  return Ok(plan_);
+}
+
 Status CaptureSessionManager::End() {
   if (auto status = RequireSession(); !status.ok()) return status;
 

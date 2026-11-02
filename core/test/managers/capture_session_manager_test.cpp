@@ -250,6 +250,102 @@ class CaptureSession : public ::testing::Test {
   std::unique_ptr<CaptureSessionManager> manager;
 };
 
+// ------------------------------------------------------------------ filling gaps (ADR 0086)
+
+CoverageGap GapAt(double azimuthDeg, double elevationDeg, double share = 0.01) {
+  CoverageGap gap;
+  gap.target = FromAzimuthElevation(azimuthDeg, elevationDeg);
+  gap.solidAngleFraction = share;
+  return gap;
+}
+
+// A cell at each target, appended under identities past the plan's on a ring of its own, with the
+// capture's cone, and written down at once: guidance leads there and a resume finds it.
+TEST_F(CaptureSession, FillingGapsAppendsACellAtEachTarget) {
+  Begin();
+  const CapturePlan before = manager->GetPlan().value;
+  uint64_t highestId = 0;
+  int32_t highestRing = 0;
+  for (const CoverageNode& node : before.nodes) {
+    highestId = std::max(highestId, node.id.value);
+    highestRing = std::max(highestRing, node.ringIndex);
+  }
+  const std::vector<CoverageGap> gaps{GapAt(90.0, 20.0), GapAt(200.0, -35.0)};
+  auto filled = manager->FillGaps(gaps);
+  ASSERT_TRUE(filled.ok()) << filled.status.detail;
+  ASSERT_EQ(filled.value.nodes.size(), before.nodes.size() + 2);
+  for (size_t i = 0; i < before.nodes.size(); ++i) {
+    EXPECT_EQ(filled.value.nodes[i].id, before.nodes[i].id) << "a cell moved";
+    EXPECT_EQ(filled.value.nodes[i].targetOrientation.w, before.nodes[i].targetOrientation.w);
+  }
+  for (size_t g = 0; g < gaps.size(); ++g) {
+    const CoverageNode& cell = filled.value.nodes[before.nodes.size() + g];
+    EXPECT_EQ(cell.id.value, highestId + 1 + g);
+    EXPECT_EQ(cell.ringIndex, highestRing + 1);
+    EXPECT_EQ(cell.acceptanceConeDeg, Spec().acceptanceConeDeg);
+    EXPECT_NEAR(Dot(Direction(cell.targetOrientation), Direction(gaps[g].target)), 1.0, 1e-12);
+  }
+  // What the session now answers, and what it wrote down.
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), before.nodes.size() + 2);
+  auto coverage = manager->Coverage();
+  ASSERT_TRUE(coverage.ok());
+  EXPECT_EQ(coverage.value.nodesTotal, static_cast<int32_t>(before.nodes.size()) + 2);
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  SessionDocument stored;
+  ASSERT_TRUE(DecodeSessionDocument(written.value, stored));
+  EXPECT_EQ(stored.nodes.size(), before.nodes.size() + 2);
+}
+
+TEST_F(CaptureSession, NoGapsFillsNothing) {
+  Begin();
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  auto filled = manager->FillGaps({});
+  ASSERT_TRUE(filled.ok()) << filled.status.detail;
+  EXPECT_EQ(filled.value.nodes.size(), cells);
+}
+
+TEST_F(CaptureSession, FillingIsRefusedWithoutASessionOrDuringABurst) {
+  const std::vector<CoverageGap> gaps{GapAt(90.0, 0.0)};
+  EXPECT_EQ(manager->FillGaps(gaps).status.code, StatusCode::FailedPrecondition);
+  Begin();
+  BurstSpec burst;
+  burst.frameCount = 2;
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  EXPECT_EQ(manager->FillGaps(gaps).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+}
+
+// Refused whole, with the plan and the document as they were: part of a gap is not a sphere any
+// closer to complete, and a cell aimed nowhere is one no camera is inside.
+TEST_F(CaptureSession, FillingIsRefusedForATargetThatIsNotARotationOrTooManyCells) {
+  Begin();
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  auto before = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(before.ok());
+  for (const Quat target : {Quat{0, 0, 0, 0}, Quat{std::nan(""), 0, 0, 0},
+                            Quat{std::numeric_limits<double>::infinity(), 0, 0, 0}}) {
+    CoverageGap bad = GapAt(0.0, 0.0);
+    bad.target = target;
+    const std::vector<CoverageGap> gaps{GapAt(90.0, 0.0), bad};
+    EXPECT_EQ(manager->FillGaps(gaps).status.code, StatusCode::InvalidArgument)
+        << target.w << " " << target.x;
+  }
+  std::vector<CoverageGap> many(kMostCellsAPlanHolds - cells + 1, GapAt(45.0, 45.0));
+  for (size_t i = 0; i < many.size(); ++i) many[i] = GapAt(0.1 * static_cast<double>(i), 10.0);
+  EXPECT_EQ(manager->FillGaps(many).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+  auto after = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value, before.value);
+  // And exactly as many as a plan may hold is not too many.
+  many.pop_back();
+  auto full = manager->FillGaps(many);
+  ASSERT_TRUE(full.ok()) << full.status.detail;
+  EXPECT_EQ(full.value.nodes.size(), kMostCellsAPlanHolds);
+}
+
 TEST_F(CaptureSession, BeginOnAProjectThatDoesNotExistIsRefused) {
   // End writes a session document through the project store, and the store creates storage on
   // demand — so a session begun against an arbitrary id leaves a project behind with no title,
@@ -6422,6 +6518,45 @@ TEST_F(ResumedSession, RefusesAReplanThatDoesNotLayTheCellsTheCaptureWasTakenIn)
               "this project's session document names a cell this plan does not have");
     EXPECT_EQ(second_camera.Opens(), 0);
   }
+}
+
+// A cell's frames stay under it: filling moves nothing a candidate is filed under, and a resume
+// takes the plan with its fill cells as stored (ADR 0086).
+TEST_F(ResumedSession, FilledCellsKeepTheCandidatesAndSurviveAResume) {
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId shot = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, shot, BurstSpec{}).ok());
+  const auto candidates = first.Candidates(shot);
+  ASSERT_TRUE(candidates.ok());
+  ASSERT_FALSE(candidates.value.empty());
+  CoverageGap gap;
+  gap.target = FromAzimuthElevation(120.0, 10.0);
+  auto filled = first.FillGaps(std::vector<CoverageGap>{gap});
+  ASSERT_TRUE(filled.ok()) << filled.status.detail;
+  auto after = first.Candidates(shot);
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value.size(), candidates.value.size());
+  ASSERT_TRUE(first.End().ok());
+
+  FakeCameraAccess second_camera(first_store);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *first_store, *projects, clock);
+  const auto resumed = second.Resume(kProject);
+  ASSERT_TRUE(resumed.ok()) << resumed.status.detail;
+  auto plan = second.GetPlan();
+  ASSERT_TRUE(plan.ok());
+  ASSERT_EQ(plan.value.nodes.size(), filled.value.nodes.size());
+  EXPECT_EQ(plan.value.nodes.back().id, filled.value.nodes.back().id);
+  EXPECT_NEAR(Dot(Direction(plan.value.nodes.back().targetOrientation), Direction(gap.target)), 1.0,
+              1e-12);
+  auto kept = second.Candidates(shot);
+  ASSERT_TRUE(kept.ok());
+  EXPECT_EQ(kept.value.size(), candidates.value.size());
+  ASSERT_TRUE(second.End().ok());
 }
 
 TEST_F(ResumedSession, RefusesADocumentNamingACellThePlanDoesNotHave) {

@@ -99,6 +99,7 @@ const buildElements = {
   status: el<HTMLElement>('build-status'),
   progress: el<HTMLProgressElement>('build-progress'),
   canvas: el<HTMLCanvasElement>('build-canvas'),
+  fill: el<HTMLButtonElement>('build-fill'),
 };
 /**
  * What a build is asked for. The widest preview the core will draw: 8 MB of RGBA, which a phone
@@ -119,7 +120,12 @@ const PREVIEW_SPEC = {
  */
 let buildProject: ProjectId | null = null;
 let captureBusy: () => boolean = () => false;
-let builder: { build(): Promise<void> } | null = null;
+let builder: { build(): Promise<void>; fill(): Promise<void> } | null = null;
+/**
+ * Hands the live session's loop a plan a fill grew, so it draws and counts the new cells. Set by
+ * each `pump` with a plan, for the same reason as the two above: the build client outlives it.
+ */
+let replanSession: (plan: CapturePlan) => void = () => {};
 
 const camera = createCameraAccess(navigator.mediaDevices);
 // One canvas for the session: grabbing a frame means drawing the viewfinder into it and reading
@@ -688,7 +694,9 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
   // shutter offered for it. There is no shutter since ADR 0044; the hazard is not, because the
   // end-to-end hook still reads `captureCell` and the dwell still arms through it.
   captureCell = null;
-  const cones = new Map((plan?.nodes ?? []).map((node) => [node.id as number, node.acceptanceConeDeg]));
+  const conesOf = (of: CapturePlan | null) =>
+    new Map((of?.nodes ?? []).map((node) => [node.id as number, node.acceptanceConeDeg]));
+  let cones = conesOf(plan);
   // Read once: coverage only moves when a cell is captured, and a facade round trip per frame
   // for a number that cannot have changed is the kind of waste that shows up as a hot phone.
   let nodesSatisfied = 0;
@@ -795,7 +803,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
       },
     }));
   };
-  const nodesTotal = plan?.nodes.length ?? 0;
+  let nodesTotal = plan?.nodes.length ?? 0;
 
   // The review panel only exists once there is a plan to map and a project to record a choice
   // against. Both arrive together or not at all.
@@ -822,8 +830,10 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         poll: (build) => core.panoramaBuild.poll(build),
         preview: (build) => core.panoramaBuild.panoramaPreview(build),
         gaps: (build) => core.panoramaBuild.gaps(build),
-      }, paintPreviewOnCanvas, yieldWhile(() => captureBusy()));
+        fill: (gaps) => core.captureSession.fillGaps([...gaps]),
+      }, paintPreviewOnCanvas, yieldWhile(() => captureBusy()), (plan) => replanSession(plan));
       buildElements.button.onclick = () => { void client.build(); };
+      buildElements.fill.onclick = () => { void client.fill(); };
       builder = client;
     }
   }
@@ -875,6 +885,16 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
     retryMs: COVERAGE_RETRY_MS,
   });
   const refreshCoverage = () => coverage.refresh();
+
+  // A fill appends cells and moves none (ADR 0086), so the loop takes the grown plan where it is:
+  // the cones and the count are the plan's, and the map and the markers redraw from it. A loop with
+  // no plan has no session for a fill to have grown.
+  replanSession = plan === null ? () => {} : (next) => {
+    plan = next;
+    cones = conesOf(next);
+    nodesTotal = next.nodes.length;
+    refreshCoverage();
+  };
 
   // Once at the start, and not only when a cell completes. Coverage can only *change* when one
   // does, which is why the refresh below is where it is — but a map that is drawn only on change

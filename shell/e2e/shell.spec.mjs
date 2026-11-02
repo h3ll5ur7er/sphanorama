@@ -953,6 +953,21 @@ test('a capture builds into a preview the page draws', async ({ page }) => {
     expect(drawn.besideLit, `a quarter turn beside it, ${JSON.stringify(beside)}`).toBe(false);
     expect(drawn.mirroredLit, `its reflection in the horizon, ${JSON.stringify(mirrored)}`)
       .toBe(false);
+
+    // And the gaps reach the capture: one press appends a cell at each to the live session's plan
+    // (ADR 0086), through the page sequencing the two managers, and the offer goes with it.
+    const planned = await page.evaluate(async () =>
+      (await window.sphanoramaCore.captureSession.getPlan()).value.nodes.length);
+    const frames = Number((await page.locator('#build-status').textContent())
+      .match(/(\d+) more frames/)[1]);
+    await expect(page.locator('#build-fill')).toBeVisible();
+    await page.locator('#build-fill').click();
+    await expect(page.locator('#build-status')).toContainText(
+      `Added ${frames} cells to the capture's plan`, { timeout: 15000 });
+    await expect(page.locator('#build-fill')).toBeHidden();
+    const grown = await page.evaluate(async () =>
+      (await window.sphanoramaCore.captureSession.getPlan()).value.nodes.length);
+    expect(grown).toBe(planned + frames);
   } finally {
     await server.close();
   }

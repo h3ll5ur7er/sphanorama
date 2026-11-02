@@ -43,6 +43,7 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   Result<FramePreview> CandidatePreview(NodeId node, CandidateId candidate,
                                        int32_t maxEdge) const override;
   Status RequestRetake(NodeId node, bool replace) override;
+  Result<CapturePlan> FillGaps(std::span<const CoverageGap> gaps) override;
   Status End() override;
 
  private:

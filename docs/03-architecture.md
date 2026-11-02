@@ -171,6 +171,8 @@ estimate. Its loop is:
   cell is now satisfied. It refuses a pose `PoseSampleDefect` names (ADR 0065). An offered frame is
   never written to the session document — only the session's own bursts are, since only those
   frames the session owns.
+- `FillGaps(gaps)` → appends a cell at each gap a build found to the plan, moving none, and writes
+  the plan down; the client hands the gaps across from `PanoramaBuildManager::Gaps` (ADR 0086).
 - `RequestRetake(nodeId, replace)` → with `replace`, clears a cell's candidates — every one whose
   frame the store will let go of — so the cell becomes a hole again and the dwell can fire on it.
   Additively it marks nothing a client can act on in this build; see UC-2 and the contract.

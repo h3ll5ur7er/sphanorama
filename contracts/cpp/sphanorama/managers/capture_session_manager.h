@@ -250,6 +250,23 @@ class ICaptureSessionManager {
   // flight and, additively, does nothing else.
   virtual Status RequestRetake(NodeId node, bool replace) = 0;
 
+  // Appends a cell at each gap's target to the session's plan, so guidance leads there, and
+  // answers the plan that results (ADR 0084, ADR 0086). The gaps are a build's of this capture
+  // (`IPanoramaBuildManager::Gaps`), which a client hands across: the two managers never call each
+  // other. Each new cell is aimed at its target, held level, with the capture's cone, under an
+  // identity past every cell the plan has, on a ring of its own past the plan's; and the plan is
+  // written down at once, so a resume finds it.
+  //
+  // Additive and nothing else: no cell is moved, renumbered or dropped, so every candidate stays
+  // under the cell it was filed under, and a plan with fill cells is one `Resume` takes as stored.
+  // No gaps adds nothing and answers the plan as it was.
+  //
+  // `FailedPrecondition` with no session in progress, and while a burst is armed or firing, whose
+  // cell is fixed for its length. `InvalidArgument` for a target that is not a rotation, and for
+  // more cells than a plan may hold (`kMostCellsAPlanHolds`) — refused whole rather than filled in
+  // part, since part of a gap is not a sphere any closer to complete.
+  virtual Result<CapturePlan> FillGaps(std::span<const CoverageGap> gaps) = 0;
+
   virtual Status End() = 0;
 };
 
