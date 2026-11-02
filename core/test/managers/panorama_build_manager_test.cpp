@@ -1872,6 +1872,31 @@ TEST_F(PanoramaBuildManagerTest, AFrameWhosePoseWasNotMeasuredIsPairedWithNothin
 
 // ------------------------------------------------------------------ where the sphere is open
 
+// The capture the gaps describe is the one `Start` read, as that document spells it: a counter
+// past its candidates, which a refused checkpoint or a discarded retake leaves, is the counter, and
+// a document rewritten while the build runs is a capture this build never saw (ADR 0086).
+TEST_F(PanoramaBuildManagerTest, GapsAnswerTheCaptureTheDocumentStartReadSaid) {
+  CaptureRing(4);
+  WriteDocument();
+  document_.session = 5;
+  document_.nextCandidate += 7;
+  const uint64_t read = document_.nextCandidate;
+  ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey,
+                                      EncodeSessionDocument(document_)).ok());
+  auto build = manager_.Start(kProject, BuildSpec{});
+  ASSERT_TRUE(build.ok()) << build.status.detail;
+  document_.session = 6;
+  document_.nextCandidate += 100;
+  ASSERT_TRUE(projects_.WriteDocument(kProject, kSessionDocumentKey,
+                                      EncodeSessionDocument(document_)).ok());
+  ASSERT_EQ(RunToEnd(build.value).back().stage, BuildStage::Complete);
+  auto gaps = manager_.Gaps(build.value);
+  ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
+  EXPECT_EQ(gaps.value.judged.project, kProject);
+  EXPECT_EQ(gaps.value.judged.session.value, 5u);
+  EXPECT_EQ(gaps.value.judged.nextCandidate, read);
+}
+
 // Judged from where the solve placed each frame, through the lens it fitted, against the cells the
 // capture wrote down (ADR 0085): the poses and the page's lens are what a gap comes from, so
 // judging by either would find none of what a field capture missed (ADR 0084).
@@ -1930,9 +1955,13 @@ TEST_F(PanoramaBuildManagerTest, GapsAreJudgedWhereTheSolvePlacedEachFrameThroug
 
   auto gaps = manager_.Gaps(build.value);
   ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
-  ASSERT_EQ(gaps.value.size(), 1u);
-  EXPECT_EQ(gaps.value[0].target.y, gap.target.y);
-  EXPECT_EQ(gaps.value[0].solidAngleFraction, 0.25);
+  ASSERT_EQ(gaps.value.gaps.size(), 1u);
+  EXPECT_EQ(gaps.value.gaps[0].target.y, gap.target.y);
+  EXPECT_EQ(gaps.value.gaps[0].solidAngleFraction, 0.25);
+  // With the capture they describe, as the document read at `Start` says, which a fill is held to
+  // (ADR 0086).
+  EXPECT_EQ(gaps.value.judged.session.value, document_.session);
+  EXPECT_EQ(gaps.value.judged.nextCandidate, document_.nextCandidate);
   // Asked once, in the build: answering again judges nothing again.
   ASSERT_TRUE(manager_.Gaps(build.value).ok());
   EXPECT_EQ(planner_.judged, 1);

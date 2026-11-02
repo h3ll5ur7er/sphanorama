@@ -230,6 +230,21 @@ class CaptureSession : public ::testing::Test {
 
   NodeId FirstNode() { return manager->GetPlan().value.nodes.front().id; }
 
+  // What a build of the capture's document as it now stands hands a fill: the gaps, and the
+  // session and counter that document says (ADR 0086).
+  FoundGaps Found(std::vector<CoverageGap> gaps) {
+    FoundGaps found;
+    found.gaps = std::move(gaps);
+    auto text = projects->ReadDocument(kProject, kSessionDocumentKey);
+    SessionDocument stored;
+    found.judged.project = kProject;
+    if (text.ok() && DecodeSessionDocument(text.value, stored)) {
+      found.judged.session = SessionId{stored.session};
+      found.judged.nextCandidate = stored.nextCandidate;
+    }
+    return found;
+  }
+
   NullCoveragePlannerEngine planner;
   // A phone that can say where it is pointing, looking straight ahead.
   //
@@ -249,6 +264,394 @@ class CaptureSession : public ::testing::Test {
   ManualClock clock;
   std::unique_ptr<CaptureSessionManager> manager;
 };
+
+// ------------------------------------------------------------------ filling gaps (ADR 0086)
+
+CoverageGap GapAt(double azimuthDeg, double elevationDeg, double share = 0.01) {
+  CoverageGap gap;
+  gap.target = FromAzimuthElevation(azimuthDeg, elevationDeg);
+  gap.solidAngleFraction = share;
+  return gap;
+}
+
+// Three cells whose highest identity and highest ring are on neither the first nor the last, so a
+// fill that reads past "the plan's" from one cell rather than all of them is told apart. The null
+// planner's one cell is first, last and highest at once.
+class ScatteredCoveragePlannerEngine final : public ICoveragePlannerEngine {
+ public:
+  static constexpr uint64_t kHighestId = 9;
+  static constexpr int32_t kHighestRing = 3;
+
+  Result<CapturePlan> Plan(const CapturePlanSpec& spec, const Intrinsics& lens) override {
+    SPH_TRY(CapturePlan plan, inner_.Plan(spec, lens));
+    const CoverageNode laid = plan.nodes.front();
+    plan.nodes.clear();
+    for (const auto& [id, ring, azimuth] : {std::tuple{uint64_t{4}, 0, 0.0},
+                                            std::tuple{kHighestId, kHighestRing, 120.0},
+                                            std::tuple{uint64_t{2}, 1, 240.0}}) {
+      CoverageNode cell = laid;
+      cell.id = NodeId{id};
+      cell.ringIndex = ring;
+      cell.targetOrientation = FromAzimuthElevation(azimuth, 0.0);
+      plan.nodes.push_back(cell);
+    }
+    return Ok(std::move(plan));
+  }
+  Result<CaptureGuidance> Locate(const PoseSample& current, const CapturePlan& plan,
+                                 const CoverageState& coverage) override {
+    return inner_.Locate(current, plan, coverage);
+  }
+  Result<CoverageState> Evaluate(const CapturePlan& plan,
+                                 std::span<const Candidate> candidates) override {
+    return inner_.Evaluate(plan, candidates);
+  }
+  Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan& plan, const CoverageState& state,
+                                             const GhostReport& ghosts) override {
+    return inner_.SuggestRetakes(plan, state, ghosts);
+  }
+  Result<std::vector<CoverageGap>> FindGaps(const CapturePlan& plan,
+                                            std::span<const PlacedFrame> frames,
+                                            const Intrinsics& fillLens) override {
+    return inner_.FindGaps(plan, frames, fillLens);
+  }
+
+ private:
+  NullCoveragePlannerEngine inner_;
+};
+
+// Aims at a cell and shoots it.
+void ShootCell(ICaptureSessionManager& manager, AimablePoseEngine& pose, ManualClock& clock,
+               const CoverageNode& cell) {
+  pose.LookAt(cell.targetOrientation);
+  ImuSample sample;
+  sample.hasOrientation = true;
+  sample.timestampNs = clock.MonotonicNs();
+  ASSERT_TRUE(manager.OnMotion(std::span<const ImuSample>(&sample, 1)).ok());
+  const Status fired = FireBurstOn(manager, clock, cell.id, BurstSpec{});
+  ASSERT_TRUE(fired.ok()) << "cell " << cell.id.value << ": " << fired.detail;
+}
+
+// Every cell of the plan, which a fill waits for.
+void ShootEveryCell(ICaptureSessionManager& manager, AimablePoseEngine& pose, ManualClock& clock) {
+  for (const CoverageNode& cell : manager.GetPlan().value.nodes) {
+    ShootCell(manager, pose, clock, cell);
+  }
+}
+
+// A cell at each target, appended under identities past the plan's on a ring of its own, with the
+// capture's cone, and written down at once: guidance leads there and a resume finds it.
+TEST_F(CaptureSession, FillingGapsAppendsACellAtEachTarget) {
+  ScatteredCoveragePlannerEngine scattered;
+  auto frames = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
+  FakeCameraAccess filling_camera(frames);
+  CaptureSessionManager filling(scattered, pose, quality, preview, filling_camera, *sensor,
+                                *frames, *projects, clock);
+  ASSERT_TRUE(filling.Begin(kProject, Spec()).ok());
+  ShootEveryCell(filling, pose, clock);
+  const CapturePlan before = filling.GetPlan().value;
+  ASSERT_EQ(before.nodes.size(), 3u);
+  // A rotation, though not a unit one: the cell is aimed where it points and stored as a unit
+  // quaternion, which is what a document holds a cell's target to.
+  CoverageGap scaled = GapAt(200.0, -35.0);
+  scaled.target = Quat{2.0 * scaled.target.w, 2.0 * scaled.target.x, 2.0 * scaled.target.y,
+                       2.0 * scaled.target.z};
+  const std::vector<CoverageGap> gaps{GapAt(90.0, 20.0), scaled};
+  auto filled = filling.FillGaps(Found(gaps));
+  ASSERT_TRUE(filled.ok()) << filled.status.detail;
+  ASSERT_EQ(filled.value.nodes.size(), before.nodes.size() + 2);
+  for (size_t i = 0; i < before.nodes.size(); ++i) {
+    EXPECT_EQ(filled.value.nodes[i].id, before.nodes[i].id) << "a cell moved";
+    EXPECT_EQ(filled.value.nodes[i].targetOrientation.w, before.nodes[i].targetOrientation.w);
+  }
+  for (size_t g = 0; g < gaps.size(); ++g) {
+    const CoverageNode& cell = filled.value.nodes[before.nodes.size() + g];
+    EXPECT_EQ(cell.id.value, ScatteredCoveragePlannerEngine::kHighestId + 1 + g);
+    EXPECT_EQ(cell.ringIndex, ScatteredCoveragePlannerEngine::kHighestRing + 1);
+    EXPECT_EQ(cell.acceptanceConeDeg, Spec().acceptanceConeDeg);
+    EXPECT_NEAR(Norm(cell.targetOrientation), 1.0, 1e-12);
+    const Quat unit = Normalize(gaps[g].target);
+    EXPECT_NEAR(Dot(Direction(cell.targetOrientation), Direction(unit)), 1.0, 1e-12);
+  }
+  // What the session now answers, and what it wrote down.
+  EXPECT_EQ(filling.GetPlan().value.nodes.size(), before.nodes.size() + 2);
+  auto coverage = filling.Coverage();
+  ASSERT_TRUE(coverage.ok());
+  EXPECT_EQ(coverage.value.nodesTotal, static_cast<int32_t>(before.nodes.size()) + 2);
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  SessionDocument stored;
+  ASSERT_TRUE(DecodeSessionDocument(written.value, stored));
+  EXPECT_EQ(stored.nodes.size(), before.nodes.size() + 2);
+  ASSERT_TRUE(filling.End().ok());
+}
+
+// Gaps describe the capture as the build read it, and a cell shot since is open in them and shot
+// to the session: filling its gap would put a second cell beside it. So a fill is held to the
+// revision the build read — here, a capture whose last checkpoint the store refused, so every build
+// reads it behind. The refusal writes it down, so a build after it reads the capture as it stands;
+// the same stale gaps pressed again are still refused.
+TEST_F(CaptureSession, GapsFromADocumentBehindTheCaptureAreRefusedAndTheDocumentCaughtUp) {
+  ScatteredCoveragePlannerEngine scattered;
+  auto frames = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
+  FakeCameraAccess filling_camera(frames);
+  CaptureSessionManager filling(scattered, pose, quality, preview, filling_camera, *sensor,
+                                *frames, *projects, clock);
+  ASSERT_TRUE(filling.Begin(kProject, Spec()).ok());
+  const std::vector<CoverageNode> cells = filling.GetPlan().value.nodes;
+  ShootCell(filling, pose, clock, cells[0]);
+  ShootCell(filling, pose, clock, cells[1]);
+  projects->RefuseWritesOf(kSessionDocumentKey);
+  ShootCell(filling, pose, clock, cells[2]);
+  projects->RefuseWritesOf("");
+  // What a build of that document finds: the last cell open, at its own direction.
+  const FoundGaps stale = Found({GapAt(240.0, 0.0)});
+  auto refused = filling.FillGaps(stale);
+  EXPECT_EQ(refused.status.code, StatusCode::FailedPrecondition) << refused.status.detail;
+  EXPECT_EQ(filling.GetPlan().value.nodes.size(), cells.size());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  SessionDocument stored;
+  ASSERT_TRUE(DecodeSessionDocument(written.value, stored));
+  for (const CoverageNode& cell : cells) {
+    EXPECT_TRUE(std::any_of(stored.candidates.begin(), stored.candidates.end(),
+                            [&](const Candidate& c) { return c.node.value == cell.id.value; }))
+        << "cell " << cell.id.value << " is still not written down";
+  }
+  // The same gaps again, with no build between: still the capture as it was.
+  EXPECT_EQ(filling.FillGaps(stale).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(filling.GetPlan().value.nodes.size(), cells.size());
+  // A build of the caught-up document reads the capture as it stands, and its gaps are taken.
+  auto taken = filling.FillGaps(Found({GapAt(90.0, 20.0)}));
+  EXPECT_TRUE(taken.ok()) << taken.status.detail;
+  ASSERT_TRUE(filling.End().ok());
+}
+
+// The last cell shot while a build ran: the build's document did not have it, so its gaps are of a
+// capture that has since moved on, and are refused however the page timed its offer.
+TEST_F(CaptureSession, GapsFromABuildStartedBeforeTheLastFrameAreRefused) {
+  ScatteredCoveragePlannerEngine scattered;
+  auto frames = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
+  FakeCameraAccess filling_camera(frames);
+  CaptureSessionManager filling(scattered, pose, quality, preview, filling_camera, *sensor,
+                                *frames, *projects, clock);
+  ASSERT_TRUE(filling.Begin(kProject, Spec()).ok());
+  const std::vector<CoverageNode> cells = filling.GetPlan().value.nodes;
+  ShootCell(filling, pose, clock, cells[0]);
+  ShootCell(filling, pose, clock, cells[1]);
+  const FoundGaps started = Found({GapAt(240.0, 0.0)});
+  ShootCell(filling, pose, clock, cells[2]);
+  auto refused = filling.FillGaps(started);
+  EXPECT_EQ(refused.status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(refused.status.detail,
+            "these gaps were found in another capture, or in this one before its latest frames; "
+            "build again, then fill");
+  EXPECT_EQ(filling.GetPlan().value.nodes.size(), cells.size());
+  ASSERT_TRUE(filling.End().ok());
+}
+
+// A frame taken under a checkpoint the store refused, on a cell the document already files: the
+// document is behind by a frame, not by a cell, and the revision tells the two apart where asking
+// whether the document files every cell would not.
+TEST_F(CaptureSession, GapsFromADocumentBehindByARetakeAreRefused) {
+  Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  const FoundGaps before = Found({GapAt(90.0, 0.0)});
+  projects->RefuseWritesOf(kSessionDocumentKey);
+  ASSERT_TRUE(manager->RequestRetake(FirstNode(), /*replace=*/false).ok());
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  projects->RefuseWritesOf("");
+  const FoundGaps stale = Found({GapAt(90.0, 0.0)});
+  ASSERT_EQ(stale.judged.nextCandidate, before.judged.nextCandidate)
+      << "the premise: the document never heard of the retake";
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  EXPECT_EQ(manager->FillGaps(stale).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+}
+
+// A cell an offered frame alone covers is shot to the session and open to a build, since an
+// offered frame is never written down: its gap would be filled on top of it. So a fill counts as
+// shot only what a build can see, and waits for a burst there.
+TEST_F(CaptureSession, ACellOnlyAnOfferedFrameCoversIsStillToShootForAFill) {
+  Begin();
+  auto frame = store->Allocate(4, 4, PixelFormat::RGBA8);
+  ASSERT_TRUE(frame.ok());
+  ASSERT_TRUE(manager->OfferFrame(FirstNode(), frame.value, PoseSample{}).ok());
+  auto coverage = manager->Coverage();
+  ASSERT_TRUE(coverage.ok());
+  ASSERT_EQ(coverage.value.nodesSatisfied, coverage.value.nodesTotal)
+      << "the premise: the session holds the cell as shot";
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  auto refused = manager->FillGaps(Found({GapAt(0.0, 0.0)}));
+  EXPECT_EQ(refused.status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(refused.status.detail, "1 cell of the plan is still to shoot; fill once it is");
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+}
+
+// Session identities are counted per core, so two tabs on two projects both begin session 1; the
+// project is what tells one capture's gaps from another's.
+TEST_F(CaptureSession, GapsFromAnotherProjectsCaptureAreRefused) {
+  Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  FoundGaps elsewhere = Found({GapAt(90.0, 0.0)});
+  elsewhere.judged.project = ProjectId{kProject.value + 1};
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  EXPECT_EQ(manager->FillGaps(elsewhere).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+}
+
+// The catch-up write is the store's too: refused, the fill answers with the store's status, since
+// "build again" would send the user round a loop no build can leave while the store refuses.
+TEST_F(CaptureSession, AStaleFillWhoseCatchUpTheStoreRefusesSaysSo) {
+  Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  // No gaps, so the catch-up is the only write on the path: one it got past would be refused at
+  // the fill's own write with the same code.
+  FoundGaps stale = Found({});
+  stale.judged.nextCandidate -= 1;
+  projects->RefuseWritesOf(kSessionDocumentKey, StatusCode::CodecFailure);
+  EXPECT_EQ(manager->FillGaps(stale).status.code, StatusCode::CodecFailure);
+}
+
+// Gaps judged against another session's capture — another tab's, or one begun since — are not this
+// capture's, whatever its counter happens to read.
+TEST_F(CaptureSession, GapsFromAnotherSessionAreRefused) {
+  Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  FoundGaps other = Found({GapAt(90.0, 0.0)});
+  other.judged.session = SessionId{other.judged.session.value + 1};
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  EXPECT_EQ(manager->FillGaps(other).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+}
+
+// A build of a capture with cells still to shoot finds their directions open, and the guide already
+// leads to them: a fill then would put a second cell beside each, and one pressed after they were
+// shot would lead back to directions already taken. So a fill waits until the plan is shot — its
+// own cells included, which is what keeps a second press from filling the same gaps twice.
+TEST_F(CaptureSession, FillingIsRefusedWhileCellsOfThePlanAreStillToShoot) {
+  Begin();
+  const std::vector<CoverageGap> gaps{GapAt(90.0, 0.0)};
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  auto early = manager->FillGaps(Found(gaps));
+  EXPECT_EQ(early.status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(early.status.detail, "1 cell of the plan is still to shoot; fill once it is");
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  ASSERT_TRUE(manager->FillGaps(Found(gaps)).ok());
+  // The fill's own cell is now the one still to shoot.
+  EXPECT_EQ(manager->FillGaps(Found(gaps)).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells + 1);
+}
+
+// A fill cell takes an identity no cell had, and a pick recorded under that identity by an earlier
+// capture of this project names a candidate this one never issued: the counter steps past it, as
+// `Begin` and `Resume` step it past every pick of their plan (ADR 0070).
+TEST_F(CaptureSession, FillingStepsTheCandidateCounterPastAPickOnAFillCell) {
+  Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  uint64_t highest = 0;
+  for (const CoverageNode& node : manager->GetPlan().value.nodes) {
+    highest = std::max(highest, node.id.value);
+  }
+  ASSERT_TRUE(projects->WriteDocument(kProject, SelectionDocumentKey(NodeId{highest + 1}), "50")
+                  .ok());
+  auto filled = manager->FillGaps(Found({GapAt(90.0, 0.0)}));
+  ASSERT_TRUE(filled.ok()) << filled.status.detail;
+  const CoverageNode cell = filled.value.nodes.back();
+  ASSERT_EQ(cell.id.value, highest + 1) << "the premise: the pick is under the fill cell";
+  pose.LookAt(cell.targetOrientation);
+  ImuSample sample;
+  sample.hasOrientation = true;
+  sample.timestampNs = clock.MonotonicNs();
+  ASSERT_TRUE(manager->OnMotion(std::span<const ImuSample>(&sample, 1)).ok());
+  const Status fired = FireBurst(cell.id, BurstSpec{});
+  ASSERT_TRUE(fired.ok()) << fired.detail;
+  auto shot = manager->Candidates(cell.id);
+  ASSERT_TRUE(shot.ok());
+  ASSERT_FALSE(shot.value.empty());
+  for (const Candidate& candidate : shot.value) EXPECT_GT(candidate.id.value, 50u);
+}
+
+// "Written down at once" is a promise a resume depends on, so a write the store refuses refuses the
+// fill: the plan, the document and the counter are as they were.
+TEST_F(CaptureSession, AFillTheStoreWillNotWriteDownIsRefused) {
+  Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  // A pick under the identity the fill would take, which steps the counter: put back with the
+  // plan, it does not show past the refusal.
+  ASSERT_TRUE(projects->WriteDocument(kProject, SelectionDocumentKey(NodeId{2}), "50").ok());
+  projects->RefuseWritesOf(kSessionDocumentKey);
+  auto filled = manager->FillGaps(Found({GapAt(90.0, 0.0)}));
+  EXPECT_EQ(filled.status.code, StatusCode::StorageQuotaExceeded) << filled.status.detail;
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+  projects->RefuseWritesOf("");
+  ASSERT_TRUE(manager->RequestRetake(FirstNode(), /*replace=*/false).ok());
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  auto shot = manager->Candidates(FirstNode());
+  ASSERT_TRUE(shot.ok());
+  for (const Candidate& candidate : shot.value) EXPECT_LT(candidate.id.value, 50u);
+}
+
+// Once a fill could be taken; before then an empty one is refused like any other, since the
+// precondition is about the capture rather than the gaps.
+TEST_F(CaptureSession, NoGapsFillsNothing) {
+  Begin();
+  EXPECT_EQ(manager->FillGaps(Found({})).status.code, StatusCode::FailedPrecondition);
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  auto filled = manager->FillGaps(Found({}));
+  ASSERT_TRUE(filled.ok()) << filled.status.detail;
+  EXPECT_EQ(filled.value.nodes.size(), cells);
+}
+
+TEST_F(CaptureSession, FillingIsRefusedWithoutASessionOrDuringABurst) {
+  const std::vector<CoverageGap> gaps{GapAt(90.0, 0.0)};
+  EXPECT_EQ(manager->FillGaps(Found(gaps)).status.code, StatusCode::FailedPrecondition);
+  Begin();
+  // A retake of a shot cell, so the burst is all that stands in the way: armed on a cell still to
+  // shoot, the unshot refusal would answer with the same code.
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  ASSERT_TRUE(manager->RequestRetake(FirstNode(), /*replace=*/false).ok());
+  BurstSpec burst;
+  burst.frameCount = 2;
+  ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  auto refused = manager->FillGaps(Found(gaps));
+  EXPECT_EQ(refused.status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(refused.status.detail, "a burst is under way; fill once it is done");
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+}
+
+// Refused whole, with the plan and the document as they were: part of a gap is not a sphere any
+// closer to complete, and a cell aimed nowhere is one no camera is inside.
+TEST_F(CaptureSession, FillingIsRefusedForATargetThatIsNotARotationOrTooManyCells) {
+  Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  auto before = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(before.ok());
+  for (const Quat target : {Quat{0, 0, 0, 0}, Quat{std::nan(""), 0, 0, 0},
+                            Quat{std::numeric_limits<double>::infinity(), 0, 0, 0}}) {
+    CoverageGap bad = GapAt(0.0, 0.0);
+    bad.target = target;
+    const std::vector<CoverageGap> gaps{GapAt(90.0, 0.0), bad};
+    EXPECT_EQ(manager->FillGaps(Found(gaps)).status.code, StatusCode::InvalidArgument)
+        << target.w << " " << target.x;
+  }
+  std::vector<CoverageGap> many(kMostCellsAPlanHolds - cells + 1, GapAt(45.0, 45.0));
+  for (size_t i = 0; i < many.size(); ++i) many[i] = GapAt(0.1 * static_cast<double>(i), 10.0);
+  EXPECT_EQ(manager->FillGaps(Found(many)).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
+  auto after = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value, before.value);
+  // And exactly as many as a plan may hold is not too many.
+  many.pop_back();
+  auto full = manager->FillGaps(Found(many));
+  ASSERT_TRUE(full.ok()) << full.status.detail;
+  EXPECT_EQ(full.value.nodes.size(), kMostCellsAPlanHolds);
+}
 
 TEST_F(CaptureSession, BeginOnAProjectThatDoesNotExistIsRefused) {
   // End writes a session document through the project store, and the store creates storage on
@@ -425,6 +828,7 @@ class CarelessCoveragePlannerEngine final : public ICoveragePlannerEngine {
                                  std::span<const Candidate>) override {
     CoverageState state;
     state.nodesTotal = static_cast<int32_t>(plan.nodes.size());
+    if (shot_) state.nodesSatisfied = state.nodesTotal;
     return Ok(state);
   }
   Result<std::vector<NodeId>> SuggestRetakes(const CapturePlan&, const CoverageState&,
@@ -446,6 +850,8 @@ class CarelessCoveragePlannerEngine final : public ICoveragePlannerEngine {
     ring_ = ring;
   }
   void LayTwice() { twice_ = true; }
+  // Every cell counted as shot, which a fill waits for, without a burst to shoot it.
+  void CountEveryCellShot() { shot_ = true; }
 
  private:
   double cone_;
@@ -453,6 +859,7 @@ class CarelessCoveragePlannerEngine final : public ICoveragePlannerEngine {
   NodeId id_{1};
   int32_t ring_ = 0;
   bool twice_ = false;
+  bool shot_ = false;
 };
 
 TEST_F(CaptureSession, TheHeldFractionIsTheManagersAnswerRatherThanWhateverThePlannerLeftThere) {
@@ -5053,6 +5460,33 @@ TEST(SessionDocument, APlansCellsAreMeasurementsWhateverItsSpecSays) {
 
 }
 
+// One bound at every door (ADR 0086): a fill refuses past it, and so does the decoder, which is
+// the door a document past it would come in by — edited, or written before the bound moved.
+TEST_F(ResumedSession, RefusesADocumentCarryingMoreCellsThanAPlanHolds) {
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  ASSERT_TRUE(first.End().ok());
+  auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
+  ASSERT_TRUE(written.ok());
+  SessionDocument document;
+  ASSERT_TRUE(DecodeSessionDocument(written.value, document));
+  ASSERT_EQ(document.nodes.size(), 1u) << "the premise: the cells below are all the others";
+
+  std::string full = written.value;
+  for (uint64_t id = 2; id <= kMostCellsAPlanHolds; ++id) {
+    full += "cell " + std::to_string(id) + " 1 1 0 0 0 5\n";
+  }
+  ASSERT_TRUE(DecodeSessionDocument(full, document));
+  EXPECT_EQ(document.nodes.size(), kMostCellsAPlanHolds);
+  const std::string over =
+      full + "cell " + std::to_string(kMostCellsAPlanHolds + 1) + " 1 1 0 0 0 5\n";
+  EXPECT_FALSE(DecodeSessionDocument(over, document));
+}
+
 TEST_F(ResumedSession, RefusesADocumentWhoseCellsCannotBeAimedAt) {
   // A stored cell is acted on without a planner to vouch for it: guidance aims at it, coverage
   // counts it. Each of these is a cell no planner lays, and a document carrying one was edited.
@@ -5621,6 +6055,33 @@ std::vector<UnreadableCell> UnreadableCells() {
   cells.push_back({5.0, Quat{}, NodeId{1}, -1, false});
   cells.push_back({5.0, Quat{}, NodeId{1}, 0, true});
   return cells;
+}
+
+// A plan whose identities or rings are at the top of their range has no room for a cell past them:
+// refused for that, rather than for the gaps, and without stepping a ring index past `INT32_MAX`.
+TEST_F(CaptureSession, APlanWithNoRoomPastItsCellsIsNotFilled) {
+  for (const auto& [id, ring] : {std::pair{(uint64_t{1} << 53) - 1, 0},
+                                 std::pair{uint64_t{7}, std::numeric_limits<int32_t>::max()}}) {
+    CarelessCoveragePlannerEngine topmost(Spec().acceptanceConeDeg);
+    topmost.FileAs(NodeId{id}, ring);
+    CaptureSessionManager manager(topmost, pose, quality, preview, *camera, *sensor, *store,
+                                  *projects, clock);
+    ASSERT_TRUE(manager.Begin(kProject, Spec()).ok()) << id << " " << ring;
+    // While its cell is unshot the capture is what refuses, ahead of the argument.
+    EXPECT_EQ(manager.FillGaps(Found({GapAt(90.0, 0.0)})).status.code,
+              StatusCode::FailedPrecondition)
+        << id << " " << ring;
+    // Shot, and written down with its frames, which is what a fill asks of the capture and its
+    // document; this planner's guidance never says the cell is done, so it is told.
+    (void)FireBurstOn(manager, clock, NodeId{id}, BurstSpec{});
+    ASSERT_FALSE(manager.Candidates(NodeId{id}).value.empty()) << id << " " << ring;
+    topmost.CountEveryCellShot();
+    auto filled = manager.FillGaps(Found({GapAt(90.0, 0.0)}));
+    EXPECT_EQ(filled.status.code, StatusCode::InvalidArgument) << id << " " << ring;
+    EXPECT_EQ(filled.status.detail, "this plan leaves no room for a cell past its own")
+        << id << " " << ring;
+    ASSERT_TRUE(manager.End().ok());
+  }
 }
 
 std::unique_ptr<CarelessCoveragePlannerEngine> Laying(const UnreadableCell& cell) {
@@ -6422,6 +6883,73 @@ TEST_F(ResumedSession, RefusesAReplanThatDoesNotLayTheCellsTheCaptureWasTakenIn)
               "this project's session document names a cell this plan does not have");
     EXPECT_EQ(second_camera.Opens(), 0);
   }
+}
+
+// A cell's frames stay under it: filling moves nothing a candidate is filed under, and a resume
+// takes the plan with its fill cells as stored (ADR 0086).
+TEST_F(ResumedSession, FilledCellsKeepTheCandidatesAndSurviveAResume) {
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  const NodeId shot = first.GetPlan().value.nodes.front().id;
+  ASSERT_TRUE(FireBurstOn(first, clock, shot, BurstSpec{}).ok());
+  const auto candidates = first.Candidates(shot);
+  ASSERT_TRUE(candidates.ok());
+  ASSERT_FALSE(candidates.value.empty());
+  CoverageGap gap;
+  gap.target = FromAzimuthElevation(120.0, 10.0);
+  auto filled = first.FillGaps(Found({gap}));
+  ASSERT_TRUE(filled.ok()) << filled.status.detail;
+  auto after = first.Candidates(shot);
+  ASSERT_TRUE(after.ok());
+  EXPECT_EQ(after.value.size(), candidates.value.size());
+  ASSERT_TRUE(first.End().ok());
+
+  FakeCameraAccess second_camera(first_store);
+  CaptureSessionManager second(planner, pose, quality, preview, second_camera, *sensor,
+                               *first_store, *projects, clock);
+  const auto resumed = second.Resume(kProject);
+  ASSERT_TRUE(resumed.ok()) << resumed.status.detail;
+  auto plan = second.GetPlan();
+  ASSERT_TRUE(plan.ok());
+  ASSERT_EQ(plan.value.nodes.size(), filled.value.nodes.size());
+  EXPECT_EQ(plan.value.nodes.back().id, filled.value.nodes.back().id);
+  EXPECT_NEAR(Dot(Direction(plan.value.nodes.back().targetOrientation), Direction(gap.target)), 1.0,
+              1e-12);
+  auto kept = second.Candidates(shot);
+  ASSERT_TRUE(kept.ok());
+  EXPECT_EQ(kept.value.size(), candidates.value.size());
+  ASSERT_TRUE(second.End().ok());
+}
+
+// The other two ways the store refuses: a pick it cannot read, and a tier that cannot say which
+// capture it holds, without which nothing is written down. Each refuses the fill with the store's
+// status and leaves the plan as it was.
+TEST_F(ResumedSession, AFillTheStoreCannotCheckOrWriteDownIsRefused) {
+  auto first_store = NewStore();
+  FakeCameraAccess first_camera(first_store);
+  CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
+                              *projects, clock);
+  ASSERT_TRUE(first.Begin(kProject, Spec()).ok());
+  ASSERT_TRUE(FireBurstOn(first, clock, first.GetPlan().value.nodes.front().id, BurstSpec{}).ok());
+  const size_t cells = first.GetPlan().value.nodes.size();
+  const std::vector<CoverageGap> gaps{GapAt(90.0, 0.0)};
+
+  projects->RefuseReadsOf(SelectionDocumentKey(NodeId{2}), StatusCode::StorageQuotaExceeded);
+  EXPECT_EQ(first.FillGaps(Found(gaps)).status.code, StatusCode::StorageQuotaExceeded);
+  EXPECT_EQ(first.GetPlan().value.nodes.size(), cells);
+  projects->RefuseReadsOf("");
+
+  sink.FailGenerations(true, StatusCode::Unsupported);
+  EXPECT_EQ(first.FillGaps(Found(gaps)).status.code, StatusCode::Unsupported);
+  EXPECT_EQ(first.GetPlan().value.nodes.size(), cells);
+  sink.FailGenerations(false);
+
+  auto taken = first.FillGaps(Found(gaps));
+  EXPECT_TRUE(taken.ok()) << taken.status.detail;
+  ASSERT_TRUE(first.End().ok());
 }
 
 TEST_F(ResumedSession, RefusesADocumentNamingACellThePlanDoesNotHave) {

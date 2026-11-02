@@ -33,11 +33,11 @@ class ICaptureSessionManager {
   // project store cannot read refuses this with the store's status, camera closed.
   //
   // `InvalidArgument` for a spec a resume would not take, and then `Internal` for a plan whose
-  // cells a resume could not read: no cells, or one under an identity no counter issues, on a ring
-  // below zero, aimed by something other than a unit rotation, with a cone that is not a positive
-  // angle under a right angle and inside the spec's, or under another cell's identity. Either would
-  // be written down at the first checkpoint as a document nothing resumes or builds from, so both
-  // refuse before the tier is emptied (ADR 0077).
+  // cells a resume could not read: no cells or more than 2000, or one under an identity no counter
+  // issues, on a ring below zero, aimed by something other than a unit rotation, with a cone that
+  // is not a positive angle under a right angle and inside the spec's, or under another cell's
+  // identity. Either would be written down at the first checkpoint as a document nothing resumes or
+  // builds from, so both refuse before the tier is emptied (ADR 0077).
   virtual Result<SessionId> Begin(ProjectId project, const CapturePlanSpec& spec) = 0;
   // Picks a session back up from what was written down about it.
   //
@@ -249,6 +249,39 @@ class ICaptureSessionManager {
   // the additive case is Phase 3 (`docs/06-roadmap.md`); until then this call aborts a burst in
   // flight and, additively, does nothing else.
   virtual Status RequestRetake(NodeId node, bool replace) = 0;
+
+  // Appends a cell at each gap's target to the session's plan, so guidance leads there, and
+  // answers the plan that results (ADR 0084, ADR 0086). The gaps are a build's of this capture
+  // (`IPanoramaBuildManager::Gaps`), handed across whole with the capture they were judged
+  // against: the two managers never call each other. Each new cell is aimed at its target as
+  // given — a build answers level ones — with the capture's cone, under an identity past every cell
+  // the plan has, on a ring of its own past the plan's. The candidate counter steps past any pick
+  // recorded under a new identity, as `Begin` does. And the plan is written down before it is
+  // answered, so a resume finds it.
+  //
+  // Additive and nothing else: no cell is moved, renumbered or dropped, so every candidate stays
+  // under the cell it was filed under, and a plan with fill cells is one `Resume` takes as stored.
+  // No gaps adds nothing and answers the plan as it was, once the capture could take a fill.
+  //
+  // `FailedPrecondition` with no session in progress; while a burst is armed or firing, whose cell
+  // is fixed for its length; while any cell of the plan is still to shoot, its fill cells
+  // included, since a build of such a capture finds those cells open and the guide already leads
+  // there — and shot as a build sees it, so a cell only an offered frame covers, which is never
+  // written down, is still to shoot. Guidance counts that cell done and leads nowhere near it, so
+  // it is shot by a burst armed by hand, which is the client that offered the frame's to arm; and
+  // for gaps judged against a capture other than this one as
+  // it stands — another project's or session's, or this one before a frame it now has. A cell shot
+  // since the build read the document, during the build or under a checkpoint the store refused,
+  // is open in its gaps and would be filled beside itself. That refusal writes the capture down
+  // first, so the next build reads it as it stands, and is the one refusal that changes the
+  // document. A pick is not part of the revision: it changes which of a shot cell's frames a build
+  // places, never whether the cell is shot.
+  // A precondition is asked before the argument is. `InvalidArgument` for a target that is not a
+  // rotation, for a plan whose identities or rings leave no room past them, and for more than
+  // 2000 cells in all — refused whole rather than filled in part, since part of a gap is not a
+  // sphere any closer to complete. The store's own status where it would not write the plan down
+  // or read a pick. Any refusal leaves the plan and the counter as they were.
+  virtual Result<CapturePlan> FillGaps(const FoundGaps& found) = 0;
 
   virtual Status End() = 0;
 };

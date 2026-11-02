@@ -201,6 +201,9 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
   build.plan = CapturePlan{document.nodes, document.spec};
   build.plannedLens = document.lens;
   build.candidates = document.candidates;
+  build.judged.project = project;
+  build.judged.session = SessionId{document.session};
+  build.judged.nextCandidate = document.nextCandidate;
 
   // Last, since everything above can refuse and the finished build stands until this succeeds.
   if (build_) {
@@ -357,9 +360,9 @@ Result<std::vector<FrameRef>> PanoramaBuildManager::Placed(const Build& build) c
 Status PanoramaBuildManager::JudgeGaps(Build& build) {
   SPH_TRY(const std::vector<FrameRef> frames, Placed(build));
   // The plan is judged only where `Resume` would take it as this capture's, on either path, and by
-  // the same rules (`utilities/session_document`): filling appends to it and resumes, so targets
-  // on a plan no resume could read are targets nothing can act on. A refusal is no reason to fail
-  // a build whose panorama does not depend on it, so it is what `Gaps` gives.
+  // the same rules (`utilities/session_document`): a fill appends to it and writes it down, so
+  // targets on a plan no resume could read are targets nothing can act on. A refusal is no reason
+  // to fail a build whose panorama does not depend on it, so it is what `Gaps` gives.
   const auto refuse = [&build](const std::string& why) {
     build.gaps = Err<std::vector<CoverageGap>>(StatusCode::Unsupported, kComponent, why);
     return Status::Ok();
@@ -585,13 +588,14 @@ Result<GhostReport> PanoramaBuildManager::Ghosts(BuildId id) {
   return Err<GhostReport>(StatusCode::Unsupported, kComponent, "nothing detects movers yet");
 }
 
-Result<std::vector<CoverageGap>> PanoramaBuildManager::Gaps(BuildId id) {
+Result<FoundGaps> PanoramaBuildManager::Gaps(BuildId id) {
   SPH_TRY(Build* const build, Find(id));
   if (build->progress.stage != BuildStage::Complete) {
-    return Err<std::vector<CoverageGap>>(StatusCode::FailedPrecondition, kComponent,
-                                         "the build has not completed");
+    return Err<FoundGaps>(StatusCode::FailedPrecondition, kComponent,
+                          "the build has not completed");
   }
-  return build->gaps;
+  SPH_TRY(std::vector<CoverageGap> gaps, build->gaps);
+  return Ok(FoundGaps{std::move(gaps), build->judged});
 }
 
 Status PanoramaBuildManager::Invalidate(BuildId id, std::span<const NodeId>) {

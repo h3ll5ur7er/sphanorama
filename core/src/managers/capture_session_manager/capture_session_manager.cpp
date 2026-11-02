@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <array>
 #include <numbers>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "utilities/quaternion.h"
 #include "utilities/session_document.h"
@@ -297,8 +299,8 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   // Then the cells, against the spec just held. Cells the decoder would refuse are a sphere whose
   // document no resume or build could read from its first checkpoint (ADR 0077). `Internal`,
   // since the caller's spec passed and `Plan` was handed a usable one. Cells reach `plan_` here,
-  // from a stored document and from a replan, and all three ask `PlanDefect`, which is why
-  // `ArmBurst` does not.
+  // from a stored document, from a replan and from a fill, and all four ask `PlanDefect`, which is
+  // why `ArmBurst` does not.
   if (auto defect = PlanDefect(plan.value.nodes, resolved)) {
     (void)camera_.Close();
     return Err<SessionId>(StatusCode::Internal, kComponent,
@@ -592,7 +594,15 @@ void CaptureSessionManager::ResetDwell() {
   dwell_marked_ns_ = clock_.MonotonicNs();
 }
 
-void CaptureSessionManager::Checkpoint() const {
+std::vector<Candidate> CaptureSessionManager::WrittenCandidates() const {
+  std::vector<Candidate> written;
+  for (const Candidate& candidate : AllCandidates()) {
+    if (burst_owned_.count(candidate.id.value) != 0) written.push_back(candidate);
+  }
+  return written;
+}
+
+Status CaptureSessionManager::WriteSessionDocument() const {
   // Which tier these frames are in, asked at the moment the claim is written down rather than
   // remembered from the start of the session. The answer belongs to the tier, and this is the
   // only place that repeats it.
@@ -602,7 +612,7 @@ void CaptureSessionManager::Checkpoint() const {
   // document costs a resume on a device that is already half-updated, and costs the capture in
   // front of the user nothing at all.
   auto generation = frames_.TierGeneration();
-  if (!generation.ok()) return;
+  if (!generation.ok()) return generation.status;
 
   SessionDocument stored;
   stored.generation = generation.value;
@@ -611,15 +621,17 @@ void CaptureSessionManager::Checkpoint() const {
   stored.spec = plan_.spec;
   stored.lens = lens_;
   stored.nodes = plan_.nodes;
-  for (const Candidate& candidate : AllCandidates()) {
-    if (burst_owned_.count(candidate.id.value) != 0) stored.candidates.push_back(candidate);
-  }
+  stored.candidates = WrittenCandidates();
+  return projects_.WriteDocument(project_, kSessionDocumentKey, EncodeSessionDocument(stored));
+}
+
+void CaptureSessionManager::Checkpoint() const {
   // Not reported, and there is nobody to report it to: this runs on the way out of a burst, a
   // discarding retake or an offer the caller has already been told about. A write that fails costs
   // the resume and the build — a build refuses a document naming frames a retake has since let go
   // of, until the next write lands — but not the capture: the frames are still in the store and
   // the session is still live.
-  (void)projects_.WriteDocument(project_, kSessionDocumentKey, EncodeSessionDocument(stored));
+  (void)WriteSessionDocument();
 }
 
 Result<CapturePlan> CaptureSessionManager::GetPlan() const {
@@ -1456,6 +1468,98 @@ Status CaptureSessionManager::RequestRetake(NodeId node, bool replace) {
     Checkpoint();
   }
   return Status::Ok();
+}
+
+Result<CapturePlan> CaptureSessionManager::FillGaps(const FoundGaps& found) {
+  if (Status session = RequireSession(); !session.ok()) return session;
+  // A burst's cell and the cells around it are what its frames are judged against; a plan that
+  // grows under it is one more thing a burst would have to be robust to for no gain, since the
+  // page holds its calls until the burst is done.
+  if (firing_) {
+    return Err<CapturePlan>(StatusCode::FailedPrecondition, kComponent,
+                            "a burst is under way; fill once it is done");
+  }
+  uint64_t highest = 0;
+  int32_t ring = 0;
+  for (const CoverageNode& node : plan_.nodes) {
+    highest = std::max(highest, node.id.value);
+    ring = std::max(ring, node.ringIndex);
+  }
+  // A build of a capture with cells still to shoot finds their directions open, and the guide
+  // already leads there; filled now, each would get a second cell beside it, and filled after they
+  // were shot, cells at directions already taken. The plan's own fill cells count too, which is
+  // what keeps a second press from filling the same gaps again. Shot as a build can see it: an
+  // offered frame is never written down, so a cell it alone covers is open to every build, and
+  // its gap would be filled on top of it.
+  SPH_TRY(const CoverageState coverage, planner_.Evaluate(plan_, WrittenCandidates()));
+  if (const int32_t unshot = coverage.nodesTotal - coverage.nodesSatisfied; unshot > 0) {
+    return Err<CapturePlan>(StatusCode::FailedPrecondition, kComponent,
+                            unshot == 1 ? "1 cell of the plan is still to shoot; fill once it is"
+                                        : std::to_string(unshot)
+                                              + " cells of the plan are still to shoot; fill "
+                                                "once they are");
+  }
+  // And judged against the capture as it stands. Gaps describe the document the build read, and
+  // a cell shot since — during the build, or under a checkpoint the store refused — is open in it
+  // and shot here, so its gap would be filled beside it. Every frame steps the counter, so the
+  // revision says whether anything was shot since; a second press of the same gaps after this
+  // refusal is held to it too. Written down before the refusal, since a capture with every cell
+  // shot fires no burst to checkpoint it, and a document left behind would leave every later
+  // build as stale as this one.
+  if (found.judged.project != project_ || found.judged.session != session_
+      || found.judged.nextCandidate != next_candidate_) {
+    if (Status written = WriteSessionDocument(); !written.ok()) return written;
+    return Err<CapturePlan>(StatusCode::FailedPrecondition, kComponent,
+                            "these gaps were found in another capture, or in this one before "
+                            "its latest frames; build again, then fill");
+  }
+  const std::vector<CoverageGap>& gaps = found.gaps;
+  if (gaps.empty()) return Ok(plan_);
+  // Each new cell steps both counters; one at the top of its range has nowhere to step, and a ring
+  // index stepped past it is undefined behaviour rather than a plan `PlanDefect` can refuse.
+  if (!IssuableIdentity(highest + std::min<uint64_t>(gaps.size(), kMostCellsAPlanHolds))
+      || ring == std::numeric_limits<int32_t>::max()) {
+    return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
+                            "this plan leaves no room for a cell past its own");
+  }
+  // Appended to a copy and held to the rule a stored plan is — which is also what refuses more
+  // cells than a plan may hold — so a refusal leaves the plan and the document as they were, and
+  // what is written down is what a resume can read (ADR 0077).
+  CapturePlan filled = plan_;
+  filled.nodes.reserve(plan_.nodes.size() + std::min(gaps.size(), kMostCellsAPlanHolds + 1));
+  for (const CoverageGap& gap : gaps) {
+    if (filled.nodes.size() > kMostCellsAPlanHolds) break;
+    // Asked before `Normalize`, which answers the identity for what is not a rotation: a cell aimed
+    // straight ahead for a target nobody gave.
+    if (!IsUsableRotation(gap.target)) {
+      return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
+                              "a gap whose target is not a rotation");
+    }
+    CoverageNode cell;
+    cell.id = NodeId{++highest};
+    cell.ringIndex = ring + 1;
+    cell.targetOrientation = Normalize(gap.target);
+    cell.acceptanceConeDeg = plan_.spec.acceptanceConeDeg;
+    filled.nodes.push_back(cell);
+  }
+  if (auto defect = PlanDefect(filled.nodes, filled.spec)) {
+    return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
+                            "these gaps make a plan no resume could read: " + *defect);
+  }
+  // A fill cell takes an identity no cell had, and a pick an earlier capture of this project
+  // recorded under it names a candidate this one never issued; stepped past, as `Begin` and
+  // `Resume` step past every pick of their plan (ADR 0070).
+  SPH_TRY(const uint64_t next, PastEveryPick(projects_, project_, filled, next_candidate_));
+  // Written down before it is answered, since a resume is what makes the cells the capture's: a
+  // write the store refuses puts the plan and the counter back and refuses the fill.
+  CapturePlan before = std::exchange(plan_, std::move(filled));
+  const uint64_t counter = std::exchange(next_candidate_, next);
+  if (Status written = WriteSessionDocument(); !written.ok()) {
+    plan_ = std::move(before);
+    next_candidate_ = counter;
+    return written;
+  }
+  return Ok(plan_);
 }
 
 Status CaptureSessionManager::End() {

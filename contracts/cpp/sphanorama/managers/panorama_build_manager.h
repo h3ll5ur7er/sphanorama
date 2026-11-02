@@ -86,8 +86,9 @@ class IPanoramaBuildManager {
   // build cannot replan or that no document could hold, a candidate filed under no cell — and only
   // a judgement `FindGaps` itself refuses, such as a fill lens too narrow, with the planner's own
   // status. Either way the build completes regardless: the panorama does not depend on it.
-  // `FailedPrecondition` for a build that has not completed, or that failed.
-  virtual Result<std::vector<CoverageGap>> Gaps(BuildId build) = 0;
+  // `FailedPrecondition` for a build that has not completed, or that failed. Answered with the
+  // capture it judged, as the document `Start` read says, which a fill is held to (ADR 0086).
+  virtual Result<FoundGaps> Gaps(BuildId build) = 0;
 
   // The mechanism behind both retakes and manual candidate switching: recompute only the
   // transitive closure downstream of the changed cells (docs/04 §4.4). An incremental rebuild

@@ -146,6 +146,18 @@ export function createCaptureSessionManagerProxy(call: FacadeCall) {
         ? ({ ok: true, value: undefined } as const)
         : ({ ok: false, status } as const);
     },
+    async fillGaps(found: C.FoundGaps) {
+      const args = new Writer();
+      codec.encodeFoundGaps(args, found);
+      const raw = await call('CaptureSessionManager.fillGaps', args.finish());
+      const input = new Reader(raw);
+      const status = decodeStatus(input);
+      if (status.code !== 'Ok') return { ok: false, status } as const;
+      const value = codec.decodeCapturePlan(input);
+      if (!input.ok) return { ok: false, status: malformedResponse(
+        'malformed response: CaptureSessionManager.fillGaps returned a value that did not decode') } as const;
+      return { ok: true, value } as const;
+    },
     async end() {
       const args = new Writer();
       const raw = await call('CaptureSessionManager.end', args.finish());
@@ -228,7 +240,7 @@ export function createPanoramaBuildManagerProxy(call: FacadeCall) {
       const input = new Reader(raw);
       const status = decodeStatus(input);
       if (status.code !== 'Ok') return { ok: false, status } as const;
-      const value = Array.from({ length: input.count() }, () => codec.decodeCoverageGap(input));
+      const value = codec.decodeFoundGaps(input);
       if (!input.ok) return { ok: false, status: malformedResponse(
         'malformed response: PanoramaBuildManager.gaps returned a value that did not decode') } as const;
       return { ok: true, value } as const;

@@ -306,6 +306,26 @@ struct CoverageGap {
   double solidAngleFraction = 0;
 };
 
+// Which state of a capture something was judged against, as its session document said: the
+// project, the session within it — sessions are counted per core, so another tab's can share one
+// — and how far its candidate counter had gone. Every frame a capture takes steps the counter, so
+// two equal ones have taken no frame since; a replace-retake lets frames go without stepping it,
+// and a cell it empties is unshot. A fill may step it past a pick, and its cells are unshot until
+// a frame does. A build's gaps are fillable only while the capture is still the one it read
+// (ADR 0086). An offered frame steps it too but is never written down, which is why a fill does
+// not count a cell it alone covers as shot.
+struct CaptureRevision {
+  ProjectId project;
+  SessionId session;
+  uint64_t nextCandidate = 0;
+};
+
+// What a build found open, and the capture it judged to find it.
+struct FoundGaps {
+  std::vector<CoverageGap> gaps;
+  CaptureRevision judged;
+};
+
 enum class NodeState : uint8_t { Pending, Capturing, Captured, Satisfied, Flagged, Retaking };
 
 // ---------------------------------------------------------------- candidates

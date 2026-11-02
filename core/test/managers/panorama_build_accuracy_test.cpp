@@ -231,7 +231,7 @@ TEST_P(PanoramaBuildAccuracy, ABuiltCaptureDrawsThePhotograph) {
   // the scripted test's to say.
   auto gaps = manager.Gaps(build.value);
   ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
-  EXPECT_TRUE(gaps.value.empty()) << gaps.value.size() << " gaps";
+  EXPECT_TRUE(gaps.value.gaps.empty()) << gaps.value.gaps.size() << " gaps";
 
   auto panorama = manager.Panorama(build.value);
   ASSERT_TRUE(panorama.ok()) << panorama.status.detail;
@@ -285,14 +285,14 @@ TEST_P(PanoramaBuildAccuracy, ACaptureWithThePhoneTurnedPartwayThroughDrawsThePh
 
   auto gaps = manager.Gaps(build.value);
   ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
-  EXPECT_FALSE(gaps.value.empty());
+  EXPECT_FALSE(gaps.value.gaps.empty());
   double lowest = 90.0;
-  for (const CoverageGap& gap : gaps.value) {
+  for (const CoverageGap& gap : gaps.value.gaps) {
     const double elevation = std::asin(Direction(gap.target).y) * 180.0 / std::numbers::pi;
     lowest = std::min(lowest, std::abs(elevation));
   }
   std::printf("[gaps-turned] detector=%d gaps=%zu lowest=%.2f\n", static_cast<int>(GetParam()),
-              gaps.value.size(), lowest);
+              gaps.value.gaps.size(), lowest);
   EXPECT_GT(lowest, 15.0) << "a gap on the ring the frames close";
 
   auto panorama = manager.Panorama(build.value);
