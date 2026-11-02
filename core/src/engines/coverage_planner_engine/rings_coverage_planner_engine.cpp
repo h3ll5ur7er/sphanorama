@@ -32,7 +32,7 @@ constexpr double kPolarCosineFloor = 0.08;
 // a hundred thousand, and a cone just short of too wide for its lens laid and checked sixty
 // thousand cells for a minute in the browser before answering (ADR 0076).
 // The same number a document holds a plan to (`kMostCellsAPlanHolds`), so a plan this lays is one a
-// capture can write down and a fill can append to.
+// capture can write down. A fill appends only up to it, so a plan near it takes few fill cells.
 constexpr double kMaxCells = static_cast<double>(kMostCellsAPlanHolds);
 
 // How much smaller than the lens, on every side, the frame `CompleteInTheWorstCase` asks about is.

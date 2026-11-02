@@ -30,11 +30,22 @@ Three more things had to be settled:
     leads there: a fill would put a second cell beside each, and one pressed after they were shot
     would lead back to directions already taken. Counting fill cells is what stops a second
     press from filling the same gaps twice.
+  - `FailedPrecondition`, too, while the stored document lacks a cell the session holds as shot.
+    A build reads the capture from that document, and a checkpoint the store refused leaves a shot
+    cell open there, so its gap would be filled beside it. The document is asked rather than a
+    remembered failure, which would be a third copy of what is shot. The capture is written down
+    before this refusal, so the next build sees the cell shot; it is the one refusal that changes
+    the document.
+  - A precondition is asked before the argument is, so an empty fill is refused while the capture
+    could not take one, rather than answered with the plan.
 - **The client sequences the two managers.** The build client already holds the gaps. It offers a
   button, "Add the gaps to the plan", whose press hands them to `FillGaps`. The loop then takes the
   grown plan, and the map and markers draw the new cells once coverage of it has been read.
   - The offer is made only while the capture could act on it: its loop is running, so there is a
-    guide to lead to the new cells, and every planned cell is shot. It is asked again at the press.
+    guide to lead to the new cells, and every planned cell is shot. It is asked as the build
+    starts as well as when its gaps come back: the gaps are judged against the capture the build
+    read, and a cell shot while it ran is one of them. It is asked again at the press, and after
+    the fill answers, which says to reload when the guide has gone in the meantime.
 - **A new cell:**
   - is aimed at its target, which `FindGaps` already answers level;
   - takes the capture's cone;
@@ -53,10 +64,11 @@ Three more things had to be settled:
   decoder, `Begin` and a fill all hold one bound. A fill that would pass it is refused whole, since
   part of a gap is not a sphere any closer to complete.
 - **Held to `PlanDefect` before it is kept, and written down before it is answered.** A refusal
-  leaves the plan, the counter and the document as they were, and what is written down is what a
-  resume can read. A store that will not write the plan down refuses the fill with its own status,
-  rather than leaving fill cells only the tab knows of. A target that is not a rotation is refused
-  explicitly, because `Normalize` would answer the identity for it.
+  leaves the plan and the counter as they were, and the document too but for the one above, and
+  what is written down is what a resume can read. A store that will not write the plan down
+  refuses the fill with its own status, rather than leaving fill cells only the tab knows of. A
+  target that is not a rotation is refused explicitly, because `Normalize` would answer the
+  identity for it.
 
 ## Consequences
 

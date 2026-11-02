@@ -1275,16 +1275,21 @@ export interface CaptureSessionManager {
    * does. And the plan is written down before it is answered, so a resume finds it.
    * Additive and nothing else: no cell is moved, renumbered or dropped, so every candidate stays
    * under the cell it was filed under, and a plan with fill cells is one `Resume` takes as stored.
-   * No gaps adds nothing and answers the plan as it was.
+   * No gaps adds nothing and answers the plan as it was, once the capture could take a fill.
    * `FailedPrecondition` with no session in progress; while a burst is armed or firing, whose cell
    * is fixed for its length; and while any cell of the plan is still to shoot, its fill cells
    * included. A build of such a capture finds those cells' directions open and the guide already
    * leads there, so a fill would put a second cell beside each, and a second press would fill the
-   * same gaps twice. `InvalidArgument` for a target that is not a rotation, for a plan whose
-   * identities or rings leave no room past them, and for more than 2000 cells in all — refused
-   * whole rather than filled in part, since part of a gap is not a sphere any closer to complete.
-   * The store's own status where it would not write the plan down or read a pick. Any refusal
-   * leaves the plan, the counter and the document as they were.
+   * same gaps twice. A build started before the last cell was shot finds it open too, and this
+   * cannot tell its gaps from a later build's: a client asks before the build starts. And while
+   * the stored document lacks a cell this session holds as shot, which a refused checkpoint
+   * leaves and a build reads as open: the capture is written down first, so the next build sees
+   * it shot, and that is the one refusal that changes the document. A precondition is asked
+   * before the argument is. `InvalidArgument` for a target that is not a
+   * rotation, for a plan whose identities or rings leave no room past them, and for more than
+   * 2000 cells in all — refused whole rather than filled in part, since part of a gap is not a
+   * sphere any closer to complete. The store's own status where it would not write the plan down
+   * or read a pick. Any refusal leaves the plan and the counter as they were.
    */
   fillGaps(gaps: CoverageGap[]): Promise<Result<CapturePlan>>;
   end(): Promise<Result<void>>;

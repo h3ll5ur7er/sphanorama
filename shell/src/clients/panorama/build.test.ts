@@ -629,4 +629,40 @@ describe('filling the gaps a build found', () => {
     expect(calls.some((c) => c.startsWith('fill'))).toBe(false);
     expect(ui.fill.hidden).toBe(true);
   });
+
+  it('offers nothing from a build started before the capture could act on it', async () => {
+    // The gaps are judged against the capture `start` read, so a cell shot while the build ran is
+    // a gap in them: offered because the capture is whole by the answer, it would send the guide
+    // back to the direction just shot. Asked as the build starts, then, and again at the answer.
+    const { core } = scriptedCore([progress('Features', 0.5), progress('Complete', 1)],
+      [gap(0.01)]);
+    const ui = elements();
+    let can = false;
+    const shootTheLastCell = core.poll;
+    core.poll = async (build) => { can = true; return shootTheLastCell(build); };
+    const client = createBuildClient(ui, core, drawing(), immediately, () => {}, () => can);
+    await client.build();
+    expect(can).toBe(true);
+    expect(ui.fill.hidden).toBe(true);
+  });
+
+  it('says how to reach the new cells when the capture stopped during the fill', async () => {
+    // The plan did grow and is written down, so it is still handed on; only the guide is gone.
+    const { core } = scriptedCore([progress('Complete', 1)], [gap(0.01)]);
+    const ui = elements();
+    let can = true;
+    const filled = vi.fn();
+    const asking = core.fill;
+    core.fill = async (asked) => {
+      const answer = await asking(asked);
+      can = false;
+      return answer;
+    };
+    const client = createBuildClient(ui, core, drawing(), immediately, filled, () => can);
+    await client.build();
+    await client.fill();
+    expect(filled).toHaveBeenCalledTimes(1);
+    expect(ui.status.textContent).toBe(
+      'Added 1 cell to the capture\'s plan: reload to be guided to them, then build again.');
+  });
 });

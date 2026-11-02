@@ -357,9 +357,9 @@ Result<std::vector<FrameRef>> PanoramaBuildManager::Placed(const Build& build) c
 Status PanoramaBuildManager::JudgeGaps(Build& build) {
   SPH_TRY(const std::vector<FrameRef> frames, Placed(build));
   // The plan is judged only where `Resume` would take it as this capture's, on either path, and by
-  // the same rules (`utilities/session_document`): filling appends to it and resumes, so targets
-  // on a plan no resume could read are targets nothing can act on. A refusal is no reason to fail
-  // a build whose panorama does not depend on it, so it is what `Gaps` gives.
+  // the same rules (`utilities/session_document`): a fill appends to it and writes it down, so
+  // targets on a plan no resume could read are targets nothing can act on. A refusal is no reason
+  // to fail a build whose panorama does not depend on it, so it is what `Gaps` gives.
   const auto refuse = [&build](const std::string& why) {
     build.gaps = Err<std::vector<CoverageGap>>(StatusCode::Unsupported, kComponent, why);
     return Status::Ok();

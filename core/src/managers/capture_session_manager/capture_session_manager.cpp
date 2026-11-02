@@ -299,8 +299,8 @@ Result<SessionId> CaptureSessionManager::Begin(ProjectId project, const CaptureP
   // Then the cells, against the spec just held. Cells the decoder would refuse are a sphere whose
   // document no resume or build could read from its first checkpoint (ADR 0077). `Internal`,
   // since the caller's spec passed and `Plan` was handed a usable one. Cells reach `plan_` here,
-  // from a stored document and from a replan, and all three ask `PlanDefect`, which is why
-  // `ArmBurst` does not.
+  // from a stored document, from a replan and from a fill, and all four ask `PlanDefect`, which is
+  // why `ArmBurst` does not.
   if (auto defect = PlanDefect(plan.value.nodes, resolved)) {
     (void)camera_.Close();
     return Err<SessionId>(StatusCode::Internal, kComponent,
@@ -592,6 +592,16 @@ void CaptureSessionManager::ResetDwell() {
   dwell_ns_ = 0;
   dwell_node_ = std::nullopt;
   dwell_marked_ns_ = clock_.MonotonicNs();
+}
+
+bool CaptureSessionManager::DocumentFilesEveryCell() const {
+  auto text = projects_.ReadDocument(project_, kSessionDocumentKey);
+  SessionDocument stored;
+  if (!text.ok() || !DecodeSessionDocument(text.value, stored)) return false;
+  return std::all_of(plan_.nodes.begin(), plan_.nodes.end(), [&](const CoverageNode& cell) {
+    return std::any_of(stored.candidates.begin(), stored.candidates.end(),
+                       [&](const Candidate& candidate) { return candidate.node == cell.id; });
+  });
 }
 
 Status CaptureSessionManager::WriteSessionDocument() const {
@@ -1473,19 +1483,11 @@ Result<CapturePlan> CaptureSessionManager::FillGaps(std::span<const CoverageGap>
     return Err<CapturePlan>(StatusCode::FailedPrecondition, kComponent,
                             "a burst is under way; fill once it is done");
   }
-  if (gaps.empty()) return Ok(plan_);
   uint64_t highest = 0;
   int32_t ring = 0;
   for (const CoverageNode& node : plan_.nodes) {
     highest = std::max(highest, node.id.value);
     ring = std::max(ring, node.ringIndex);
-  }
-  // Each new cell steps both counters; one at the top of its range has nowhere to step, and a ring
-  // index stepped past it is undefined behaviour rather than a plan `PlanDefect` can refuse.
-  if (!IssuableIdentity(highest + std::min<uint64_t>(gaps.size(), kMostCellsAPlanHolds))
-      || ring == std::numeric_limits<int32_t>::max()) {
-    return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
-                            "this plan leaves no room for a cell past its own");
   }
   // A build of a capture with cells still to shoot finds their directions open, and the guide
   // already leads there; filled now, each would get a second cell beside it, and filled after they
@@ -1498,6 +1500,24 @@ Result<CapturePlan> CaptureSessionManager::FillGaps(std::span<const CoverageGap>
                                         : std::to_string(unshot)
                                               + " cells of the plan are still to shoot; fill "
                                                 "once they are");
+  }
+  // And shot as a build reads the capture, which is from its document: a checkpoint the store
+  // refused leaves a shot cell unwritten there, a build finds it open, and its gap would be filled
+  // beside it. The document is asked rather than a remembered failure, which would be a third copy
+  // of what is shot. Written down again before the refusal, or no build would ever see it shot.
+  if (!DocumentFilesEveryCell()) {
+    if (Status written = WriteSessionDocument(); !written.ok()) return written;
+    return Err<CapturePlan>(StatusCode::FailedPrecondition, kComponent,
+                            "the capture's document was behind it, so a build of it found shot "
+                            "cells open; build again, then fill");
+  }
+  if (gaps.empty()) return Ok(plan_);
+  // Each new cell steps both counters; one at the top of its range has nowhere to step, and a ring
+  // index stepped past it is undefined behaviour rather than a plan `PlanDefect` can refuse.
+  if (!IssuableIdentity(highest + std::min<uint64_t>(gaps.size(), kMostCellsAPlanHolds))
+      || ring == std::numeric_limits<int32_t>::max()) {
+    return Err<CapturePlan>(StatusCode::InvalidArgument, kComponent,
+                            "this plan leaves no room for a cell past its own");
   }
   // Appended to a copy and held to the rule a stored plan is — which is also what refuses more
   // cells than a plan may hold — so a refusal leaves the plan and the document as they were, and

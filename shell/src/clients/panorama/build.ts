@@ -122,7 +122,8 @@ export function createBuildClient(
   filled: (plan: CapturePlan) => void = () => {},
   // Whether the capture could act on a fill now: its loop is running, so there is a guide to lead
   // to the new cells, and every planned cell is shot, so a gap is not a cell the guide already
-  // leads to (ADR 0086). Asked when the offer is made and again when it is pressed.
+  // leads to (ADR 0086). Asked as a build starts, when its offer is made, when it is pressed and
+  // when the fill has answered.
   canFill: () => boolean = () => true,
 ): { build(): Promise<void>; fill(): Promise<void> } {
   // One of the two at a time, and either holds both buttons: a build started under a fill judges
@@ -142,6 +143,9 @@ export function createBuildClient(
     ui.progress.value = 0;
     ui.status.textContent = 'Building a preview: starting.';
     await yieldToPage();
+    // Asked of the capture `start` reads, which is the one the gaps are judged against: a cell shot
+    // while the build runs is a gap in them, and filling it would lead back to where it was shot.
+    const couldFill = canFill();
     const started = await core.start();
     if (!started.ok) {
       ui.status.textContent = `The build was refused: ${why(started.status)}.`;
@@ -190,7 +194,7 @@ export function createBuildClient(
     ui.status.textContent = gaps.ok
       ? `${built} ${describeGaps(gaps.value)}`
       : `${built} Whether the sphere has gaps could not be judged: ${why(gaps.status)}.`;
-    if (gaps.ok && gaps.value.length > 0 && canFill()) {
+    if (gaps.ok && gaps.value.length > 0 && couldFill && canFill()) {
       found = gaps.value;
       ui.fill.hidden = false;
     }
@@ -207,8 +211,10 @@ export function createBuildClient(
     found = [];
     ui.fill.hidden = true;
     filled(answer.value);
-    ui.status.textContent =
-      `Added ${cells} to the capture's plan: follow the guide to them, then build again.`;
+    // Asked again: a loop that stopped while the fill was in flight has no guide, though the cells
+    // are written down and a resume leads to them.
+    const toThem = canFill() ? 'follow the guide to them' : 'reload to be guided to them';
+    ui.status.textContent = `Added ${cells} to the capture's plan: ${toThem}, then build again.`;
   }
 
   return {
