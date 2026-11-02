@@ -171,8 +171,9 @@ estimate. Its loop is:
   cell is now satisfied. It refuses a pose `PoseSampleDefect` names (ADR 0065). An offered frame is
   never written to the session document — only the session's own bursts are, since only those
   frames the session owns.
-- `FillGaps(gaps)` → appends a cell at each gap a build found to the plan, moving none, and writes
-  the plan down; the client hands the gaps across from `PanoramaBuildManager::Gaps` (ADR 0086).
+- `FillGaps(found)` → appends a cell at each gap a build found to the plan, moving none, and
+  writes the plan down; the client hands `PanoramaBuildManager::Gaps`' answer across whole, with
+  the capture it judged, and gaps of a capture that has taken a frame since are refused (ADR 0086).
 - `RequestRetake(nodeId, replace)` → with `replace`, clears a cell's candidates — every one whose
   frame the store will let go of — so the cell becomes a hole again and the dwell can fire on it.
   Additively it marks nothing a client can act on in this build; see UC-2 and the contract.
@@ -194,9 +195,9 @@ before the final render.
 `utilities/session_document`, one frame per cell, and refuses what it can before a pixel is read;
 each `Poll` then does one step — a frame's features, a pair, the solve, its gaps, the preview — so
 the core's one thread is never held for a whole build. The gaps are `CoveragePlannerEngine`'s
-judgement of where the solve placed the frames, which `Gaps` answers (ADR 0085). `Invalidate` and
-`Ghosts` answer `Unsupported` until the graph below exists, so in UC-2 and UC-3 the `Invalidate`
-step is a new `Start` for now.
+judgement of where the solve placed the frames, which `Gaps` answers with the session and counter of
+the document `Start` read (ADR 0085, ADR 0086). `Invalidate` and `Ghosts` answer `Unsupported` until
+the graph below exists, so in UC-2 and UC-3 the `Invalidate` step is a new `Start` for now.
 
 Its distinguishing responsibility is **incremental invalidation**: `Invalidate(buildId, dirtyNodes)`
 recomputes only the sub-graph a retake touched — the changed cell, its neighbours' pairwise edges,

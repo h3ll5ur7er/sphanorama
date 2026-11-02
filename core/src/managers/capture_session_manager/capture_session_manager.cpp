@@ -594,16 +594,6 @@ void CaptureSessionManager::ResetDwell() {
   dwell_marked_ns_ = clock_.MonotonicNs();
 }
 
-bool CaptureSessionManager::DocumentFilesEveryCell() const {
-  auto text = projects_.ReadDocument(project_, kSessionDocumentKey);
-  SessionDocument stored;
-  if (!text.ok() || !DecodeSessionDocument(text.value, stored)) return false;
-  return std::all_of(plan_.nodes.begin(), plan_.nodes.end(), [&](const CoverageNode& cell) {
-    return std::any_of(stored.candidates.begin(), stored.candidates.end(),
-                       [&](const Candidate& candidate) { return candidate.node == cell.id; });
-  });
-}
-
 Status CaptureSessionManager::WriteSessionDocument() const {
   // Which tier these frames are in, asked at the moment the claim is written down rather than
   // remembered from the start of the session. The answer belongs to the tier, and this is the
@@ -1474,7 +1464,7 @@ Status CaptureSessionManager::RequestRetake(NodeId node, bool replace) {
   return Status::Ok();
 }
 
-Result<CapturePlan> CaptureSessionManager::FillGaps(std::span<const CoverageGap> gaps) {
+Result<CapturePlan> CaptureSessionManager::FillGaps(const FoundGaps& found) {
   if (Status session = RequireSession(); !session.ok()) return session;
   // A burst's cell and the cells around it are what its frames are judged against; a plan that
   // grows under it is one more thing a burst would have to be robust to for no gain, since the
@@ -1501,16 +1491,20 @@ Result<CapturePlan> CaptureSessionManager::FillGaps(std::span<const CoverageGap>
                                               + " cells of the plan are still to shoot; fill "
                                                 "once they are");
   }
-  // And shot as a build reads the capture, which is from its document: a checkpoint the store
-  // refused leaves a shot cell unwritten there, a build finds it open, and its gap would be filled
-  // beside it. The document is asked rather than a remembered failure, which would be a third copy
-  // of what is shot. Written down again before the refusal, or no build would ever see it shot.
-  if (!DocumentFilesEveryCell()) {
+  // And judged against the capture as it stands. Gaps describe the document the build read, and
+  // a cell shot since — during the build, or under a checkpoint the store refused — is open in it
+  // and shot here, so its gap would be filled beside it. Every frame steps the counter, so the
+  // revision says whether anything was shot since; a second press of the same gaps after this
+  // refusal is held to it too. Written down before the refusal, since a capture with every cell
+  // shot fires no burst to checkpoint it, and a document left behind would leave every later
+  // build as stale as this one.
+  if (found.judged.session != session_ || found.judged.nextCandidate != next_candidate_) {
     if (Status written = WriteSessionDocument(); !written.ok()) return written;
     return Err<CapturePlan>(StatusCode::FailedPrecondition, kComponent,
-                            "the capture's document was behind it, so a build of it found shot "
-                            "cells open; build again, then fill");
+                            "these gaps were found in the capture as it was before its latest "
+                            "frames; build again, then fill");
   }
+  const std::vector<CoverageGap>& gaps = found.gaps;
   if (gaps.empty()) return Ok(plan_);
   // Each new cell steps both counters; one at the top of its range has nowhere to step, and a ring
   // index stepped past it is undefined behaviour rather than a plan `PlanDefect` can refuse.

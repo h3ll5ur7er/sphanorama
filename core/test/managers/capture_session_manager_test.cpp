@@ -230,6 +230,20 @@ class CaptureSession : public ::testing::Test {
 
   NodeId FirstNode() { return manager->GetPlan().value.nodes.front().id; }
 
+  // What a build of the capture's document as it now stands hands a fill: the gaps, and the
+  // session and counter that document says (ADR 0086).
+  FoundGaps Found(std::vector<CoverageGap> gaps) {
+    FoundGaps found;
+    found.gaps = std::move(gaps);
+    auto text = projects->ReadDocument(kProject, kSessionDocumentKey);
+    SessionDocument stored;
+    if (text.ok() && DecodeSessionDocument(text.value, stored)) {
+      found.judged.session = SessionId{stored.session};
+      found.judged.nextCandidate = stored.nextCandidate;
+    }
+    return found;
+  }
+
   NullCoveragePlannerEngine planner;
   // A phone that can say where it is pointing, looking straight ahead.
   //
@@ -341,7 +355,7 @@ TEST_F(CaptureSession, FillingGapsAppendsACellAtEachTarget) {
   scaled.target = Quat{2.0 * scaled.target.w, 2.0 * scaled.target.x, 2.0 * scaled.target.y,
                        2.0 * scaled.target.z};
   const std::vector<CoverageGap> gaps{GapAt(90.0, 20.0), scaled};
-  auto filled = filling.FillGaps(gaps);
+  auto filled = filling.FillGaps(Found(gaps));
   ASSERT_TRUE(filled.ok()) << filled.status.detail;
   ASSERT_EQ(filled.value.nodes.size(), before.nodes.size() + 2);
   for (size_t i = 0; i < before.nodes.size(); ++i) {
@@ -370,11 +384,12 @@ TEST_F(CaptureSession, FillingGapsAppendsACellAtEachTarget) {
   ASSERT_TRUE(filling.End().ok());
 }
 
-// A build reads the capture from its document, which a refused checkpoint leaves behind the
-// capture: a cell shot then is open to the build and shot to the session, and filling its gap
-// would put a second cell beside it. So the fill asks the document, writes the capture down where
-// the document is behind it, and refuses, since the gaps it was handed came from the old one.
-TEST_F(CaptureSession, AFillFromADocumentBehindTheCaptureIsRefusedAndTheDocumentCaughtUp) {
+// Gaps describe the capture as the build read it, and a cell shot since is open in them and shot
+// to the session: filling its gap would put a second cell beside it. So a fill is held to the
+// revision the build read — here, a capture whose last checkpoint the store refused, so every build
+// reads it behind. The refusal writes it down, so a build after it reads the capture as it stands;
+// the same stale gaps pressed again are still refused.
+TEST_F(CaptureSession, GapsFromADocumentBehindTheCaptureAreRefusedAndTheDocumentCaughtUp) {
   ScatteredCoveragePlannerEngine scattered;
   auto frames = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
   FakeCameraAccess filling_camera(frames);
@@ -382,30 +397,67 @@ TEST_F(CaptureSession, AFillFromADocumentBehindTheCaptureIsRefusedAndTheDocument
                                 *frames, *projects, clock);
   ASSERT_TRUE(filling.Begin(kProject, Spec()).ok());
   const std::vector<CoverageNode> cells = filling.GetPlan().value.nodes;
-  // The others written down, so the document is behind by one cell rather than empty.
   ShootCell(filling, pose, clock, cells[0]);
   ShootCell(filling, pose, clock, cells[1]);
   projects->RefuseWritesOf(kSessionDocumentKey);
   ShootCell(filling, pose, clock, cells[2]);
   projects->RefuseWritesOf("");
-  const std::vector<CoverageGap> gaps{GapAt(240.0, 0.0)};
-  auto refused = filling.FillGaps(gaps);
+  // What a build of that document finds: the last cell open, at its own direction.
+  const FoundGaps stale = Found({GapAt(240.0, 0.0)});
+  auto refused = filling.FillGaps(stale);
   EXPECT_EQ(refused.status.code, StatusCode::FailedPrecondition) << refused.status.detail;
   EXPECT_EQ(filling.GetPlan().value.nodes.size(), cells.size());
   auto written = projects->ReadDocument(kProject, kSessionDocumentKey);
   ASSERT_TRUE(written.ok());
   SessionDocument stored;
   ASSERT_TRUE(DecodeSessionDocument(written.value, stored));
-  EXPECT_EQ(stored.nodes.size(), cells.size());
   for (const CoverageNode& cell : cells) {
     EXPECT_TRUE(std::any_of(stored.candidates.begin(), stored.candidates.end(),
                             [&](const Candidate& c) { return c.node.value == cell.id.value; }))
         << "cell " << cell.id.value << " is still not written down";
   }
-  // Caught up, a fill from a build of it is taken.
-  auto taken = filling.FillGaps(gaps);
+  // The same gaps again, with no build between: still the capture as it was.
+  EXPECT_EQ(filling.FillGaps(stale).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(filling.GetPlan().value.nodes.size(), cells.size());
+  // A build of the caught-up document reads the capture as it stands, and its gaps are taken.
+  auto taken = filling.FillGaps(Found({GapAt(90.0, 20.0)}));
   EXPECT_TRUE(taken.ok()) << taken.status.detail;
   ASSERT_TRUE(filling.End().ok());
+}
+
+// The last cell shot while a build ran: the build's document did not have it, so its gaps are of a
+// capture that has since moved on, and are refused however the page timed its offer.
+TEST_F(CaptureSession, GapsFromABuildStartedBeforeTheLastFrameAreRefused) {
+  ScatteredCoveragePlannerEngine scattered;
+  auto frames = std::make_shared<MemoryFrameStoreAccess>(1 << 22);
+  FakeCameraAccess filling_camera(frames);
+  CaptureSessionManager filling(scattered, pose, quality, preview, filling_camera, *sensor,
+                                *frames, *projects, clock);
+  ASSERT_TRUE(filling.Begin(kProject, Spec()).ok());
+  const std::vector<CoverageNode> cells = filling.GetPlan().value.nodes;
+  ShootCell(filling, pose, clock, cells[0]);
+  ShootCell(filling, pose, clock, cells[1]);
+  const FoundGaps started = Found({GapAt(240.0, 0.0)});
+  ShootCell(filling, pose, clock, cells[2]);
+  auto refused = filling.FillGaps(started);
+  EXPECT_EQ(refused.status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(refused.status.detail,
+            "these gaps were found in the capture as it was before its latest frames; build "
+            "again, then fill");
+  EXPECT_EQ(filling.GetPlan().value.nodes.size(), cells.size());
+  ASSERT_TRUE(filling.End().ok());
+}
+
+// Gaps judged against another session's capture — another tab's, or one begun since — are not this
+// capture's, whatever its counter happens to read.
+TEST_F(CaptureSession, GapsFromAnotherSessionAreRefused) {
+  Begin();
+  ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
+  FoundGaps other = Found({GapAt(90.0, 0.0)});
+  other.judged.session = SessionId{other.judged.session.value + 1};
+  const size_t cells = manager->GetPlan().value.nodes.size();
+  EXPECT_EQ(manager->FillGaps(other).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
 }
 
 // A build of a capture with cells still to shoot finds their directions open, and the guide already
@@ -416,14 +468,14 @@ TEST_F(CaptureSession, FillingIsRefusedWhileCellsOfThePlanAreStillToShoot) {
   Begin();
   const std::vector<CoverageGap> gaps{GapAt(90.0, 0.0)};
   const size_t cells = manager->GetPlan().value.nodes.size();
-  auto early = manager->FillGaps(gaps);
+  auto early = manager->FillGaps(Found(gaps));
   EXPECT_EQ(early.status.code, StatusCode::FailedPrecondition);
   EXPECT_EQ(early.status.detail, "1 cell of the plan is still to shoot; fill once it is");
   EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
   ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
-  ASSERT_TRUE(manager->FillGaps(gaps).ok());
+  ASSERT_TRUE(manager->FillGaps(Found(gaps)).ok());
   // The fill's own cell is now the one still to shoot.
-  EXPECT_EQ(manager->FillGaps(gaps).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->FillGaps(Found(gaps)).status.code, StatusCode::FailedPrecondition);
   EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells + 1);
 }
 
@@ -439,7 +491,7 @@ TEST_F(CaptureSession, FillingStepsTheCandidateCounterPastAPickOnAFillCell) {
   }
   ASSERT_TRUE(projects->WriteDocument(kProject, SelectionDocumentKey(NodeId{highest + 1}), "50")
                   .ok());
-  auto filled = manager->FillGaps(std::vector<CoverageGap>{GapAt(90.0, 0.0)});
+  auto filled = manager->FillGaps(Found({GapAt(90.0, 0.0)}));
   ASSERT_TRUE(filled.ok()) << filled.status.detail;
   const CoverageNode cell = filled.value.nodes.back();
   ASSERT_EQ(cell.id.value, highest + 1) << "the premise: the pick is under the fill cell";
@@ -466,7 +518,7 @@ TEST_F(CaptureSession, AFillTheStoreWillNotWriteDownIsRefused) {
   // plan, it does not show past the refusal.
   ASSERT_TRUE(projects->WriteDocument(kProject, SelectionDocumentKey(NodeId{2}), "50").ok());
   projects->RefuseWritesOf(kSessionDocumentKey);
-  auto filled = manager->FillGaps(std::vector<CoverageGap>{GapAt(90.0, 0.0)});
+  auto filled = manager->FillGaps(Found({GapAt(90.0, 0.0)}));
   EXPECT_EQ(filled.status.code, StatusCode::StorageQuotaExceeded) << filled.status.detail;
   EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
   projects->RefuseWritesOf("");
@@ -481,17 +533,17 @@ TEST_F(CaptureSession, AFillTheStoreWillNotWriteDownIsRefused) {
 // precondition is about the capture rather than the gaps.
 TEST_F(CaptureSession, NoGapsFillsNothing) {
   Begin();
-  EXPECT_EQ(manager->FillGaps({}).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->FillGaps(Found({})).status.code, StatusCode::FailedPrecondition);
   ASSERT_TRUE(FireBurst(FirstNode(), BurstSpec{}).ok());
   const size_t cells = manager->GetPlan().value.nodes.size();
-  auto filled = manager->FillGaps({});
+  auto filled = manager->FillGaps(Found({}));
   ASSERT_TRUE(filled.ok()) << filled.status.detail;
   EXPECT_EQ(filled.value.nodes.size(), cells);
 }
 
 TEST_F(CaptureSession, FillingIsRefusedWithoutASessionOrDuringABurst) {
   const std::vector<CoverageGap> gaps{GapAt(90.0, 0.0)};
-  EXPECT_EQ(manager->FillGaps(gaps).status.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(manager->FillGaps(Found(gaps)).status.code, StatusCode::FailedPrecondition);
   Begin();
   // A retake of a shot cell, so the burst is all that stands in the way: armed on a cell still to
   // shoot, the unshot refusal would answer with the same code.
@@ -501,7 +553,7 @@ TEST_F(CaptureSession, FillingIsRefusedWithoutASessionOrDuringABurst) {
   burst.frameCount = 2;
   ASSERT_TRUE(manager->ArmBurst(FirstNode(), burst).ok());
   const size_t cells = manager->GetPlan().value.nodes.size();
-  auto refused = manager->FillGaps(gaps);
+  auto refused = manager->FillGaps(Found(gaps));
   EXPECT_EQ(refused.status.code, StatusCode::FailedPrecondition);
   EXPECT_EQ(refused.status.detail, "a burst is under way; fill once it is done");
   EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
@@ -520,19 +572,19 @@ TEST_F(CaptureSession, FillingIsRefusedForATargetThatIsNotARotationOrTooManyCell
     CoverageGap bad = GapAt(0.0, 0.0);
     bad.target = target;
     const std::vector<CoverageGap> gaps{GapAt(90.0, 0.0), bad};
-    EXPECT_EQ(manager->FillGaps(gaps).status.code, StatusCode::InvalidArgument)
+    EXPECT_EQ(manager->FillGaps(Found(gaps)).status.code, StatusCode::InvalidArgument)
         << target.w << " " << target.x;
   }
   std::vector<CoverageGap> many(kMostCellsAPlanHolds - cells + 1, GapAt(45.0, 45.0));
   for (size_t i = 0; i < many.size(); ++i) many[i] = GapAt(0.1 * static_cast<double>(i), 10.0);
-  EXPECT_EQ(manager->FillGaps(many).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(manager->FillGaps(Found(many)).status.code, StatusCode::InvalidArgument);
   EXPECT_EQ(manager->GetPlan().value.nodes.size(), cells);
   auto after = projects->ReadDocument(kProject, kSessionDocumentKey);
   ASSERT_TRUE(after.ok());
   EXPECT_EQ(after.value, before.value);
   // And exactly as many as a plan may hold is not too many.
   many.pop_back();
-  auto full = manager->FillGaps(many);
+  auto full = manager->FillGaps(Found(many));
   ASSERT_TRUE(full.ok()) << full.status.detail;
   EXPECT_EQ(full.value.nodes.size(), kMostCellsAPlanHolds);
 }
@@ -5952,7 +6004,7 @@ TEST_F(CaptureSession, APlanWithNoRoomPastItsCellsIsNotFilled) {
                                   *projects, clock);
     ASSERT_TRUE(manager.Begin(kProject, Spec()).ok()) << id << " " << ring;
     // While its cell is unshot the capture is what refuses, ahead of the argument.
-    EXPECT_EQ(manager.FillGaps(std::vector<CoverageGap>{GapAt(90.0, 0.0)}).status.code,
+    EXPECT_EQ(manager.FillGaps(Found({GapAt(90.0, 0.0)})).status.code,
               StatusCode::FailedPrecondition)
         << id << " " << ring;
     // Shot, and written down with its frames, which is what a fill asks of the capture and its
@@ -5960,7 +6012,7 @@ TEST_F(CaptureSession, APlanWithNoRoomPastItsCellsIsNotFilled) {
     (void)FireBurstOn(manager, clock, NodeId{id}, BurstSpec{});
     ASSERT_FALSE(manager.Candidates(NodeId{id}).value.empty()) << id << " " << ring;
     topmost.CountEveryCellShot();
-    auto filled = manager.FillGaps(std::vector<CoverageGap>{GapAt(90.0, 0.0)});
+    auto filled = manager.FillGaps(Found({GapAt(90.0, 0.0)}));
     EXPECT_EQ(filled.status.code, StatusCode::InvalidArgument) << id << " " << ring;
     EXPECT_EQ(filled.status.detail, "this plan leaves no room for a cell past its own")
         << id << " " << ring;
@@ -6784,7 +6836,7 @@ TEST_F(ResumedSession, FilledCellsKeepTheCandidatesAndSurviveAResume) {
   ASSERT_FALSE(candidates.value.empty());
   CoverageGap gap;
   gap.target = FromAzimuthElevation(120.0, 10.0);
-  auto filled = first.FillGaps(std::vector<CoverageGap>{gap});
+  auto filled = first.FillGaps(Found({gap}));
   ASSERT_TRUE(filled.ok()) << filled.status.detail;
   auto after = first.Candidates(shot);
   ASSERT_TRUE(after.ok());
@@ -6822,16 +6874,16 @@ TEST_F(ResumedSession, AFillTheStoreCannotCheckOrWriteDownIsRefused) {
   const std::vector<CoverageGap> gaps{GapAt(90.0, 0.0)};
 
   projects->RefuseReadsOf(SelectionDocumentKey(NodeId{2}), StatusCode::StorageQuotaExceeded);
-  EXPECT_EQ(first.FillGaps(gaps).status.code, StatusCode::StorageQuotaExceeded);
+  EXPECT_EQ(first.FillGaps(Found(gaps)).status.code, StatusCode::StorageQuotaExceeded);
   EXPECT_EQ(first.GetPlan().value.nodes.size(), cells);
   projects->RefuseReadsOf("");
 
   sink.FailGenerations(true, StatusCode::Unsupported);
-  EXPECT_EQ(first.FillGaps(gaps).status.code, StatusCode::Unsupported);
+  EXPECT_EQ(first.FillGaps(Found(gaps)).status.code, StatusCode::Unsupported);
   EXPECT_EQ(first.GetPlan().value.nodes.size(), cells);
   sink.FailGenerations(false);
 
-  auto taken = first.FillGaps(gaps);
+  auto taken = first.FillGaps(Found(gaps));
   EXPECT_TRUE(taken.ok()) << taken.status.detail;
   ASSERT_TRUE(first.End().ok());
 }

@@ -242,17 +242,14 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       break;
     }
     case 11: {  // CaptureSessionManager.fillGaps
-      std::vector<CoverageGap> gaps;
-      { const size_t count = in.GetCount(40);
-    gaps.clear();
-    gaps.resize(count);
-    for (auto& item : gaps) { (void)codec::Decode(in, item); } }
+      FoundGaps found{};
+      (void)codec::Decode(in, found);
       if (!in.ok()) {
         PutStatus(out, Fail(StatusCode::InvalidArgument, "facade",
                             "malformed arguments"));
         break;
       }
-      auto result = runtime.captureSession().FillGaps(std::span<const CoverageGap>(gaps));
+      auto result = runtime.captureSession().FillGaps(found);
       PutStatus(out, result.status);
       if (result.ok()) {
         codec::Encode(out, result.value);
@@ -352,8 +349,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
       auto result = runtime.panoramaBuild().Gaps(build);
       PutStatus(out, result.status);
       if (result.ok()) {
-        out.PutCount(result.value.size());
-  for (const auto& item : result.value) { codec::Encode(out, item); }
+        codec::Encode(out, result.value);
       }
       break;
     }

@@ -956,14 +956,16 @@ test('a capture builds into a preview the page draws', async ({ page }) => {
 
     // And a fill is not offered: one cell of a sphere leaves the rest of the plan to shoot, which
     // the guide already leads to (ADR 0086). Asked of the core across the worker too, whose refusal
-    // is about the capture rather than the gap, so any gap will do; the plan is left as it was.
+    // is about the capture rather than the gaps or the capture they were judged against, so any
+    // will do; the plan is left as it was.
     await expect(page.locator('#build-fill')).toBeHidden();
     const refused = await page.evaluate(async () => {
       const core = window.sphanoramaCore.captureSession;
       const before = (await core.getPlan()).value.nodes.length;
-      const answer = await core.fillGaps([
-        { target: { w: 1, x: 0, y: 0, z: 0 }, solidAngleFraction: 0.01 },
-      ]);
+      const answer = await core.fillGaps({
+        gaps: [{ target: { w: 1, x: 0, y: 0, z: 0 }, solidAngleFraction: 0.01 }],
+        judged: { session: 1, nextCandidate: 1n },
+      });
       const after = (await core.getPlan()).value.nodes.length;
       return { ok: answer.ok, detail: answer.ok ? '' : answer.status.detail, before, after };
     });

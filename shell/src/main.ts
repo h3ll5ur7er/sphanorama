@@ -832,7 +832,7 @@ function pump(core: SphanoramaCore, plan: CapturePlan | null, motionRunning: boo
         poll: (build) => core.panoramaBuild.poll(build),
         preview: (build) => core.panoramaBuild.panoramaPreview(build),
         gaps: (build) => core.panoramaBuild.gaps(build),
-        fill: (gaps) => core.captureSession.fillGaps([...gaps]),
+        fill: (found) => core.captureSession.fillGaps(found),
       }, paintPreviewOnCanvas, yieldWhile(() => captureBusy()), (plan) => replanSession(plan),
       () => sessionCanFill());
       buildElements.button.onclick = () => { void client.build(); };

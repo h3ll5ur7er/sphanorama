@@ -306,6 +306,22 @@ struct CoverageGap {
   double solidAngleFraction = 0;
 };
 
+// Which state of a capture something was judged against, as its session document said: the
+// session, and how far its candidate counter had gone. Every frame a capture takes steps the
+// counter, so two equal ones are the same capture with the same frames — a fill's cells change
+// the plan without stepping it, but are unshot until a frame does — and a build's gaps are
+// fillable only while the capture is still the one it read (ADR 0086).
+struct CaptureRevision {
+  SessionId session;
+  uint64_t nextCandidate = 0;
+};
+
+// What a build found open, and the capture it judged to find it.
+struct FoundGaps {
+  std::vector<CoverageGap> gaps;
+  CaptureRevision judged;
+};
+
 enum class NodeState : uint8_t { Pending, Capturing, Captured, Satisfied, Flagged, Retaking };
 
 // ---------------------------------------------------------------- candidates

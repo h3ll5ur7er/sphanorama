@@ -10,7 +10,7 @@
  * the gaps one finds reach the other through here (ADR 0086).
  */
 import type {
-  BuildId, BuildProgress, BuildStage, CapturePlan, CoverageGap, FramePreview, Status,
+  BuildId, BuildProgress, BuildStage, CapturePlan, CoverageGap, FoundGaps, FramePreview, Status,
 } from '../../../../contracts/ts/contracts';
 
 /** A value, or a failure carrying the core's status — which, unlike the review strip, this shows. */
@@ -21,8 +21,9 @@ export interface BuildCore {
   start(): Promise<Answered<BuildId>>;
   poll(build: BuildId): Promise<Answered<BuildProgress>>;
   preview(build: BuildId): Promise<Answered<FramePreview>>;
-  gaps(build: BuildId): Promise<Answered<readonly CoverageGap[]>>;
-  fill(gaps: readonly CoverageGap[]): Promise<Answered<CapturePlan>>;
+  gaps(build: BuildId): Promise<Answered<FoundGaps>>;
+  // Handed the build's answer whole, with the capture it judged, which the core holds a fill to.
+  fill(found: FoundGaps): Promise<Answered<CapturePlan>>;
 }
 
 export interface BuildElements {
@@ -130,7 +131,7 @@ export function createBuildClient(
   // a plan the fill is changing, and a fill pressed under a build fills the last build's gaps.
   let running = false;
   // The last build's gaps, and only while its offer stands.
-  let found: readonly CoverageGap[] = [];
+  let found: FoundGaps | null = null;
   ui.canvas.hidden = true;
   ui.fill.hidden = true;
 
@@ -184,7 +185,7 @@ export function createBuildClient(
     await yieldToPage();
     // Caught here rather than by `build`: the panorama is on screen, and a worker that goes away
     // now takes only this sentence with it, as a refused judgement does (ADR 0085).
-    let gaps: Answered<readonly CoverageGap[]>;
+    let gaps: Answered<FoundGaps>;
     try {
       gaps = await core.gaps(started.value);
     } catch (reason: unknown) {
@@ -192,28 +193,31 @@ export function createBuildClient(
       gaps = { ok: false, status: { detail: 'the core did not answer' } as Status };
     }
     ui.status.textContent = gaps.ok
-      ? `${built} ${describeGaps(gaps.value)}`
+      ? `${built} ${describeGaps(gaps.value.gaps)}`
       : `${built} Whether the sphere has gaps could not be judged: ${why(gaps.status)}.`;
-    if (gaps.ok && gaps.value.length > 0 && couldFill && canFill()) {
+    if (gaps.ok && gaps.value.gaps.length > 0 && couldFill && canFill()) {
       found = gaps.value;
       ui.fill.hidden = false;
     }
   }
 
-  async function fillFound(): Promise<void> {
+  async function fillFound(offered: FoundGaps): Promise<void> {
     await yieldToPage();
-    const answer = await core.fill(found);
+    const answer = await core.fill(offered);
     if (!answer.ok) {
       ui.status.textContent = `The gaps could not be added to the plan: ${why(answer.status)}.`;
       return;
     }
-    const cells = found.length === 1 ? '1 cell' : `${found.length} cells`;
-    found = [];
+    const count = offered.gaps.length;
+    const cells = count === 1 ? '1 cell' : `${count} cells`;
+    // Asked again, of the capture the fill was asked of: a loop that stopped while the fill was in
+    // flight has no guide, though the cells are written down and a resume leads to them. Before
+    // `filled`, which hands the loop a plan whose new cells are unshot, so asked after it this
+    // would answer for a capture that can take no fill rather than for one with no guide.
+    const toThem = canFill() ? 'follow the guide to them' : 'reload to be guided to them';
+    found = null;
     ui.fill.hidden = true;
     filled(answer.value);
-    // Asked again: a loop that stopped while the fill was in flight has no guide, though the cells
-    // are written down and a resume leads to them.
-    const toThem = canFill() ? 'follow the guide to them' : 'reload to be guided to them';
     ui.status.textContent = `Added ${cells} to the capture's plan: ${toThem}, then build again.`;
   }
 
@@ -228,7 +232,7 @@ export function createBuildClient(
       // with them, which this build may no longer find.
       ui.canvas.hidden = true;
       delete ui.canvas.dataset.preview;
-      found = [];
+      found = null;
       ui.fill.hidden = true;
       try {
         await run();
@@ -243,16 +247,16 @@ export function createBuildClient(
       }
     },
     async fill() {
-      if (running || found.length === 0) return;
+      if (running || found === null) return;
       if (!canFill()) {
-        found = [];
+        found = null;
         ui.fill.hidden = true;
         return;
       }
       running = true;
       hold(true);
       try {
-        await fillFound();
+        await fillFound(found);
       } catch (reason: unknown) {
         // The offer stands: nothing was added that the core said, and pressing again asks again.
         console.error('sphanorama build: the fill call did not answer', reason);

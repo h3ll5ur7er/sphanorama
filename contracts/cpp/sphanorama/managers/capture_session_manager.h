@@ -252,31 +252,32 @@ class ICaptureSessionManager {
 
   // Appends a cell at each gap's target to the session's plan, so guidance leads there, and
   // answers the plan that results (ADR 0084, ADR 0086). The gaps are a build's of this capture
-  // (`IPanoramaBuildManager::Gaps`), which a client hands across: the two managers never call each
-  // other. Each new cell is aimed at its target as given — a build answers level ones — with the
-  // capture's cone, under an identity past every cell the plan has, on a ring of its own past the
-  // plan's. The candidate counter steps past any pick recorded under a new identity, as `Begin`
-  // does. And the plan is written down before it is answered, so a resume finds it.
+  // (`IPanoramaBuildManager::Gaps`), handed across whole with the capture they were judged
+  // against: the two managers never call each other. Each new cell is aimed at its target as
+  // given — a build answers level ones — with the capture's cone, under an identity past every cell
+  // the plan has, on a ring of its own past the plan's. The candidate counter steps past any pick
+  // recorded under a new identity, as `Begin` does. And the plan is written down before it is
+  // answered, so a resume finds it.
   //
   // Additive and nothing else: no cell is moved, renumbered or dropped, so every candidate stays
   // under the cell it was filed under, and a plan with fill cells is one `Resume` takes as stored.
   // No gaps adds nothing and answers the plan as it was, once the capture could take a fill.
   //
   // `FailedPrecondition` with no session in progress; while a burst is armed or firing, whose cell
-  // is fixed for its length; and while any cell of the plan is still to shoot, its fill cells
-  // included. A build of such a capture finds those cells' directions open and the guide already
-  // leads there, so a fill would put a second cell beside each, and a second press would fill the
-  // same gaps twice. A build started before the last cell was shot finds it open too, and this
-  // cannot tell its gaps from a later build's: a client asks before the build starts. And while
-  // the stored document lacks a cell this session holds as shot, which a refused checkpoint
-  // leaves and a build reads as open: the capture is written down first, so the next build sees
-  // it shot, and that is the one refusal that changes the document. A precondition is asked
-  // before the argument is. `InvalidArgument` for a target that is not a
+  // is fixed for its length; while any cell of the plan is still to shoot, its fill cells
+  // included, since a build of such a capture finds those cells open and the guide already leads
+  // there; and for gaps judged against a capture other than this one as it stands — another
+  // session, or this one before a frame it now has. A cell shot since the build read the
+  // document, during the build or under a checkpoint the store refused, is open in its gaps and
+  // would be filled beside itself. That refusal writes the capture down first, so the next build
+  // reads it as it stands, and is the one refusal that changes the document. An offered frame is
+  // not written down, so a build does not see it and a cell it alone covers reads as open.
+  // A precondition is asked before the argument is. `InvalidArgument` for a target that is not a
   // rotation, for a plan whose identities or rings leave no room past them, and for more than
   // 2000 cells in all — refused whole rather than filled in part, since part of a gap is not a
   // sphere any closer to complete. The store's own status where it would not write the plan down
   // or read a pick. Any refusal leaves the plan and the counter as they were.
-  virtual Result<CapturePlan> FillGaps(std::span<const CoverageGap> gaps) = 0;
+  virtual Result<CapturePlan> FillGaps(const FoundGaps& found) = 0;
 
   virtual Status End() = 0;
 };

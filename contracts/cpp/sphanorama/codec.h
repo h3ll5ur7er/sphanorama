@@ -38,6 +38,10 @@ void Encode(Writer& out, const CapturePlan& value);
 bool Decode(Reader& in, CapturePlan& value);
 void Encode(Writer& out, const CoverageGap& value);
 bool Decode(Reader& in, CoverageGap& value);
+void Encode(Writer& out, const CaptureRevision& value);
+bool Decode(Reader& in, CaptureRevision& value);
+void Encode(Writer& out, const FoundGaps& value);
+bool Decode(Reader& in, FoundGaps& value);
 void Encode(Writer& out, const QualityScore& value);
 bool Decode(Reader& in, QualityScore& value);
 void Encode(Writer& out, const Candidate& value);
@@ -250,6 +254,33 @@ inline void Encode(Writer& out, const CoverageGap& value) {
 inline bool Decode(Reader& in, CoverageGap& value) {
   if (!Decode(in, value.target)) return false;
   value.solidAngleFraction = static_cast<decltype(value.solidAngleFraction)>(in.GetF64());
+  return in.ok();
+}
+
+inline void Encode(Writer& out, const CaptureRevision& value) {
+  out.PutF64(static_cast<double>(value.session.value));
+  out.PutU64(value.nextCandidate);
+}
+
+inline bool Decode(Reader& in, CaptureRevision& value) {
+  value.session.value = in.GetId();
+  value.nextCandidate = in.GetU64();
+  return in.ok();
+}
+
+inline void Encode(Writer& out, const FoundGaps& value) {
+  out.PutCount(value.gaps.size());
+  for (const auto& item : value.gaps) { Encode(out, item); }
+  Encode(out, value.judged);
+}
+
+inline bool Decode(Reader& in, FoundGaps& value) {
+  { const size_t count = in.GetCount(40);
+    if (!in.ok()) return false;
+    value.gaps.clear();
+    value.gaps.resize(count);
+    for (auto& item : value.gaps) { if (!Decode(in, item)) return false; } }
+  if (!Decode(in, value.judged)) return false;
   return in.ok();
 }
 

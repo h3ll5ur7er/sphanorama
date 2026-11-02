@@ -43,7 +43,7 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   Result<FramePreview> CandidatePreview(NodeId node, CandidateId candidate,
                                        int32_t maxEdge) const override;
   Status RequestRetake(NodeId node, bool replace) override;
-  Result<CapturePlan> FillGaps(std::span<const CoverageGap> gaps) override;
+  Result<CapturePlan> FillGaps(const FoundGaps& found) override;
   Status End() override;
 
  private:
@@ -54,9 +54,6 @@ class CaptureSessionManager final : public ICaptureSessionManager {
   void Checkpoint() const;
   // What `Checkpoint` writes, with the store's answer, for the caller whose answer depends on it.
   Status WriteSessionDocument() const;
-  // Whether the stored document has a candidate under every cell of the plan: what a build reads
-  // as shot, which a refused checkpoint leaves behind what this session holds.
-  bool DocumentFilesEveryCell() const;
   // Everything both entry points do once a plan exists: the pose the session starts from, the
   // sensor, the preview. It closes the camera itself if the pose engine refuses, because by here
   // the camera is already open and a session that cannot start must not leave the indicator lit.

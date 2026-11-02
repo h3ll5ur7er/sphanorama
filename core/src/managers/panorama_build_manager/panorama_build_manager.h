@@ -28,7 +28,7 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
   Result<PanoramaRef> Panorama(BuildId build) override;
   Result<FramePreview> PanoramaPreview(BuildId build) override;
   Result<GhostReport> Ghosts(BuildId build) override;
-  Result<std::vector<CoverageGap>> Gaps(BuildId build) override;
+  Result<FoundGaps> Gaps(BuildId build) override;
   Status Invalidate(BuildId build, std::span<const NodeId> dirty) override;
   Status Cancel(BuildId build) override;
 
@@ -63,6 +63,8 @@ class PanoramaBuildManager final : public IPanoramaBuildManager {
     // Every candidate the capture wrote down, which the plan has to file to be this capture's.
     std::vector<Candidate> candidates;
     Result<std::vector<CoverageGap>> gaps;
+    // The capture those gaps describe: the session and counter of the document `Start` read.
+    CaptureRevision judged;
     std::optional<FrameRef> preview;
     // Capture frames a refusal left out of their tier that the store would not put back yet.
     std::vector<Misplaced> misplaced;

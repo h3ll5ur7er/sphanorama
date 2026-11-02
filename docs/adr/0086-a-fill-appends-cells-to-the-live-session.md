@@ -21,8 +21,11 @@ Three more things had to be settled:
 
 ## Decision
 
-- **`ICaptureSessionManager::FillGaps(gaps)` appends to the live session's plan**, writes it down,
-  and answers the plan that results. There is no resume, because the session never stopped.
+- **`ICaptureSessionManager::FillGaps(found)` appends to the live session's plan**, writes it
+  down, and answers the plan that results. There is no resume, because the session never stopped.
+  `found` is `IPanoramaBuildManager::Gaps`' answer whole: the gaps, and the capture they were
+  judged against — the session and candidate counter of the document `Start` read, a
+  `CaptureRevision`.
   - `FailedPrecondition` with no session, and while a burst is armed or firing. The page holds its
     calls through a burst anyway (ADR 0071).
   - `FailedPrecondition`, too, while any cell of the plan is still to shoot, fill cells included.
@@ -30,12 +33,15 @@ Three more things had to be settled:
     leads there: a fill would put a second cell beside each, and one pressed after they were shot
     would lead back to directions already taken. Counting fill cells is what stops a second
     press from filling the same gaps twice.
-  - `FailedPrecondition`, too, while the stored document lacks a cell the session holds as shot.
-    A build reads the capture from that document, and a checkpoint the store refused leaves a shot
-    cell open there, so its gap would be filled beside it. The document is asked rather than a
-    remembered failure, which would be a third copy of what is shot. The capture is written down
-    before this refusal, so the next build sees the cell shot; it is the one refusal that changes
-    the document.
+  - `FailedPrecondition`, too, for gaps judged against a capture other than the session as it
+    stands: another session, or this one before a frame it now has. Every frame steps the
+    counter, so equal revisions are the same frames. A cell shot since the build read the
+    document — during the build, or under a checkpoint the store refused — is open in its gaps,
+    and filling it would put a cell beside itself; the same stale gaps pressed twice are refused
+    twice. The capture is written down before this refusal, since a capture with every cell shot
+    fires no burst to checkpoint it and every later build would read the same stale document; it
+    is the one refusal that changes the document. An offered frame is not written down, so a
+    build does not see it and a cell it alone covers reads as open.
   - A precondition is asked before the argument is, so an empty fill is refused while the capture
     could not take one, rather than answered with the plan.
 - **The client sequences the two managers.** The build client already holds the gaps. It offers a
@@ -100,3 +106,12 @@ at all.
 **Have `Begin`'s planner replan with the fitted lens.** It would lay a tighter plan, but under new
 identities, and every candidate would be filed under the wrong cell. ADR 0077 exists to prevent
 exactly that.
+
+**Ask the stored document at fill time whether it files every shot cell**, rather than carry the
+capture a build judged. It needs no contract change, and it was the first fix for a checkpoint the
+store refused. But it asks the document as it is *now*, and the gaps describe the document the
+build read: the catch-up write that refusal makes is the same write that lets the same stale gaps
+through on a second press, and a build started before the last cell was shot reads a document the
+burst has since brought up to date. It also could not catch up a cell an offered frame alone
+covers, which the document never files, and it read a store's refused read as a document behind.
+A revision is compared rather than read, so neither of those can arise.

@@ -201,6 +201,8 @@ Result<BuildId> PanoramaBuildManager::Start(ProjectId project, const BuildSpec& 
   build.plan = CapturePlan{document.nodes, document.spec};
   build.plannedLens = document.lens;
   build.candidates = document.candidates;
+  build.judged.session = SessionId{document.session};
+  build.judged.nextCandidate = document.nextCandidate;
 
   // Last, since everything above can refuse and the finished build stands until this succeeds.
   if (build_) {
@@ -585,13 +587,14 @@ Result<GhostReport> PanoramaBuildManager::Ghosts(BuildId id) {
   return Err<GhostReport>(StatusCode::Unsupported, kComponent, "nothing detects movers yet");
 }
 
-Result<std::vector<CoverageGap>> PanoramaBuildManager::Gaps(BuildId id) {
+Result<FoundGaps> PanoramaBuildManager::Gaps(BuildId id) {
   SPH_TRY(Build* const build, Find(id));
   if (build->progress.stage != BuildStage::Complete) {
-    return Err<std::vector<CoverageGap>>(StatusCode::FailedPrecondition, kComponent,
-                                         "the build has not completed");
+    return Err<FoundGaps>(StatusCode::FailedPrecondition, kComponent,
+                          "the build has not completed");
   }
-  return build->gaps;
+  SPH_TRY(std::vector<CoverageGap> gaps, build->gaps);
+  return Ok(FoundGaps{std::move(gaps), build->judged});
 }
 
 Status PanoramaBuildManager::Invalidate(BuildId id, std::span<const NodeId>) {

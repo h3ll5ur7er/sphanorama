@@ -211,6 +211,31 @@ export function decodeCoverageGap(input: Reader): C.CoverageGap {
   };
 }
 
+export function encodeCaptureRevision(out: Writer, value: C.CaptureRevision): void {
+  out.f64(value.session);
+  out.u64(value.nextCandidate);
+}
+
+export function decodeCaptureRevision(input: Reader): C.CaptureRevision {
+  return {
+    session: input.f64() as C.SessionId,
+    nextCandidate: input.u64(),
+  };
+}
+
+export function encodeFoundGaps(out: Writer, value: C.FoundGaps): void {
+  out.count(value.gaps.length);
+  for (const item of value.gaps) { encodeCoverageGap(out, item); }
+  encodeCaptureRevision(out, value.judged);
+}
+
+export function decodeFoundGaps(input: Reader): C.FoundGaps {
+  return {
+    gaps: Array.from({ length: input.count() }, () => decodeCoverageGap(input)),
+    judged: decodeCaptureRevision(input),
+  };
+}
+
 export function encodeQualityScore(out: Writer, value: C.QualityScore): void {
   out.f64(value.sharpness);
   out.f64(value.motionBlur);

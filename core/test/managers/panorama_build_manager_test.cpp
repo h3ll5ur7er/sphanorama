@@ -1930,9 +1930,13 @@ TEST_F(PanoramaBuildManagerTest, GapsAreJudgedWhereTheSolvePlacedEachFrameThroug
 
   auto gaps = manager_.Gaps(build.value);
   ASSERT_TRUE(gaps.ok()) << gaps.status.detail;
-  ASSERT_EQ(gaps.value.size(), 1u);
-  EXPECT_EQ(gaps.value[0].target.y, gap.target.y);
-  EXPECT_EQ(gaps.value[0].solidAngleFraction, 0.25);
+  ASSERT_EQ(gaps.value.gaps.size(), 1u);
+  EXPECT_EQ(gaps.value.gaps[0].target.y, gap.target.y);
+  EXPECT_EQ(gaps.value.gaps[0].solidAngleFraction, 0.25);
+  // With the capture they describe, as the document read at `Start` says, which a fill is held to
+  // (ADR 0086).
+  EXPECT_EQ(gaps.value.judged.session.value, document_.session);
+  EXPECT_EQ(gaps.value.judged.nextCandidate, document_.nextCandidate);
   // Asked once, in the build: answering again judges nothing again.
   ASSERT_TRUE(manager_.Gaps(build.value).ok());
   EXPECT_EQ(planner_.judged, 1);
