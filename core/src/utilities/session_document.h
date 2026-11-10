@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -76,14 +77,18 @@ inline bool IdentityWithHeadroom(uint64_t id) { return id != 0 && id < (uint64_t
 
 std::string EncodeSessionDocument(const SessionDocument& stored);
 
-// What makes cells a plan a resume could take: some cells, each under an identity a counter issues,
-// on a ring, aimed by a unit rotation, with a cone under a right angle and inside the capture's,
-// and one cell per identity.
+// The most cells a plan holds: more than this is over an hour at a two-second dwell (ADR 0076).
+// Laid by the planner as its limit, and asked of cells a fill appends (ADR 0086).
+inline constexpr size_t kMostCellsAPlanHolds = 2000;
+
+// What makes cells a plan a resume could take: some cells and no more than `kMostCellsAPlanHolds`,
+// each under an identity a counter issues, on a ring, aimed by a unit rotation, with a cone under a
+// right angle and inside the capture's, and one cell per identity.
 // Asked by the decoder of a document's cells, and by `CaptureSessionManager` of a planner's before
-// it keeps them, so that what is written down is what can be read back whatever planner is wired in
-// (ADR 0077); and by a build of a replan before it judges gaps against it, since filling appends to
-// that plan and writes it down (ADR 0085). The contract lets a planner lay any of these; only a
-// document needs them all.
+// it keeps them and of a plan a fill grew (ADR 0086), so that what is written down is what can be
+// read back whatever planner is wired in (ADR 0077); and by a build of a replan before it judges
+// gaps against it, since filling appends to that plan and writes it down (ADR 0085). The contract
+// lets a planner lay any of these; only a document needs them all.
 std::optional<std::string> PlanDefect(const std::vector<CoverageNode>& nodes,
                                       const CapturePlanSpec& spec);
 

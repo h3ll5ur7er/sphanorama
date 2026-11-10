@@ -249,14 +249,16 @@ What is left before Phase 1 can start in earnest, in the order it blocks:
   gaps; feeding the fitted lens (ADR 0067) into the next plan is not done. The planner checks each
   plan it lays for frames anywhere in their cones and lays it tighter until it passes, which closed
   the caps beside the poles and zero overlap (ADR 0076).
-- **Gaps a build finds, filled by new cells — started.** A capture's holes come from the lens or the
+- **Gaps a build finds, filled by new cells — done.** A capture's holes come from the lens or the
   poses being wrong, and only a build sees either, so gaps are judged from where the solve placed
   each frame (ADR 0084). `CoveragePlannerEngine::FindGaps` is built: it says which parts of the
   plan's sphere no placed frame covers, a seam thinner than about 2.5 degrees included, and gives
   targets a fill frame covers from anywhere in the cone. A build asks it in a step after the solve,
   through the solve's lens, and the page says how much of the sphere is open and how many frames
-  would complete its plan (ADR 0085). Where no lens was fitted, a wrong one goes unseen. Not built
-  yet: the capture appending a cell at each target and resuming.
+  would complete its plan (ADR 0085). Where no lens was fitted, a wrong one goes unseen. A press
+  then appends a cell at each target to the live session's plan, so the guide leads there, and a
+  second build judges what is left (ADR 0086). Not yet measured on a phone: how often a field
+  capture needs a fill, and how many cells one adds.
 - `FrameQualityEngine` v1: sharpness (variance of Laplacian on a downscale) and exposure
   agreement are **done** — `SharpnessFrameQualityEngine` is what the WASM build and the native
   tests use (there is no bench yet, whatever the line above this one used to say), and `Rank`

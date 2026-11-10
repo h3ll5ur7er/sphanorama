@@ -3,7 +3,8 @@
 // and what is worth asserting here is *whether* it is asked to paint, and with what.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
-  BuildId, BuildProgress, BuildStage, CoverageGap, FramePreview, Status,
+  BuildId, BuildProgress, BuildStage, CaptureRevision, CapturePlan, CoverageGap, FoundGaps,
+  FramePreview, Status,
 } from '../../../../contracts/ts/contracts';
 import {
   type BuildCore, type BuildElements, captureNeedsCore, createBuildClient, yieldWhile,
@@ -17,6 +18,7 @@ function elements(): BuildElements {
     status: document.createElement('p'),
     progress: document.createElement('progress'),
     canvas: document.createElement('canvas'),
+    fill: document.createElement('button'),
   };
 }
 
@@ -40,6 +42,9 @@ function gap(solidAngleFraction: number): CoverageGap {
  * A core that answers each poll with the next progress it is given, a sphere with nothing missing
  * unless told otherwise, and records every call.
  */
+/** The capture a build judged, as its document said; the client hands it back untouched. */
+const judged = { project: 2, session: 3, nextCandidate: 41n } as unknown as CaptureRevision;
+
 function scriptedCore(polls: BuildProgress[], gaps: CoverageGap[] = []) {
   const calls: string[] = [];
   const core: BuildCore = {
@@ -51,7 +56,14 @@ function scriptedCore(polls: BuildProgress[], gaps: CoverageGap[] = []) {
       return { ok: true, value: next };
     },
     preview: async (build) => { calls.push(`preview ${build}`); return { ok: true, value: preview }; },
-    gaps: async (build) => { calls.push(`gaps ${build}`); return { ok: true, value: gaps }; },
+    gaps: async (build) => {
+      calls.push(`gaps ${build}`);
+      return { ok: true, value: { gaps, judged } };
+    },
+    fill: async (asked) => {
+      calls.push(`fill ${asked.gaps.length}`);
+      return { ok: true, value: { nodes: [], spec: {} } as unknown as CapturePlan };
+    },
   };
   return { core, calls };
 }
@@ -475,5 +487,236 @@ describe('whether the capture needs the core', () => {
     // A stopped capture has no next tick to finish a burst with, so a flag it left set would hold
     // a build for the life of the tab — a camera taken away mid-burst leaves `firing` true.
     expect(captureNeedsCore({ stopped: true, arming: true, armed: true, firing: true })).toBe(false);
+  });
+});
+
+describe('filling the gaps a build found', () => {
+  it('offers to fill only when the build found gaps', async () => {
+    for (const [found, offered] of [[[gap(0.01), gap(0.02)], true], [[], false]] as const) {
+      const { core } = scriptedCore([progress('Complete', 1)], [...found]);
+      const ui = elements();
+      ui.fill.hidden = !offered;
+      await createBuildClient(ui, core, drawing(), immediately).build();
+      expect(ui.fill.hidden).toBe(!offered);
+    }
+    // Nor when the gaps could not be judged: there is nothing to fill with.
+    const { core } = scriptedCore([progress('Complete', 1)]);
+    core.gaps = async () => ({ ok: false, status: { detail: 'no' } as Status });
+    const ui = elements();
+    await createBuildClient(ui, core, drawing(), immediately).build();
+    expect(ui.fill.hidden).toBe(true);
+  });
+
+  it('fills the gaps it found, and hands the plan that results on', async () => {
+    const { core, calls } = scriptedCore([progress('Complete', 1)], [gap(0.01), gap(0.02)]);
+    const ui = elements();
+    const filled = vi.fn();
+    const waits: string[] = [];
+    // Each wait records the call before it, so the last says what the fill's own wait came after.
+    const client = createBuildClient(ui, core, drawing(), async () => {
+      waits.push(calls.at(-1) ?? '');
+    }, filled);
+    // The core's answer and no other: a plan made up here, an empty one say, would pass a check
+    // that `filled` was called, and the page would take it as the plan.
+    const grown = { nodes: [{ id: 7 }], spec: {} } as unknown as CapturePlan;
+    const asking = core.fill;
+    // And handed the build's answer whole: the revision is what the core holds the fill to.
+    let handed: FoundGaps | null = null;
+    const answered = core.gaps;
+    let answer: FoundGaps | null = null;
+    core.gaps = async (build) => {
+      const result = await answered(build);
+      if (result.ok) answer = result.value;
+      return result;
+    };
+    core.fill = async (asked) => {
+      handed = asked;
+      await asking(asked);
+      return { ok: true, value: grown };
+    };
+    await client.build();
+    await client.fill();
+    expect(calls.at(-1)).toBe('fill 2');
+    expect(waits.at(-1)).toBe('gaps 1');
+    expect(filled).toHaveBeenCalledTimes(1);
+    expect(filled.mock.calls[0][0]).toBe(grown);
+    expect(handed).not.toBeNull();
+    expect(handed).toBe(answer);
+    expect((handed as FoundGaps | null)?.judged).toBe(judged);
+    expect(ui.status.textContent).toBe(
+      'Added 2 cells to the capture\'s plan: follow the guide to them, then build again.');
+    expect(ui.fill.hidden).toBe(true);
+    expect(ui.button.disabled).toBe(false);
+  });
+
+  it('says why a fill was refused, and leaves it to press again', async () => {
+    const { core, calls } = scriptedCore([progress('Complete', 1)], [gap(0.01)]);
+    const succeed = core.fill;
+    core.fill = async () => ({ ok: false, status: { code: 'FailedPrecondition',
+      detail: 'a burst is under way; fill once it is done' } as Status });
+    const ui = elements();
+    const filled = vi.fn();
+    const client = createBuildClient(ui, core, drawing(), immediately, filled);
+    await client.build();
+    await client.fill();
+    expect(ui.status.textContent).toBe(
+      'The gaps could not be added to the plan: a burst is under way; fill once it is done.');
+    expect(filled).not.toHaveBeenCalled();
+    expect(ui.fill.hidden).toBe(false);
+    expect(ui.fill.disabled).toBe(false);
+    // And a press does ask again, with the gaps the refusal left in place.
+    core.fill = succeed;
+    await client.fill();
+    expect(calls.at(-1)).toBe('fill 1');
+    expect(filled).toHaveBeenCalledTimes(1);
+    expect(ui.status.textContent).toBe(
+      'Added 1 cell to the capture\'s plan: follow the guide to them, then build again.');
+  });
+
+  it('says so when the fill call does not answer, and leaves it to press again', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { core, calls } = scriptedCore([progress('Complete', 1)], [gap(0.01)]);
+    const succeed = core.fill;
+    core.fill = async () => { throw new Error('the worker went away'); };
+    const ui = elements();
+    const client = createBuildClient(ui, core, drawing(), immediately);
+    await client.build();
+    await client.fill();
+    expect(ui.status.textContent)
+      .toBe('The gaps could not be added to the plan: the core did not answer.');
+    expect(ui.fill.hidden).toBe(false);
+    expect(ui.button.disabled).toBe(false);
+    core.fill = succeed;
+    await client.fill();
+    expect(calls.at(-1)).toBe('fill 1');
+    expect(ui.fill.hidden).toBe(true);
+  });
+
+  it('withdraws the offer when a new build starts, whose gaps it may not find', async () => {
+    const { core } = scriptedCore(
+      [progress('Complete', 1), progress('Features', 0.5), progress('Complete', 1)], [gap(0.01)]);
+    const ui = elements();
+    let shownDuring: boolean | null = null;
+    let polls = 0;
+    const client = createBuildClient(ui, core, drawing(), async () => {
+      polls += 1;
+      if (polls === 5) shownDuring = !ui.fill.hidden;
+    });
+    await client.build();
+    expect(ui.fill.hidden).toBe(false);
+    await client.build();
+    expect(shownDuring).toBe(false);
+  });
+
+  it('fills once however often it is pressed, and builds nothing meanwhile', async () => {
+    const { core, calls } = scriptedCore([progress('Complete', 1)], [gap(0.01)]);
+    let release: () => void = () => {};
+    const ui = elements();
+    const client = createBuildClient(ui, core, drawing(), immediately);
+    await client.build();
+    core.fill = async (asked) => {
+      calls.push(`fill ${asked.gaps.length}`);
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { ok: true, value: { nodes: [], spec: {} } as unknown as CapturePlan };
+    };
+    const first = client.fill();
+    await Promise.resolve();
+    void client.fill();
+    void client.build();
+    expect(ui.button.disabled).toBe(true);
+    expect(ui.fill.disabled).toBe(true);
+    release();
+    await first;
+    expect(calls.filter((c) => c.startsWith('fill'))).toEqual(['fill 1']);
+    expect(calls.filter((c) => c === 'start')).toEqual(['start']);
+  });
+
+  it('offers to fill only while the capture can act on it', async () => {
+    // A capture with cells still to shoot is led to them already, and one that has stopped has no
+    // guide to lead anywhere: either way a press would be refused or answered with nothing to do.
+    const { core, calls } = scriptedCore([progress('Complete', 1), progress('Complete', 1)],
+      [gap(0.01)]);
+    const ui = elements();
+    let can = false;
+    const client = createBuildClient(ui, core, drawing(), immediately, () => {}, () => can);
+    await client.build();
+    expect(ui.fill.hidden).toBe(true);
+    await client.fill();
+    expect(calls.some((c) => c.startsWith('fill'))).toBe(false);
+    can = true;
+    await client.build();
+    expect(ui.fill.hidden).toBe(false);
+    // And asked again at the press: a loop that stopped since the build withdraws the offer.
+    can = false;
+    await client.fill();
+    expect(calls.some((c) => c.startsWith('fill'))).toBe(false);
+    expect(ui.fill.hidden).toBe(true);
+  });
+
+  it('offers nothing from a build started before the capture could act on it', async () => {
+    // The gaps are judged against the capture `start` read, so a cell shot while the build ran is
+    // a gap in them: offered because the capture is whole by the answer, it would send the guide
+    // back to the direction just shot. Asked as the build starts, then, and again at the answer.
+    const { core } = scriptedCore([progress('Features', 0.5), progress('Complete', 1)],
+      [gap(0.01)]);
+    const ui = elements();
+    let can = false;
+    const shootTheLastCell = core.poll;
+    core.poll = async (build) => { can = true; return shootTheLastCell(build); };
+    const client = createBuildClient(ui, core, drawing(), immediately, () => {}, () => can);
+    await client.build();
+    expect(can).toBe(true);
+    expect(ui.fill.hidden).toBe(true);
+  });
+
+  it('offers nothing when the capture can no longer act on it once the gaps come', async () => {
+    // The mirror of the one above: a loop that stops while the build runs has no guide for the
+    // gaps it finds, so they are not offered, though the capture could take them when it began.
+    const { core } = scriptedCore([progress('Features', 0.5), progress('Complete', 1)],
+      [gap(0.01)]);
+    const ui = elements();
+    let can = true;
+    const stopTheLoop = core.poll;
+    core.poll = async (build) => { can = false; return stopTheLoop(build); };
+    const client = createBuildClient(ui, core, drawing(), immediately, () => {}, () => can);
+    await client.build();
+    expect(can).toBe(false);
+    expect(ui.fill.hidden).toBe(true);
+  });
+
+  it('says to follow the guide while the capture runs, though the plan just grew', async () => {
+    // The page's `canFill` asks whether every cell is shot, and `filled` hands it a plan whose new
+    // cells are not: asked after the plan is taken, it would answer for the plan rather than the
+    // loop, and send a running capture to reload.
+    const { core } = scriptedCore([progress('Complete', 1)], [gap(0.01)]);
+    const ui = elements();
+    let grown = false;
+    const client = createBuildClient(ui, core, drawing(), immediately, () => { grown = true; },
+      () => !grown);
+    await client.build();
+    await client.fill();
+    expect(grown).toBe(true);
+    expect(ui.status.textContent).toBe(
+      'Added 1 cell to the capture\'s plan: follow the guide to them, then build again.');
+  });
+
+  it('says how to reach the new cells when the capture stopped during the fill', async () => {
+    // The plan did grow and is written down, so it is still handed on; only the guide is gone.
+    const { core } = scriptedCore([progress('Complete', 1)], [gap(0.01)]);
+    const ui = elements();
+    let can = true;
+    const filled = vi.fn();
+    const asking = core.fill;
+    core.fill = async (asked) => {
+      const answer = await asking(asked);
+      can = false;
+      return answer;
+    };
+    const client = createBuildClient(ui, core, drawing(), immediately, filled, () => can);
+    await client.build();
+    await client.fill();
+    expect(filled).toHaveBeenCalledTimes(1);
+    expect(ui.status.textContent).toBe(
+      'Added 1 cell to the capture\'s plan: reload to be guided to them, then build again.');
   });
 });

@@ -86,8 +86,8 @@ export function createOverlayPainter(layer: HTMLElement, arrow: HTMLElement): Ov
         paintRing(host, ring);
         drawn.add(key);
       }
-      // A cell that is no longer in view keeps its element, hidden. The plan is fixed for a
-      // session, so the map is bounded by its cell count and never grows past it.
+      // A cell that is no longer in view keeps its element, hidden. A plan only grows by a fill,
+      // within its 2000-cell bound (ADR 0086), so the map is bounded by that count.
       for (const [key, host] of rings) {
         if (!drawn.has(key)) host.hidden = true;
       }

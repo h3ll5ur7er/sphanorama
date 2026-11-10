@@ -2,7 +2,9 @@
 
 **Status:** accepted; the first of three steps; amended by
 [0085](0085-a-build-judges-its-gaps-in-a-step-of-its-own.md), which builds the second and answers
-the gaps from `IPanoramaBuildManager::Gaps` rather than from the build's progress
+the gaps from `IPanoramaBuildManager::Gaps` rather than from the build's progress; amended by
+[0086](0086-a-fill-appends-cells-to-the-live-session.md), which builds the third and appends to the
+live session rather than resuming
 
 ## Context
 

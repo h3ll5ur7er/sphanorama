@@ -27,6 +27,11 @@ class FakeProjectStoreAccess final : public IProjectStoreAccess {
     unreadable_ = std::move(key);
     unreadable_code_ = code;
   }
+  // Writes of this key fail with `code` and leave the document as it was.
+  void RefuseWritesOf(std::string key, StatusCode code = StatusCode::StorageQuotaExceeded) {
+    unwritable_ = std::move(key);
+    unwritable_code_ = code;
+  }
 
  private:
   std::map<uint64_t, std::map<std::string, std::string, std::less<>>> projects_;
@@ -35,6 +40,8 @@ class FakeProjectStoreAccess final : public IProjectStoreAccess {
   int write_count_ = 0;
   std::string unreadable_;
   StatusCode unreadable_code_ = StatusCode::StorageQuotaExceeded;
+  std::string unwritable_;
+  StatusCode unwritable_code_ = StatusCode::StorageQuotaExceeded;
 };
 
 struct FakeProjectStoreAccessFactory {

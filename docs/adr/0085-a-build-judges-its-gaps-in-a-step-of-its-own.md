@@ -1,7 +1,11 @@
 # 0085 — A build judges its gaps in a step of its own
 
 **Status:** accepted; the second of ADR 0084's three steps. It amends where that ADR said the gaps
-would be reported, and adds a step to the build ADR 0070 lays out
+would be reported, and adds a step to the build ADR 0070 lays out; amended by
+[0086](0086-a-fill-appends-cells-to-the-live-session.md), under which a fill appends to the live
+session rather than resuming, so a plan no resume could read is refused because a fill writes it
+down, not because a resume would read it; and `Gaps` answers with the capture it judged, a
+`FoundGaps` rather than the gaps alone
 
 ## Context
 

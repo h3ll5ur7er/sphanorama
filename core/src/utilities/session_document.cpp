@@ -249,6 +249,7 @@ bool FilesEveryCandidate(const std::vector<CoverageNode>& nodes,
 std::optional<std::string> PlanDefect(const std::vector<CoverageNode>& nodes,
                                       const CapturePlanSpec& spec) {
   if (nodes.empty()) return "no cells";
+  if (nodes.size() > kMostCellsAPlanHolds) return "more cells than a plan may hold";
   std::set<uint64_t> ids;
   for (const CoverageNode& node : nodes) {
     if (!IssuableIdentity(node.id.value)) return "a cell under an identity no counter issues";
