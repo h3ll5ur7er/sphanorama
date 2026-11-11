@@ -61,6 +61,13 @@ Three things stood in the way.
 - **An export is always tagged.** `Export` asks the codec for the GPano block whatever the spec's
   `attachGPanoXmp` says: an equirectangular file without it opens as a very wide photograph, which
   is the one thing an export of a sphere must not do.
+- **A file's name says its format.** `Export` refuses a filename whose extension is not the
+  format's, before anything is encoded: once saved, a file has no mime type left, and a JPEG named
+  `.png` is a sphere nothing opens as one. The mime type is derived from the format rather than
+  asked for, so it cannot disagree.
+- **`Unsupported` means "not here".** A projection other than equirectangular, a format the codec
+  does not write and a device with no way to take a file all answer it: none is the caller's
+  mistake, and each is something this build cannot do.
 - **Shared where asked and possible, saved otherwise.** `ProjectManager` hands the bytes to
   `IExportAccess`: `Share` when the spec asks and `CanShare` says yes, `Save` otherwise. The browser
   has no port yet, so its runtime holds `NullExportAccess`, which refuses: an export on the page

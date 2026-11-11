@@ -1,7 +1,9 @@
 #include "managers/project_manager/project_manager.h"
 
+#include <cctype>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "utilities/session_document.h"
 
@@ -17,6 +19,20 @@ std::string_view MimeTypeOf(EncodeFormat format) {
     case EncodeFormat::Png: return "image/png";
   }
   return "application/octet-stream";
+}
+
+// Whether a file's name says the format it holds: once saved, the name is all that does.
+bool NameSays(std::string_view filename, EncodeFormat format) {
+  const size_t dot = filename.rfind('.');
+  if (dot == std::string_view::npos || dot == 0) return false;
+  std::string extension(filename.substr(dot + 1));
+  for (char& c : extension) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  switch (format) {
+    case EncodeFormat::Jpeg: return extension == "jpg" || extension == "jpeg";
+    case EncodeFormat::Avif: return extension == "avif";
+    case EncodeFormat::Png: return extension == "png";
+  }
+  return false;
 }
 }  // namespace
 
@@ -173,6 +189,10 @@ Status ProjectManager::Export(ProjectId project, const PanoramaRef& panorama,
   if (!Exists(project)) return Fail(StatusCode::NotFound, kComponent, "no such project");
   if (spec.filename.empty()) {
     return Fail(StatusCode::InvalidArgument, kComponent, "an export needs a filename");
+  }
+  if (!NameSays(spec.filename, spec.encode.format)) {
+    return Fail(StatusCode::InvalidArgument, kComponent,
+                "an export's filename ends in the extension of the format it is written in");
   }
   if (panorama.projection != Projection::Equirectangular) {
     return Fail(StatusCode::Unsupported, kComponent, "only an equirectangular panorama is written");

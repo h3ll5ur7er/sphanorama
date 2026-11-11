@@ -587,10 +587,11 @@ TEST_F(Projects, AnExportIsHandedOverAsTheFormatItWasWrittenIn) {
   auto created = manager->Create("kitchen");
   for (const auto& [format, mime] : {std::pair{EncodeFormat::Png, "image/png"},
                                      std::pair{EncodeFormat::Avif, "image/avif"}}) {
-    ExportSpec spec = Spec("kitchen.image");
+    ExportSpec spec = Spec(std::string("kitchen.") + (format == EncodeFormat::Png ? "png" : "avif"));
     spec.encode.format = format;
     ASSERT_TRUE(manager->Export(created.value, Panorama(), spec).ok());
     EXPECT_EQ(exporter.artifacts().back().mimeType, mime);
+    EXPECT_EQ(codec.LastSpec().format, format) << "the codec is asked for the format the name says";
   }
 }
 
@@ -628,6 +629,24 @@ TEST_F(Projects, ARefusedExportLeavesNothingBehind) {
   EXPECT_TRUE(exporter.artifacts().empty());
 }
 
+// Once saved, a file has no mime type left, only its name: a name that says another format, or
+// none, would hand over a sphere nothing opens as one. Refused before anything is encoded.
+TEST_F(Projects, ANameThatSaysAnotherFormatIsRefused) {
+  auto created = manager->Create("kitchen");
+  for (const std::string name : {"sphere.png", "sphere", "sphere.jpg.txt", "sphere.", ".jpg"}) {
+    const Status refused = manager->Export(created.value, Panorama(), Spec(name));
+    EXPECT_EQ(refused.code, StatusCode::InvalidArgument) << name;
+    EXPECT_EQ(refused.component, "ProjectManager") << name;
+  }
+  EXPECT_EQ(codec.EncodeCalls(), 0);
+  EXPECT_TRUE(exporter.artifacts().empty());
+  // Either spelling of JPEG's extension, in either case, is JPEG's.
+  for (const std::string name : {"sphere.jpg", "sphere.jpeg", "SPHERE.JPG", "the.sphere.Jpeg"}) {
+    EXPECT_TRUE(manager->Export(created.value, Panorama(), Spec(name)).ok()) << name;
+  }
+  EXPECT_EQ(exporter.artifacts().size(), 4u);
+}
+
 // A new capture empties the store, so a panorama handed across before it is no longer there: built
 // again rather than read as a project that is gone, as `Panorama` would have said one call earlier.
 TEST_F(Projects, APanoramaTheStoreNoLongerHoldsIsToBeBuiltAgain) {
@@ -635,10 +654,21 @@ TEST_F(Projects, APanoramaTheStoreNoLongerHoldsIsToBeBuiltAgain) {
   const PanoramaRef panorama = Panorama();
   ASSERT_TRUE(manager->Export(created.value, panorama, Spec()).ok());
   ASSERT_TRUE(frames.Clear().ok());
+  const int encodes = codec.EncodeCalls();
   const Status stale = manager->Export(created.value, panorama, Spec());
   EXPECT_EQ(stale.code, StatusCode::FailedPrecondition);
   EXPECT_EQ(stale.component, "ProjectManager");
   EXPECT_EQ(exporter.artifacts().size(), 1u) << "only the first export left the device";
+  // Asked after what the caller got wrong, which building again would not mend, and before the
+  // codec is.
+  EXPECT_EQ(manager->Export(ProjectId{404}, panorama, Spec()).code, StatusCode::NotFound);
+  EXPECT_EQ(manager->Export(created.value, panorama, Spec("")).code, StatusCode::InvalidArgument);
+  EXPECT_EQ(manager->Export(created.value, panorama, Spec("kitchen.png")).code,
+            StatusCode::InvalidArgument);
+  PanoramaRef cubed = panorama;
+  cubed.projection = Projection::Cubemap;
+  EXPECT_EQ(manager->Export(created.value, cubed, Spec()).code, StatusCode::Unsupported);
+  EXPECT_EQ(codec.EncodeCalls(), encodes) << "nothing encoded for a panorama that is gone";
   // And a store that cannot say where the frame is has not said it is gone: its own answer.
   RecordingFrameStoreAccess unsure(frames);
   unsure.RefuseResidency(true);
@@ -647,6 +677,7 @@ TEST_F(Projects, APanoramaTheStoreNoLongerHoldsIsToBeBuiltAgain) {
   EXPECT_EQ(unknown.code, StatusCode::Internal);
   EXPECT_EQ(unknown.component, "RecordingFrameStoreAccess");
   EXPECT_EQ(exporter.artifacts().size(), 1u);
+  EXPECT_EQ(codec.EncodeCalls(), encodes);
 }
 
 TEST_F(Projects, IdsDoNotCollideWithProjectsThatOutlivedTheManager) {

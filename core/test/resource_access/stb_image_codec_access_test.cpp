@@ -388,6 +388,24 @@ TEST_F(StbImageCodec, AStoreThatWillNotTakeTheFrameBackIsSaid) {
   EXPECT_EQ(recording.demotions().back(), Residency::Spilled);
 }
 
+// The byte limit is exactly what an `int` counts, asked without allocating it: a store that will
+// not say where a frame is answers for every handle the limits let past, so which answer comes
+// back says which side of them the handle landed on, and nothing is read either way.
+TEST_F(StbImageCodec, TheByteLimitIsExactlyTheFramesAnIntCounts) {
+  RecordingFrameStoreAccess unsure(store);
+  unsure.RefuseResidency(true);
+  StbImageCodecAccess through(unsure);
+  FrameRef frame = Picture(16, 8);
+  frame.width = 32768;
+  frame.stride = 0;
+  frame.height = 16383;
+  EXPECT_EQ(through.Encode(frame, Jpeg()).status.code, StatusCode::Internal)
+      << "two gigabytes less a row is let past, to the store";
+  frame.height = 16384;
+  EXPECT_EQ(through.Encode(frame, Jpeg()).status.code, StatusCode::InvalidArgument)
+      << "two gigabytes is refused";
+}
+
 // Put back is a demotion only for the tiers a pin faults in from: a spilled frame and one on the
 // GPU are demoted to where they were, and a resident one, or one its caller already holds pinned,
 // is asked for nothing, since the release alone puts it back.
