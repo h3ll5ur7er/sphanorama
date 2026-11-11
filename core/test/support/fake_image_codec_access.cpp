@@ -15,6 +15,9 @@ FakeImageCodecAccess::FakeImageCodecAccess(std::shared_ptr<IFrameStoreAccess> st
 
 Result<std::vector<uint8_t>> FakeImageCodecAccess::Encode(const FrameRef& frame,
                                                           const EncodeSpec& spec) {
+  if (refusal_ != StatusCode::Ok) {
+    return Err<std::vector<uint8_t>>(refusal_, kComponent, "this codec refuses every encode");
+  }
   auto pinned = store_->Pin(frame);
   if (!pinned.ok()) return pinned.status;
 

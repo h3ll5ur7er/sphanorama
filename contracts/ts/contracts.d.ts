@@ -487,9 +487,15 @@ export interface EncodeSpec {
   format: EncodeFormat;
   quality: number;
   attachGPanoXmp: boolean;
-  /** for the GPano metadata block */
+  /**
+   * The sphere the frame is part of, for the GPano block: zero for the frame as the whole of one,
+   * otherwise one the frame is a band of, centred on its horizon (ADR 0087).
+   */
   fullPanoWidth: number;
-  /** for the GPano metadata block */
+  /**
+   * The sphere the frame is part of, for the GPano block: zero for the frame as the whole of one,
+   * otherwise one the frame is a band of, centred on its horizon (ADR 0087).
+   */
   fullPanoHeight: number;
 }
 
@@ -1481,7 +1487,18 @@ export interface ProjectManager {
    * for. The sentinel only means something because every other answer is a real one.
    */
   getSelection(project: ProjectId, node: NodeId): Promise<Result<CandidateId>>;
-  export(project: ProjectId, build: BuildId, spec: ExportSpec): Promise<Result<void>>;
+  /**
+   * Writes a build's panorama to a file and hands it to the device (ADR 0087): encoded by
+   * `IImageCodecAccess`, tagged as a photo sphere where the spec asks, then shared where the spec
+   * asks and the device can, and saved otherwise. The panorama is what
+   * `IPanoramaBuildManager::Panorama` answers, which the client hands across: the managers never
+   * call each other. Its preview is what is written, since a build has nothing else yet.
+   * `NotFound` for a project that does not exist; `InvalidArgument` for a spec with no filename and
+   * a panorama with no preview; `Unsupported` for a projection other than equirectangular. The
+   * codec's own status where it would not write the panorama, and the device's where it would not
+   * take the file. Nothing is handed over unless the whole file is.
+   */
+  export(project: ProjectId, panorama: PanoramaRef, spec: ExportSpec): Promise<Result<void>>;
 }
 
 /**

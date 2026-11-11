@@ -58,6 +58,7 @@ add_executable(sphanorama_tests
   ${CMAKE_SOURCE_DIR}/bridge/test/motion_sample_layout_test.cpp
   resource_access/camera_access_contract_test.cpp
   resource_access/codec_and_export_test.cpp
+  resource_access/stb_image_codec_access_test.cpp
   resource_access/frame_store_access_contract_test.cpp
   resource_access/frame_store_spill_test.cpp
   resource_access/motion_sensor_access_contract_test.cpp
@@ -78,6 +79,7 @@ add_executable(sphanorama_tests
   utilities/config_store_test.cpp
   utilities/diagnostics_test.cpp
   utilities/equirect_test.cpp
+  utilities/gpano_xmp_test.cpp
   utilities/event_bus_test.cpp
   utilities/logger_test.cpp
   utilities/pixel_format_test.cpp
@@ -178,7 +180,8 @@ if(SPHANORAMA_WITH_OPENCV)
     ENVIRONMENT
       "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/support/dataset_alloc_test.lsan-suppressions")
 endif()
-target_link_libraries(sphanorama_tests PRIVATE sphanorama_core sphanorama_bridge GTest::gtest_main)
+target_link_libraries(sphanorama_tests PRIVATE sphanorama_core sphanorama_bridge GTest::gtest_main
+                                               sphanorama_stb)
 target_compile_options(sphanorama_tests PRIVATE -Wall -Wextra -Werror)
 
 # A timeout this repository chose, rather than ctest's built-in 1500 seconds. Two of the dataset

@@ -14,7 +14,9 @@
 #include "managers/panorama_build_manager/panorama_build_manager.h"
 #include "managers/project_manager/project_manager.h"
 #include "resource_access/camera_access/null_camera_access.h"
+#include "resource_access/export_access/null_export_access.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
+#include "resource_access/image_codec_access/stb_image_codec_access.h"
 #include "resource_access/motion_sensor_access/null_motion_sensor_access.h"
 #include "utilities/clock.h"
 #if defined(__EMSCRIPTEN__)
@@ -143,7 +145,12 @@ class Runtime {
                                          motion_, frames_, projects_, clock_};
   PanoramaBuildManager panorama_build_{registration_, composition_, planner_, frames_,
                                        projects_};
-  ProjectManager project_{projects_, frames_};
+  // An export is written by a codec inside the core, the same in every build, and handed to the
+  // page by the null port until the browser's lands: refused, rather than written nowhere
+  // (ADR 0087).
+  StbImageCodecAccess codec_{frames_};
+  NullExportAccess exporter_;
+  ProjectManager project_{projects_, frames_, codec_, exporter_};
 };
 
 }  // namespace sphanorama::bridge

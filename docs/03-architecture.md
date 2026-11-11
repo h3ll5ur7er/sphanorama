@@ -213,9 +213,11 @@ about a project rather than a session anybody can be handed, and it is what lets
 resume instead of discovering one by attempting it (ADR 0036). `sessionInAnotherTier` says that
 session's document names a spill tier other than the one the frame store holds, which it asks
 `IFrameStoreAccess` for, or frames on a store with no tier, and `sessionUnreadable` that this build
-cannot read its document (ADR 0083). Export means asking `IImageCodecAccess` to encode and attach
-XMP `GPano` metadata, then handing bytes to `IExportAccess`. It is the only manager that touches
-`IExportAccess`.
+cannot read its document (ADR 0083). Export takes the panorama `PanoramaBuildManager::Panorama`
+answers, which the client hands across, asks `IImageCodecAccess` to encode it and attach XMP
+`GPano` metadata, then hands the bytes to `IExportAccess` to share or save. The codec is inside the
+core, over stb's JPEG writer, because the browser's encoders answer asynchronously (ADR 0087). It is
+the only manager that touches `IExportAccess`.
 
 ## 3.5 The boundary that makes this work
 

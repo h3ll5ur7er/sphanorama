@@ -9,10 +9,20 @@ namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "ProjectManager";
 constexpr const char* kTitleKey = "title";
+
+std::string_view MimeTypeOf(EncodeFormat format) {
+  switch (format) {
+    case EncodeFormat::Jpeg: return "image/jpeg";
+    case EncodeFormat::Avif: return "image/avif";
+    case EncodeFormat::Png: return "image/png";
+  }
+  return "application/octet-stream";
+}
 }  // namespace
 
-ProjectManager::ProjectManager(IProjectStoreAccess& store, IFrameStoreAccess& frames)
-    : store_(store), frames_(frames) {}
+ProjectManager::ProjectManager(IProjectStoreAccess& store, IFrameStoreAccess& frames,
+                               IImageCodecAccess& codec, IExportAccess& exporter)
+    : store_(store), frames_(frames), codec_(codec), exporter_(exporter) {}
 
 bool ProjectManager::Exists(ProjectId project) {
   return store_.ReadDocument(project, kTitleKey).ok();
@@ -158,10 +168,25 @@ Result<CandidateId> ProjectManager::GetSelection(ProjectId project, NodeId node)
   return Ok(*chosen);
 }
 
-Status ProjectManager::Export(ProjectId project, BuildId, const ExportSpec&) {
+Status ProjectManager::Export(ProjectId project, const PanoramaRef& panorama,
+                             const ExportSpec& spec) {
   if (!Exists(project)) return Fail(StatusCode::NotFound, kComponent, "no such project");
-  return Fail(StatusCode::Unsupported, kComponent,
-              "nothing to export until the build pipeline lands in Phase 2");
+  if (spec.filename.empty()) {
+    return Fail(StatusCode::InvalidArgument, kComponent, "an export needs a filename");
+  }
+  if (panorama.projection != Projection::Equirectangular) {
+    return Fail(StatusCode::Unsupported, kComponent, "only an equirectangular panorama is written");
+  }
+  if (!panorama.preview.id.valid()) {
+    return Fail(StatusCode::InvalidArgument, kComponent, "this panorama has no preview to write");
+  }
+  SPH_TRY(const std::vector<uint8_t> bytes, codec_.Encode(panorama.preview, spec.encode));
+  const std::string_view mime = MimeTypeOf(spec.encode.format);
+  if (spec.share) {
+    SPH_TRY(const bool canShare, exporter_.CanShare());
+    if (canShare) return exporter_.Share(spec.filename, mime, bytes);
+  }
+  return exporter_.Save(spec.filename, mime, bytes);
 }
 
 }  // namespace sphanorama

@@ -20,12 +20,16 @@ class FakeImageCodecAccess final : public IImageCodecAccess {
   Result<std::vector<uint8_t>> Encode(const FrameRef& frame, const EncodeSpec& spec) override;
 
   bool LastEncodeCarriedGPano() const { return last_encode_carried_gpano_; }
+  // Every encode refused with `code`, so a caller's answer to a codec that cannot write is
+  // reachable; `Ok` restores it.
+  void RefuseEncodes(StatusCode code) { refusal_ = code; }
   EncodeFormat LastFormat() const { return last_format_; }
 
  private:
   std::shared_ptr<IFrameStoreAccess> store_;
   bool last_encode_carried_gpano_ = false;
   EncodeFormat last_format_ = EncodeFormat::Jpeg;
+  StatusCode refusal_ = StatusCode::Ok;
 };
 
 }  // namespace sphanorama

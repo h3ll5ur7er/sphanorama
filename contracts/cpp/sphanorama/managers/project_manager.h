@@ -67,7 +67,17 @@ class IProjectManager {
   // for. The sentinel only means something because every other answer is a real one.
   virtual Result<CandidateId> GetSelection(ProjectId project, NodeId node) = 0;
 
-  virtual Status Export(ProjectId project, BuildId build, const ExportSpec& spec) = 0;
+  // Writes a build's panorama to a file and hands it to the device (ADR 0087): encoded by
+  // `IImageCodecAccess`, tagged as a photo sphere where the spec asks, then shared where the spec
+  // asks and the device can, and saved otherwise. The panorama is what
+  // `IPanoramaBuildManager::Panorama` answers, which the client hands across: the managers never
+  // call each other. Its preview is what is written, since a build has nothing else yet.
+  //
+  // `NotFound` for a project that does not exist; `InvalidArgument` for a spec with no filename and
+  // a panorama with no preview; `Unsupported` for a projection other than equirectangular. The
+  // codec's own status where it would not write the panorama, and the device's where it would not
+  // take the file. Nothing is handed over unless the whole file is.
+  virtual Status Export(ProjectId project, const PanoramaRef& panorama, const ExportSpec& spec) = 0;
 };
 
 }  // namespace sphanorama

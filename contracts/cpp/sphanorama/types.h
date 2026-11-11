@@ -512,7 +512,9 @@ struct EncodeSpec {
   EncodeFormat format = EncodeFormat::Jpeg;
   int32_t quality = 92;
   bool attachGPanoXmp = false;
-  int32_t fullPanoWidth = 0, fullPanoHeight = 0;   // for the GPano metadata block
+  // The sphere the frame is part of, for the GPano block: zero for the frame as the whole of one,
+  // otherwise one the frame is a band of, centred on its horizon (ADR 0087).
+  int32_t fullPanoWidth = 0, fullPanoHeight = 0;
 };
 
 struct PanoramaRef {

@@ -981,7 +981,11 @@ The window is narrow, the mechanism predates PR #98, and the same versioned URL 
   2048-wide preview `PanoramaPreview` hands across. How long a sphere takes on a phone, and the heap
   it peaks at, are what a phone answers next. Tiles, ghosts and incremental rebuild answer
   `Unsupported`.
-- `ProjectManager` export: JPEG/AVIF with XMP `GPano`.
+- `ProjectManager` export: JPEG/AVIF with XMP `GPano`. **The file is written** (ADR 0087): the
+  client hands `Export` the build's panorama, a codec inside the core writes it as a JPEG with stb's
+  writer, and `utilities/gpano_xmp` tags it as an equirectangular sphere. The browser has no export
+  port yet, so the page cannot hand the file to the user; that port and a button are the next step.
+  AVIF is not written.
 
 Listed in dependency order, which is not build order: **the accuracy harness on synthetic datasets
 comes first**, before any of the above, for the reason in "What to build first" below. It is last in

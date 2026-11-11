@@ -34,6 +34,8 @@
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
 #include "support/fake_motion_sensor_access.h"
 #include "support/fake_spill_sink.h"
+#include "support/fake_export_access.h"
+#include "support/fake_image_codec_access.h"
 #include "support/fake_project_store_access.h"
 #include "utilities/session_document.h"
 #include "utilities/quaternion.h"
@@ -4596,7 +4598,9 @@ TEST_F(ResumedSession, ASessionWorthResumingIsVisibleInTheProjectListing) {
   FakeCameraAccess first_camera(first_store);
   CaptureSessionManager first(planner, pose, quality, preview, first_camera, *sensor, *first_store,
                               *projects, clock);
-  ProjectManager listing(*projects, *first_store);
+  FakeImageCodecAccess codec(first_store);
+  FakeExportAccess exporter;
+  ProjectManager listing(*projects, *first_store, codec, exporter);
 
   auto untouched = listing.Create("never captured");
   ASSERT_TRUE(untouched.ok());
@@ -6617,7 +6621,9 @@ TEST_F(ResumedSession, APickAtTheTopOfTheRangeLeavesTheCaptureAbleToTakeFrames) 
 // this project and every later one in the tab.
 TEST_F(ResumedSession, EveryCandidateACaptureIssuedCanBePickedAndNoUnissuedOneCan) {
   auto store_with_sink = NewStore();
-  ProjectManager picker{*projects, *store_with_sink};
+  FakeImageCodecAccess codec(store_with_sink);
+  FakeExportAccess exporter;
+  ProjectManager picker{*projects, *store_with_sink, codec, exporter};
   FakeCameraAccess camera(store_with_sink);
   CaptureSessionManager manager(planner, pose, quality, preview, camera, *sensor, *store_with_sink,
                                 *projects, clock);

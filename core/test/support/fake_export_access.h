@@ -27,10 +27,13 @@ class FakeExportAccess final : public IExportAccess {
                std::span<const uint8_t> bytes) override;
 
   const std::vector<Artifact>& artifacts() const { return artifacts_; }
+  // Every save and share refused with `code`; `Ok` restores them.
+  void RefuseExports(StatusCode code) { refusal_ = code; }
 
  private:
   bool can_share_;
   std::vector<Artifact> artifacts_;
+  StatusCode refusal_ = StatusCode::Ok;
 };
 
 }  // namespace sphanorama

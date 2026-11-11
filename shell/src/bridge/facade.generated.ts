@@ -330,10 +330,10 @@ export function createProjectManagerProxy(call: FacadeCall) {
         'malformed response: ProjectManager.getSelection returned a value that did not decode') } as const;
       return { ok: true, value } as const;
     },
-    async export(project: C.ProjectId, build: C.BuildId, spec: C.ExportSpec) {
+    async export(project: C.ProjectId, panorama: C.PanoramaRef, spec: C.ExportSpec) {
       const args = new Writer();
       args.f64(project);
-      args.f64(build);
+      codec.encodePanoramaRef(args, panorama);
       codec.encodeExportSpec(args, spec);
       const raw = await call('ProjectManager.export', args.finish());
       const input = new Reader(raw);
