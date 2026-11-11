@@ -587,11 +587,12 @@ TEST_F(Projects, AnExportIsHandedOverAsTheFormatItWasWrittenIn) {
   auto created = manager->Create("kitchen");
   for (const auto& [format, mime] : {std::pair{EncodeFormat::Png, "image/png"},
                                      std::pair{EncodeFormat::Avif, "image/avif"}}) {
-    ExportSpec spec = Spec(std::string("kitchen.") + (format == EncodeFormat::Png ? "png" : "avif"));
+    const char* extension = format == EncodeFormat::Png ? "png" : "avif";
+    ExportSpec spec = Spec(std::string("kitchen.") + extension);
     spec.encode.format = format;
     ASSERT_TRUE(manager->Export(created.value, Panorama(), spec).ok());
     EXPECT_EQ(exporter.artifacts().back().mimeType, mime);
-    EXPECT_EQ(codec.LastSpec().format, format) << "the codec is asked for the format the name says";
+    EXPECT_EQ(codec.LastSpec().format, format) << "the codec is asked for the format named";
   }
 }
 
@@ -638,13 +639,34 @@ TEST_F(Projects, ANameThatSaysAnotherFormatIsRefused) {
     EXPECT_EQ(refused.code, StatusCode::InvalidArgument) << name;
     EXPECT_EQ(refused.component, "ProjectManager") << name;
   }
+  // A base name, as a device saves one: no directory to put it in, and nothing a C string would
+  // stop at or a terminal would act on, wherever in the name it is.
+  for (const std::string& name : {std::string("photos/.jpg"), std::string("photos\\x.jpg"),
+                                 std::string("../../x.jpg"), std::string("sphere\0.jpg", 11),
+                                 std::string("sphere\t.jpg"), std::string("sphere\x7f.jpg"),
+                                 std::string("\x1b[2Jsphere.jpg"),
+                                 std::string("sphere\x1f.jpg")}) {
+    const Status refused = manager->Export(created.value, Panorama(), Spec(name));
+    EXPECT_EQ(refused.code, StatusCode::InvalidArgument) << name.size();
+    EXPECT_EQ(refused.component, "ProjectManager") << name.size();
+  }
+  // And for every format, not only the default one.
+  for (const auto& [format, name] : {std::pair{EncodeFormat::Png, "kitchen.jpg"},
+                                     std::pair{EncodeFormat::Avif, "kitchen.png"}}) {
+    ExportSpec spec = Spec(name);
+    spec.encode.format = format;
+    EXPECT_EQ(manager->Export(created.value, Panorama(), spec).code, StatusCode::InvalidArgument)
+        << name;
+  }
   EXPECT_EQ(codec.EncodeCalls(), 0);
   EXPECT_TRUE(exporter.artifacts().empty());
   // Either spelling of JPEG's extension, in either case, is JPEG's.
-  for (const std::string name : {"sphere.jpg", "sphere.jpeg", "SPHERE.JPG", "the.sphere.Jpeg"}) {
+  for (const std::string name :
+       {"sphere.jpg", "sphere.jpeg", "SPHERE.JPG", "the.sphere.Jpeg", "sph\xc3\xa8re.jpg",
+        "the sphere.jpg"}) {
     EXPECT_TRUE(manager->Export(created.value, Panorama(), Spec(name)).ok()) << name;
   }
-  EXPECT_EQ(exporter.artifacts().size(), 4u);
+  EXPECT_EQ(exporter.artifacts().size(), 6u) << "a name in any script, or with a space, is a name";
 }
 
 // A new capture empties the store, so a panorama handed across before it is no longer there: built

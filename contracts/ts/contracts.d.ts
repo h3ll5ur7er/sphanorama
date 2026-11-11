@@ -1072,7 +1072,10 @@ export interface ProjectSummary {
 
 export interface ExportSpec {
   encode: EncodeSpec;
-  /** Ends in the extension of `encode.format`, `.jpg` or `.jpeg` for JPEG, in either case. */
+  /**
+   * A base name: no `/` or `\`, no control character, and a stem before the extension of
+   * `encode.format`, which for JPEG is `.jpg` or `.jpeg` in either case.
+   */
   filename: string;
   /** share sheet if available, otherwise download */
   share: boolean;
@@ -1498,14 +1501,17 @@ export interface ProjectManager {
    * `IPanoramaBuildManager::Panorama` answers, which the client hands across: the managers never
    * call each other. Its preview is what is written, since a build has nothing else yet.
    * `NotFound` for a project that does not exist; `InvalidArgument` for a spec with no filename, or
-   * one whose extension is not its format's, since once saved a file's name is all that says what
-   * it holds, and a panorama with no preview; `FailedPrecondition` for one whose preview the store
-   * no longer holds, since a new capture empties it, which is what
-   * `IPanoramaBuildManager::Panorama` says of the same handle. `Unsupported` for what this build
-   * cannot write or hand over: a projection other than equirectangular, a format the codec does not
-   * write, and a device with no way to take a file. Otherwise the codec's own status where it would
-   * not write the panorama, and the device's where it would not take the file. Nothing is handed
-   * over unless the whole file is.
+   * one that is not a base name ending in its format's extension (`ExportSpec::filename`), since
+   * once saved a file's name is all that says what it holds, and a panorama with no preview;
+   * `FailedPrecondition` for one whose preview the store no longer holds, since a new capture
+   * empties it, which is what `IPanoramaBuildManager::Panorama` says of the same handle.
+   * `Unsupported` for what this build cannot write or hand over: a projection other than
+   * equirectangular, a format the codec does not write, and a device with no way to take a file.
+   * Otherwise the codec's own status where it would not write the panorama, and the device's where
+   * it would not take the file. Nothing is handed over unless the whole file is.
+   * The manager's own refusals come before the store is asked, and the store before the codec, so a
+   * panorama that is gone is said to be before it is encoded; a stale one asked for a format or
+   * quality the codec refuses is said to be gone first.
    */
   export(project: ProjectId, panorama: PanoramaRef, spec: ExportSpec): Promise<Result<void>>;
 }

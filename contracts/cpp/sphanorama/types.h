@@ -991,7 +991,8 @@ struct ProjectSummary {
 
 struct ExportSpec {
   EncodeSpec encode;
-  // Ends in the extension of `encode.format`, `.jpg` or `.jpeg` for JPEG, in either case.
+  // A base name: no `/` or `\`, no control character, and a stem before the extension of
+  // `encode.format`, which for JPEG is `.jpg` or `.jpeg` in either case.
   std::string filename;
   bool share = false;   // share sheet if available, otherwise download
 };

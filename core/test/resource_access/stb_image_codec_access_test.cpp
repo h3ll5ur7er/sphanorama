@@ -396,11 +396,13 @@ TEST_F(StbImageCodec, TheByteLimitIsExactlyTheFramesAnIntCounts) {
   unsure.RefuseResidency(true);
   StbImageCodecAccess through(unsure);
   FrameRef frame = Picture(16, 8);
-  frame.width = 32768;
   frame.stride = 0;
-  frame.height = 16383;
-  EXPECT_EQ(through.Encode(frame, Jpeg()).status.code, StatusCode::Internal)
-      << "two gigabytes less a row is let past, to the store";
+  // One pixel under a quarter of `INT_MAX`, with both sides within a JPEG's: as close to the limit
+  // as a frame can be and still be let past, to the store.
+  frame.width = 9718;
+  frame.height = 55245;
+  EXPECT_EQ(through.Encode(frame, Jpeg()).status.code, StatusCode::Internal);
+  frame.width = 32768;
   frame.height = 16384;
   EXPECT_EQ(through.Encode(frame, Jpeg()).status.code, StatusCode::InvalidArgument)
       << "two gigabytes is refused";

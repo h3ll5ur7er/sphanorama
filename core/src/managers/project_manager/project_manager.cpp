@@ -21,8 +21,14 @@ std::string_view MimeTypeOf(EncodeFormat format) {
   return "application/octet-stream";
 }
 
-// Whether a file's name says the format it holds: once saved, the name is all that does.
+// Whether a file's name says the format it holds: once saved, the name is all that does. A base
+// name, since a directory in it is the device's to decide, and none of what a C string stops at or
+// a terminal acts on; then a stem, and the format's extension.
 bool NameSays(std::string_view filename, EncodeFormat format) {
+  for (const char c : filename) {
+    const auto byte = static_cast<unsigned char>(c);
+    if (byte < 0x20 || byte == 0x7F || c == '/' || c == '\\') return false;
+  }
   const size_t dot = filename.rfind('.');
   if (dot == std::string_view::npos || dot == 0) return false;
   std::string extension(filename.substr(dot + 1));
@@ -187,12 +193,9 @@ Result<CandidateId> ProjectManager::GetSelection(ProjectId project, NodeId node)
 Status ProjectManager::Export(ProjectId project, const PanoramaRef& panorama,
                              const ExportSpec& spec) {
   if (!Exists(project)) return Fail(StatusCode::NotFound, kComponent, "no such project");
-  if (spec.filename.empty()) {
-    return Fail(StatusCode::InvalidArgument, kComponent, "an export needs a filename");
-  }
   if (!NameSays(spec.filename, spec.encode.format)) {
     return Fail(StatusCode::InvalidArgument, kComponent,
-                "an export's filename ends in the extension of the format it is written in");
+                "an export's filename is a base name ending in its format's extension");
   }
   if (panorama.projection != Projection::Equirectangular) {
     return Fail(StatusCode::Unsupported, kComponent, "only an equirectangular panorama is written");
