@@ -20,7 +20,8 @@ constexpr const char* kComponent = "StbImageCodecAccess";
 constexpr int64_t kChannels = 4;
 // A JPEG writes each side in sixteen bits, and stb writes them without asking.
 constexpr int32_t kLongestSide = 65535;
-// stb indexes a frame's bytes with an `int`, so the frame has to fit one.
+// A frame's bytes have to fit an `int`: stb indexes them with one, its largest four short of the
+// frame's size, and on wasm32 the packed copy of a padded frame is a vector no larger.
 constexpr int64_t kMostBytes = std::numeric_limits<int>::max();
 
 void Append(void* context, void* data, int size) {

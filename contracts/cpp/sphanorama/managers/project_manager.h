@@ -75,7 +75,9 @@ class IProjectManager {
   // call each other. Its preview is what is written, since a build has nothing else yet.
   //
   // `NotFound` for a project that does not exist; `InvalidArgument` for a spec with no filename and
-  // a panorama with no preview; `Unsupported` for a projection other than equirectangular. The
+  // a panorama with no preview; `Unsupported` for a projection other than equirectangular;
+  // `FailedPrecondition` for one whose preview the store no longer holds, since a new capture
+  // empties it, which is what `IPanoramaBuildManager::Panorama` says of the same handle. The
   // codec's own status where it would not write the panorama, and the device's where it would not
   // take the file. Nothing is handed over unless the whole file is.
   virtual Status Export(ProjectId project, const PanoramaRef& panorama, const ExportSpec& spec) = 0;

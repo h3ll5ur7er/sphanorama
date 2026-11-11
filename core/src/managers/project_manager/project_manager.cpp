@@ -180,6 +180,14 @@ Status ProjectManager::Export(ProjectId project, const PanoramaRef& panorama,
   if (!panorama.preview.id.valid()) {
     return Fail(StatusCode::InvalidArgument, kComponent, "this panorama has no preview to write");
   }
+  // A new capture empties the store, so a panorama handed across before one is gone: to be built
+  // again, as `IPanoramaBuildManager::Panorama` says of it, rather than the `NotFound` that here
+  // means the project. Only `NotFound` says so; a store that could not answer has not said it.
+  if (auto held = frames_.ResidencyOf(panorama.preview); !held.ok()) {
+    if (held.status.code != StatusCode::NotFound) return held.status;
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "the store no longer holds this panorama; build again");
+  }
   // Tagged whatever the spec says: an equirectangular file without the tag opens as a very wide
   // photograph, which is the one thing an export of a sphere must not do.
   EncodeSpec encode = spec.encode;

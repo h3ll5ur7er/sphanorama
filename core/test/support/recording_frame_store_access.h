@@ -32,6 +32,8 @@ class RecordingFrameStoreAccess final : public IFrameStoreAccess {
   // otherwise unreachable, since the real store refuses neither for a frame it holds.
   void RefuseReleases(bool refuse) { refuse_releases_ = refuse; }
   void RefuseDemotions(bool refuse) { refuse_demotions_ = refuse; }
+  // A store that cannot say where a frame is, which is not the same as saying it is gone.
+  void RefuseResidency(bool refuse) { refuse_residency_ = refuse; }
 
   Result<FrameStoreBudget> Budget() override { return real_.Budget(); }
   Result<FrameRef> Allocate(int32_t width, int32_t height, PixelFormat format) override {
@@ -44,6 +46,9 @@ class RecordingFrameStoreAccess final : public IFrameStoreAccess {
   }
 
   Result<Residency> ResidencyOf(const FrameRef& frame) override {
+    if (refuse_residency_) {
+      return Err<Residency>(StatusCode::Internal, "RecordingFrameStoreAccess", "no");
+    }
     if (claimed_.has_value()) return Ok(*claimed_);
     return real_.ResidencyOf(frame);
   }
@@ -69,6 +74,7 @@ class RecordingFrameStoreAccess final : public IFrameStoreAccess {
   std::vector<Residency> demotions_;
   bool refuse_releases_ = false;
   bool refuse_demotions_ = false;
+  bool refuse_residency_ = false;
 };
 
 }  // namespace sphanorama

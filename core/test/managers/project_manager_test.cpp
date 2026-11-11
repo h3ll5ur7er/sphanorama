@@ -14,6 +14,7 @@
 #include "support/fake_image_codec_access.h"
 #include "support/fake_project_store_access.h"
 #include "support/fake_spill_sink.h"
+#include "support/recording_frame_store_access.h"
 #include "utilities/session_document.h"
 
 namespace sphanorama {
@@ -625,6 +626,27 @@ TEST_F(Projects, ARefusedExportLeavesNothingBehind) {
   shared.share = true;
   EXPECT_EQ(manager->Export(created.value, Panorama(), shared).code, StatusCode::Internal);
   EXPECT_TRUE(exporter.artifacts().empty());
+}
+
+// A new capture empties the store, so a panorama handed across before it is no longer there: built
+// again rather than read as a project that is gone, as `Panorama` would have said one call earlier.
+TEST_F(Projects, APanoramaTheStoreNoLongerHoldsIsToBeBuiltAgain) {
+  auto created = manager->Create("kitchen");
+  const PanoramaRef panorama = Panorama();
+  ASSERT_TRUE(manager->Export(created.value, panorama, Spec()).ok());
+  ASSERT_TRUE(frames.Clear().ok());
+  const Status stale = manager->Export(created.value, panorama, Spec());
+  EXPECT_EQ(stale.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(stale.component, "ProjectManager");
+  EXPECT_EQ(exporter.artifacts().size(), 1u) << "only the first export left the device";
+  // And a store that cannot say where the frame is has not said it is gone: its own answer.
+  RecordingFrameStoreAccess unsure(frames);
+  unsure.RefuseResidency(true);
+  ProjectManager asking(store, unsure, codec, exporter);
+  const Status unknown = asking.Export(created.value, Panorama(), Spec());
+  EXPECT_EQ(unknown.code, StatusCode::Internal);
+  EXPECT_EQ(unknown.component, "RecordingFrameStoreAccess");
+  EXPECT_EQ(exporter.artifacts().size(), 1u);
 }
 
 TEST_F(Projects, IdsDoNotCollideWithProjectsThatOutlivedTheManager) {

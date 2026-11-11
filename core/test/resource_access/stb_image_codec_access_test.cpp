@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
@@ -159,6 +160,7 @@ TEST_F(StbImageCodec, ASphereIsTaggedWithGPanoAndStillDecodes) {
   ExpectAttribute(packet, "ProjectionType", "equirectangular");
   ExpectAttribute(packet, "FullPanoWidthPixels", "64");
   ExpectAttribute(packet, "FullPanoHeightPixels", "32");
+  ExpectAttribute(packet, "CroppedAreaImageWidthPixels", "64");
   ExpectAttribute(packet, "CroppedAreaImageHeightPixels", "32");
   EXPECT_LT(MeanError(frame, jpeg.value), 3.0);
 }
@@ -166,7 +168,8 @@ TEST_F(StbImageCodec, ASphereIsTaggedWithGPanoAndStillDecodes) {
 // A band about the horizon, in a sphere the spec names: placed centred, as a capture with no caps
 // is, and refused where it cannot be part of the sphere named.
 TEST_F(StbImageCodec, ABandIsPlacedAboutTheHorizonOfTheSphereNamed) {
-  const FrameRef frame = Picture(64, 16);
+  // Twenty rows of thirty-two, so the band's top, (32 - 20) / 2, is no other simple sum of them.
+  const FrameRef frame = Picture(64, 20);
   EncodeSpec spec = Jpeg();
   spec.attachGPanoXmp = true;
   spec.fullPanoWidth = 64;
@@ -174,7 +177,9 @@ TEST_F(StbImageCodec, ABandIsPlacedAboutTheHorizonOfTheSphereNamed) {
   auto jpeg = codec.Encode(frame, spec);
   ASSERT_TRUE(jpeg.ok()) << jpeg.status.detail;
   const std::optional<std::string> packet = XmpPacketIn(jpeg.value);
-  ExpectAttribute(packet, "CroppedAreaTopPixels", "8");
+  ExpectAttribute(packet, "CroppedAreaTopPixels", "6");
+  ExpectAttribute(packet, "CroppedAreaImageWidthPixels", "64");
+  ExpectAttribute(packet, "CroppedAreaImageHeightPixels", "20");
   ExpectAttribute(packet, "CroppedAreaLeftPixels", "0");
   ExpectAttribute(packet, "FullPanoHeightPixels", "32");
   // Of a frame that is not a sphere by itself, with no sphere named: nothing to place it in.
@@ -263,6 +268,40 @@ TEST_F(StbImageCodec, ASideAJpegCannotHoldIsRefused) {
   tall.height = 65536;
   tall.stride = 4;
   EXPECT_EQ(codec.Encode(tall, Jpeg()).status.code, StatusCode::InvalidArgument);
+  // And 65535 is written, at the size it says: the limit is the format's, not a margin under it.
+  for (const auto& [width, height, stride] : {std::tuple{65535, 1, 0}, std::tuple{1, 65535, 4}}) {
+    FrameRef longest = frame;
+    longest.width = width;
+    longest.height = height;
+    longest.stride = stride;
+    auto jpeg = codec.Encode(longest, Jpeg());
+    ASSERT_TRUE(jpeg.ok()) << width << "x" << height << ": " << jpeg.status.detail;
+    int w = 0, h = 0, comp = 0;
+    ASSERT_EQ(stbi_info_from_memory(jpeg.value.data(), static_cast<int>(jpeg.value.size()), &w,
+                                    &h, &comp),
+              1);
+    EXPECT_EQ(w, width);
+    EXPECT_EQ(h, height);
+  }
+}
+
+// The size a build hands across (ADR 0071's 2048 by 1024 preview), through this codec rather than
+// the fake the manager tests use: a limit set below it would refuse every export the page makes.
+TEST(StbImageCodecLimits, APreviewAsLargeAsABuildMakesIsWritten) {
+  MemoryFrameStoreAccess large{int64_t{1} << 24};
+  StbImageCodecAccess codec(large);
+  auto frame = large.Allocate(2048, 1024, PixelFormat::RGBA8);
+  ASSERT_TRUE(frame.ok());
+  EncodeSpec spec;
+  spec.attachGPanoXmp = true;
+  auto jpeg = codec.Encode(frame.value, spec);
+  ASSERT_TRUE(jpeg.ok()) << jpeg.status.detail;
+  int w = 0, h = 0, comp = 0;
+  ASSERT_EQ(stbi_info_from_memory(jpeg.value.data(), static_cast<int>(jpeg.value.size()), &w, &h,
+                                  &comp),
+            1);
+  EXPECT_EQ(w, 2048);
+  EXPECT_EQ(h, 1024);
 }
 
 // A store that says it holds far more than it does, so a frame stb's int index would overflow on
@@ -347,6 +386,29 @@ TEST_F(StbImageCodec, AStoreThatWillNotTakeTheFrameBackIsSaid) {
   EXPECT_EQ(through.Encode(frame, Jpeg()).status.code, StatusCode::Internal);
   ASSERT_FALSE(recording.demotions().empty());
   EXPECT_EQ(recording.demotions().back(), Residency::Spilled);
+}
+
+// Put back is a demotion only for the tiers a pin faults in from: a spilled frame and one on the
+// GPU are demoted to where they were, and a resident one, or one its caller already holds pinned,
+// is asked for nothing, since the release alone puts it back.
+TEST_F(StbImageCodec, OnlyAFrameFaultedInIsDemotedBack) {
+  RecordingFrameStoreAccess recording(store);
+  StbImageCodecAccess through(recording);
+  const FrameRef frame = Picture(16, 8);
+  recording.ClaimResidency(Residency::GpuTexture);
+  // This store has no GPU tier, so its refusal of the demotion is the answer; what was asked is
+  // the point.
+  EXPECT_EQ(through.Encode(frame, Jpeg()).status.code, StatusCode::Unsupported);
+  EXPECT_EQ(recording.demotions(), std::vector<Residency>{Residency::GpuTexture});
+  recording.ClaimResidency(Residency::HeapEncoded);
+  ASSERT_TRUE(through.Encode(frame, Jpeg()).ok());
+  EXPECT_EQ(recording.demotions().size(), 1u) << "a resident frame is not demoted";
+  // Held by its caller across the encode: still theirs afterwards, and theirs to release.
+  ASSERT_TRUE(store.Pin(frame).ok());
+  ASSERT_TRUE(codec.Encode(frame, Jpeg()).ok());
+  EXPECT_EQ(store.ResidencyOf(frame).value, Residency::HeapPinned);
+  ASSERT_TRUE(store.Release(frame).ok());
+  EXPECT_EQ(store.ResidencyOf(frame).value, Residency::HeapEncoded);
 }
 
 }  // namespace

@@ -1,6 +1,8 @@
 # ADR 0002 — C++/WASM core, TypeScript resource-access adapters
 
-**Status:** accepted
+**Status:** accepted; amended by
+[0087](0087-an-export-is-a-jpeg-the-core-writes-and-tags-as-a-sphere.md), which writes the image
+codec inside the core rather than as a TypeScript adapter
 
 ## Context
 Business logic must be fast and must not be rewritten per platform. Camera and motion sensors are

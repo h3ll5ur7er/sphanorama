@@ -1,7 +1,8 @@
 # 0087 — An export is a JPEG the core writes and tags as a sphere
 
 **Status:** accepted; the first of two steps. This one writes the file; the next gives the browser a
-port to hand it to and the page a button.
+port to hand it to and the page a button. Amends [0002](0002-cpp-wasm-core-ts-shell.md), whose
+list of TypeScript adapters named the image codec.
 
 ## Context
 
@@ -28,18 +29,22 @@ Three things stood in the way.
 - **`Export(project, panorama, spec)` takes the panorama**, the `PanoramaRef` that
   `IPanoramaBuildManager::Panorama(build)` answers, rather than a build id. The client sequences the
   two calls, as it does a build's gaps and a fill (ADR 0086). Its `preview` is what is written,
-  since a build has nothing else yet; the core holds that frame until the build is cancelled or
-  another starts, so the handle is good for the export.
+  since a build has nothing else yet. The core holds that frame until the build is cancelled,
+  another starts or a new capture empties the store; `Export` answers `FailedPrecondition` for a
+  panorama the store no longer holds, as `Panorama` does, rather than the `NotFound` that means the
+  project.
 - **The core writes the JPEG**, with stb's `stb_image_write.h`, in a resource access of its own,
   `StbImageCodecAccess`, which is the same in every build. It reads the frame through the frame
   store, which the contract's `FrameRef` names and which the layer rules already let a port reach
   (ADR 0021), checks the bytes the handle claims against the bytes the store holds, and leaves the
   frame unpinned in the tier it found it in. The store says nothing of a frame's format, so a handle
   naming the wrong one over as many bytes is written as what it names. A side past 65535, which a
-  JPEG's sixteen-bit header cannot say and stb writes without asking, and a frame past what stb's
-  `int` index reaches are refused before the writer is called. It writes JPEG only: AVIF and PNG
-  answer `Unsupported`, and so does `Decode`, which nothing calls. The browser never implements it,
-  so its header is not mirrored into TypeScript.
+  JPEG's sixteen-bit header cannot say and stb writes without asking, and a frame of two gigabytes
+  or more are refused before the writer is called: stb indexes a frame's bytes with an `int`, and on
+  wasm32 a packed copy of a padded frame is a vector no larger. stb's own limit is four bytes
+  looser, which admits only a frame of exactly 2^29 pixels: 32768 by 16384, or its transpose. It
+  writes JPEG only: AVIF and PNG answer `Unsupported`, and so does `Decode`, which nothing calls.
+  The browser never implements it, so its header is not mirrored into TypeScript.
 - **stb is fetched at a pinned commit and checked by content.** `cmake/stb.cmake` clones
   `nothings/stb` at `fede005`, a master commit from September 2025, and refuses to configure unless
   both headers it uses hash to the SHA-256 it records. The writer there is v1.16, from July 2021 and

@@ -27,7 +27,7 @@ class StbImageCodecAccess final : public IImageCodecAccess {
   // `attachGPanoXmp` it is tagged as part of an equirectangular sphere: the sphere the spec names,
   // as wide as the frame, with the frame a band centred on its horizon, or with none named the
   // frame as the whole of one. `InvalidArgument` for a quality out of range, a handle that names
-  // another format or no pixels, a side past a JPEG's 65535 or more than two gigabytes of pixels, a
+  // another format or no pixels, a side past a JPEG's 65535, a frame of two gigabytes or more, a
   // handle claiming more bytes than the store holds for it, and a frame that is not part of the
   // sphere asked for. The store says nothing of a frame's format, so only the handle's claim and
   // the byte count are checked: a handle naming the wrong format over as many bytes is written as

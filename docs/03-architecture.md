@@ -270,11 +270,15 @@ Two rules keep this from becoming a performance disaster:
   proxy, and the shared value types (§4.6), so a contract change is a compile error on both sides
   rather than a runtime surprise.
 
-`IFrameStoreAccess`, `IProjectStoreAccess` and `IComputeDeviceAccess` have **two** implementations
-each — a TypeScript one for the browser, and a native one used by the Bench client — behind the
-identical C++ contract. `IImageCodecAccess` has one, inside the core and the same in every build,
-since the browser has no encoder that answers within the call; its header is not mirrored into
-TypeScript for that reason (ADR 0087).
+Not every resource access is implemented twice, and which are says where each resource lives.
+`ICameraAccess` and `IMotionSensorAccess` have a browser implementation in `bridge/`, over state the
+page established, and a null one natively. `IProjectStoreAccess` has `BrowserProjectStoreAccess`,
+C++ over a TypeScript document host, and an in-memory one natively. `IFrameStoreAccess` has one,
+`MemoryFrameStoreAccess`, in both builds: what differs is its ceiling and whether an OPFS spill sink
+is under it. `IImageCodecAccess` is the same — one, inside the core, since the browser has no
+encoder that answers within the call, and its header is not mirrored into TypeScript for that reason
+(ADR 0087). `IExportAccess` is null in both until its browser port lands, and `IComputeDeviceAccess`
+has no implementation yet.
 
 ### One coordinate frame, converted at the edge
 
