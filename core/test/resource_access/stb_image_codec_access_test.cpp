@@ -3,6 +3,7 @@
 // encoder, rather than by trusting the call.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>

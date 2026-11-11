@@ -2,6 +2,8 @@
 // XMP properties, in an APP1 segment a viewer finds before the image data (ADR 0087).
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>

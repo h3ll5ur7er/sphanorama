@@ -19,10 +19,8 @@ FetchContent_Declare(stb
   GIT_TAG        ${SPHANORAMA_STB_COMMIT}
   GIT_SHALLOW    FALSE
 )
-FetchContent_GetProperties(stb)
-if(NOT stb_POPULATED)
-  FetchContent_Populate(stb)
-endif()
+# stb has no CMakeLists, so making it available only populates it.
+FetchContent_MakeAvailable(stb)
 
 foreach(pair
     "stb_image_write.h=cbd5f0ad7a9cf4468affb36354a1d2338034f2c12473cf1a8e32053cb6914a05"
