@@ -21,9 +21,10 @@ std::string_view MimeTypeOf(EncodeFormat format) {
   return "application/octet-stream";
 }
 
-// Whether a file's name says the format it holds: once saved, the name is all that does. A base
-// name, since a directory in it is the device's to decide, and none of what a C string stops at or
-// a terminal acts on; then a stem, and the format's extension.
+// Whether a file's name says the format it holds: once saved, the name is all that does. No
+// separator, since a directory is the device's to decide, and no ASCII control character, which is
+// where a C string stops or what a terminal acts on; then a stem, and the format's extension. What
+// one platform reserves beyond that is the export port's (`ExportSpec::filename`).
 bool NameSays(std::string_view filename, EncodeFormat format) {
   for (const char c : filename) {
     const auto byte = static_cast<unsigned char>(c);
@@ -195,7 +196,7 @@ Status ProjectManager::Export(ProjectId project, const PanoramaRef& panorama,
   if (!Exists(project)) return Fail(StatusCode::NotFound, kComponent, "no such project");
   if (!NameSays(spec.filename, spec.encode.format)) {
     return Fail(StatusCode::InvalidArgument, kComponent,
-                "an export's filename is a base name ending in its format's extension");
+                "an export's filename names no directory and ends in its format's extension");
   }
   if (panorama.projection != Projection::Equirectangular) {
     return Fail(StatusCode::Unsupported, kComponent, "only an equirectangular panorama is written");

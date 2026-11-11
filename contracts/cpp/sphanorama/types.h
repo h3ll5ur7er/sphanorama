@@ -991,8 +991,10 @@ struct ProjectSummary {
 
 struct ExportSpec {
   EncodeSpec encode;
-  // A base name: no `/` or `\`, no control character, and a stem before the extension of
-  // `encode.format`, which for JPEG is `.jpg` or `.jpeg` in either case.
+  // No `/` or `\`, no ASCII control character or DEL, and a stem before the extension of
+  // `encode.format`, which for JPEG is `.jpg` or `.jpeg` in either case. What else one platform
+  // reserves in a name — `:`, `*`, a C1 control, a device name — is the export port's to clean,
+  // since only it knows the platform it saves on.
   std::string filename;
   bool share = false;   // share sheet if available, otherwise download
 };

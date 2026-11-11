@@ -634,7 +634,8 @@ TEST_F(Projects, ARefusedExportLeavesNothingBehind) {
 // none, would hand over a sphere nothing opens as one. Refused before anything is encoded.
 TEST_F(Projects, ANameThatSaysAnotherFormatIsRefused) {
   auto created = manager->Create("kitchen");
-  for (const std::string name : {"sphere.png", "sphere", "sphere.jpg.txt", "sphere.", ".jpg"}) {
+  for (const std::string name :
+       {"sphere.png", "sphere", "sphere.jpg.txt", "sphere.", ".jpg", "jpg", "JPEG"}) {
     const Status refused = manager->Export(created.value, Panorama(), Spec(name));
     EXPECT_EQ(refused.code, StatusCode::InvalidArgument) << name;
     EXPECT_EQ(refused.component, "ProjectManager") << name;
@@ -690,6 +691,12 @@ TEST_F(Projects, APanoramaTheStoreNoLongerHoldsIsToBeBuiltAgain) {
   PanoramaRef cubed = panorama;
   cubed.projection = Projection::Cubemap;
   EXPECT_EQ(manager->Export(created.value, cubed, Spec()).code, StatusCode::Unsupported);
+  // And what only the codec refuses is not the manager's to check: the panorama is gone first.
+  ExportSpec rough = Spec();
+  rough.encode.quality = 0;
+  const Status roughStale = manager->Export(created.value, panorama, rough);
+  EXPECT_EQ(roughStale.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(roughStale.component, "ProjectManager");
   EXPECT_EQ(codec.EncodeCalls(), encodes) << "nothing encoded for a panorama that is gone";
   // And a store that cannot say where the frame is has not said it is gone: its own answer.
   RecordingFrameStoreAccess unsure(frames);
