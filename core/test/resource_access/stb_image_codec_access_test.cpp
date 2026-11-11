@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -84,6 +85,34 @@ class StbImageCodec : public ::testing::Test {
     return std::search(bytes.begin(), bytes.end(), text.begin(), text.end()) != bytes.end();
   }
 
+  // The XMP packet as a reader finds it: walking the segments from the start of image to the start
+  // of scan, in an APP1 that opens with the XMP namespace. Text anywhere else in the file is not
+  // metadata a viewer reads.
+  static std::optional<std::string> XmpPacketIn(const std::vector<uint8_t>& jpeg) {
+    const std::string xmp = std::string("http://ns.adobe.com/xap/1.0/") + '\0';
+    if (jpeg.size() < 2 || jpeg[0] != 0xFF || jpeg[1] != 0xD8) return std::nullopt;
+    size_t at = 2;
+    while (at + 4 <= jpeg.size() && jpeg[at] == 0xFF && jpeg[at + 1] != 0xDA) {
+      const size_t length = (static_cast<size_t>(jpeg[at + 2]) << 8) | jpeg[at + 3];
+      if (length < 2 || at + 2 + length > jpeg.size()) return std::nullopt;
+      const auto body = jpeg.begin() + static_cast<std::ptrdiff_t>(at + 4);
+      const auto end = jpeg.begin() + static_cast<std::ptrdiff_t>(at + 2 + length);
+      if (jpeg[at + 1] == 0xE1 && static_cast<size_t>(end - body) >= xmp.size() &&
+          std::equal(xmp.begin(), xmp.end(), body)) {
+        return std::string(body + static_cast<std::ptrdiff_t>(xmp.size()), end);
+      }
+      at += 2 + length;
+    }
+    return std::nullopt;
+  }
+
+  static void ExpectAttribute(const std::optional<std::string>& packet, const std::string& name,
+                              const std::string& value) {
+    ASSERT_TRUE(packet.has_value()) << "no XMP segment before the image data";
+    const std::string written = "GPano:" + name + "=\"" + value + "\"";
+    EXPECT_NE(packet->find(written), std::string::npos) << written << " in\n" << *packet;
+  }
+
   FakeSpillSink sink;
   MemoryFrameStoreAccess store{1 << 22, &sink};
   StbImageCodecAccess codec{store};
@@ -101,7 +130,8 @@ TEST_F(StbImageCodec, AFrameIsWrittenAsAJpegOfThatPicture) {
   // A smooth picture at high quality decodes to within a couple of levels of itself; a transposed,
   // mirrored or channel-swapped write is off by tens.
   EXPECT_LT(MeanError(frame, jpeg.value), 3.0);
-  EXPECT_FALSE(Contains(jpeg.value, "GPano")) << "tagged as a sphere without being asked";
+  EXPECT_FALSE(XmpPacketIn(jpeg.value).has_value()) << "tagged as a sphere without being asked";
+  EXPECT_FALSE(Contains(jpeg.value, "GPano"));
 }
 
 TEST_F(StbImageCodec, QualityIsTheEncodersAndOutsideOneToAHundredIsRefused) {
@@ -125,10 +155,11 @@ TEST_F(StbImageCodec, ASphereIsTaggedWithGPanoAndStillDecodes) {
   spec.attachGPanoXmp = true;
   auto jpeg = codec.Encode(frame, spec);
   ASSERT_TRUE(jpeg.ok()) << jpeg.status.detail;
-  EXPECT_TRUE(Contains(jpeg.value, "GPano:ProjectionType=\"equirectangular\""));
-  EXPECT_TRUE(Contains(jpeg.value, "GPano:FullPanoWidthPixels=\"64\""));
-  EXPECT_TRUE(Contains(jpeg.value, "GPano:CroppedAreaImageHeightPixels=\"32\""));
-  EXPECT_TRUE(Contains(jpeg.value, std::string("http://ns.adobe.com/xap/1.0/") + '\0'));
+  const std::optional<std::string> packet = XmpPacketIn(jpeg.value);
+  ExpectAttribute(packet, "ProjectionType", "equirectangular");
+  ExpectAttribute(packet, "FullPanoWidthPixels", "64");
+  ExpectAttribute(packet, "FullPanoHeightPixels", "32");
+  ExpectAttribute(packet, "CroppedAreaImageHeightPixels", "32");
   EXPECT_LT(MeanError(frame, jpeg.value), 3.0);
 }
 
@@ -142,8 +173,10 @@ TEST_F(StbImageCodec, ABandIsPlacedAboutTheHorizonOfTheSphereNamed) {
   spec.fullPanoHeight = 32;
   auto jpeg = codec.Encode(frame, spec);
   ASSERT_TRUE(jpeg.ok()) << jpeg.status.detail;
-  EXPECT_TRUE(Contains(jpeg.value, "GPano:CroppedAreaTopPixels=\"8\""));
-  EXPECT_TRUE(Contains(jpeg.value, "GPano:CroppedAreaLeftPixels=\"0\""));
+  const std::optional<std::string> packet = XmpPacketIn(jpeg.value);
+  ExpectAttribute(packet, "CroppedAreaTopPixels", "8");
+  ExpectAttribute(packet, "CroppedAreaLeftPixels", "0");
+  ExpectAttribute(packet, "FullPanoHeightPixels", "32");
   // Of a frame that is not a sphere by itself, with no sphere named: nothing to place it in.
   spec.fullPanoWidth = 0;
   spec.fullPanoHeight = 0;
@@ -152,6 +185,15 @@ TEST_F(StbImageCodec, ABandIsPlacedAboutTheHorizonOfTheSphereNamed) {
   spec.fullPanoHeight = 16;
   EXPECT_EQ(codec.Encode(frame, spec).status.code, StatusCode::InvalidArgument)
       << "a sphere smaller than the frame";
+  // A band goes all the way round: a frame narrower than the sphere has no azimuth anybody gave.
+  const FrameRef half = Picture(32, 16);
+  spec.fullPanoWidth = 64;
+  spec.fullPanoHeight = 32;
+  EXPECT_EQ(codec.Encode(half, spec).status.code, StatusCode::InvalidArgument);
+  // And a sphere named by one size only is none.
+  spec.fullPanoWidth = 64;
+  spec.fullPanoHeight = 0;
+  EXPECT_EQ(codec.Encode(frame, spec).status.code, StatusCode::InvalidArgument);
 }
 
 TEST_F(StbImageCodec, WhatThisCodecDoesNotWriteIsUnsupported) {
@@ -184,6 +226,12 @@ TEST_F(StbImageCodec, AHandleTheStoreCannotBackIsRefused) {
   FrameRef taller = frame;
   taller.height = 4096;
   EXPECT_EQ(codec.Encode(taller, Jpeg()).status.code, StatusCode::InvalidArgument);
+  // One row, so only the row itself can be past what is held.
+  FrameRef wider = frame;
+  wider.width = 4096;
+  wider.height = 1;
+  wider.stride = 0;
+  EXPECT_EQ(codec.Encode(wider, Jpeg()).status.code, StatusCode::InvalidArgument);
   FrameRef sheared = frame;
   sheared.stride = 16;
   EXPECT_EQ(codec.Encode(sheared, Jpeg()).status.code, StatusCode::InvalidArgument);
@@ -200,6 +248,62 @@ TEST_F(StbImageCodec, AHandleTheStoreCannotBackIsRefused) {
   EXPECT_NE(missing.code, StatusCode::InvalidArgument) << "the store's own answer, not a guess";
 }
 
+// A JPEG's sides are sixteen bits, and stb writes them without asking: a side past 65535 would be
+// a smaller picture under the same name. Refused before the writer sees it.
+TEST_F(StbImageCodec, ASideAJpegCannotHoldIsRefused) {
+  const FrameRef frame = Picture(256, 256);
+  FrameRef wide = frame;
+  wide.width = 65536;
+  wide.height = 1;
+  wide.stride = 0;
+  EXPECT_EQ(codec.Encode(wide, Jpeg()).status.code, StatusCode::InvalidArgument)
+      << "the bytes are there; the format cannot say the width";
+  FrameRef tall = frame;
+  tall.width = 1;
+  tall.height = 65536;
+  tall.stride = 4;
+  EXPECT_EQ(codec.Encode(tall, Jpeg()).status.code, StatusCode::InvalidArgument);
+}
+
+// A store that says it holds far more than it does, so a frame stb's int index would overflow on
+// can be asked about without allocating one. The codec must refuse it before reading a byte.
+class VastFrameStore final : public IFrameStoreAccess {
+ public:
+  Result<FrameStoreBudget> Budget() override { return Ok(FrameStoreBudget{}); }
+  Result<FrameRef> Allocate(int32_t, int32_t, PixelFormat) override {
+    return Err<FrameRef>(StatusCode::Unsupported, "Vast", "no");
+  }
+  Result<std::span<uint8_t>> Pin(const FrameRef&) override {
+    // Never dereferenced: what is under test is that nothing reads it.
+    return Ok(std::span<uint8_t>(reinterpret_cast<uint8_t*>(&byte_), size_t{1} << 33));
+  }
+  Status Release(const FrameRef&) override { return Status::Ok(); }
+  Result<Residency> ResidencyOf(const FrameRef&) override { return Ok(Residency::HeapEncoded); }
+  Status Demote(const FrameRef&, Residency) override { return Status::Ok(); }
+  Status Adopt(const FrameRef&) override { return Status::Ok(); }
+  Status Forget(const FrameRef&) override { return Status::Ok(); }
+  Status Clear() override { return Status::Ok(); }
+  Result<uint64_t> TierGeneration() override { return Ok(uint64_t{1}); }
+  Result<uint64_t> ContentHash(const FrameRef&) override { return Ok(uint64_t{0}); }
+
+ private:
+  uint8_t byte_ = 0;
+};
+
+TEST(StbImageCodecLimits, AFrameTooLargeForTheWritersIndexIsRefused) {
+  VastFrameStore vast;
+  StbImageCodecAccess codec(vast);
+  FrameRef frame;
+  frame.id = FrameId{1};
+  frame.buffer = BufferId{1};
+  frame.format = PixelFormat::RGBA8;
+  frame.width = 65535;
+  frame.height = 8193;
+  frame.stride = 65535 * 4;
+  EncodeSpec spec;
+  EXPECT_EQ(codec.Encode(frame, spec).status.code, StatusCode::InvalidArgument);
+}
+
 // Read and put back: the frame is in the tier it was in, unpinned, whether the encode worked or
 // not.
 TEST_F(StbImageCodec, TheFrameIsLeftWhereItWas) {
@@ -213,9 +317,19 @@ TEST_F(StbImageCodec, TheFrameIsLeftWhereItWas) {
   flat.fullPanoHeight = 4;
   ASSERT_FALSE(codec.Encode(frame, flat).ok());
   EXPECT_EQ(store.ResidencyOf(frame).value, Residency::Spilled);
+  // Refused by the writer, after the frame was lent: put back all the same.
+  FrameRef taller = frame;
+  taller.height = 4096;
+  ASSERT_EQ(codec.Encode(taller, Jpeg()).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(store.ResidencyOf(frame).value, Residency::Spilled);
   const FrameRef resident = Picture(16, 8);
   ASSERT_TRUE(codec.Encode(resident, Jpeg()).ok());
   EXPECT_EQ(store.ResidencyOf(resident).value, Residency::HeapEncoded) << "and no pin is left";
+  FrameRef tallerResident = resident;
+  tallerResident.height = 4096;
+  ASSERT_EQ(codec.Encode(tallerResident, Jpeg()).status.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(store.ResidencyOf(resident).value, Residency::HeapEncoded)
+      << "nor by a refusal after the pin";
 }
 
 // A store that will not let the frame go, or put it back, is said: an encode that left a pin or a

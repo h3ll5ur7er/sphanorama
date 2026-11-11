@@ -214,7 +214,7 @@ resume instead of discovering one by attempting it (ADR 0036). `sessionInAnother
 session's document names a spill tier other than the one the frame store holds, which it asks
 `IFrameStoreAccess` for, or frames on a store with no tier, and `sessionUnreadable` that this build
 cannot read its document (ADR 0083). Export takes the panorama `PanoramaBuildManager::Panorama`
-answers, which the client hands across, asks `IImageCodecAccess` to encode it and attach XMP
+answers, which the client hands across, asks `IImageCodecAccess` to encode it, always with XMP
 `GPano` metadata, then hands the bytes to `IExportAccess` to share or save. The codec is inside the
 core, over stb's JPEG writer, because the browser's encoders answer asynchronously (ADR 0087). It is
 the only manager that touches `IExportAccess`.
@@ -230,7 +230,7 @@ injected across the boundary at startup.
 flowchart LR
   subgraph JS["TypeScript (main thread + capture worker)"]
     UI["Capture Client"]
-    AD["ResourceAccess adapters<br/>camera · sensors · storage · codec · export"]
+    AD["ResourceAccess adapters<br/>camera · sensors · storage · export"]
   end
   subgraph W["Core worker — WASM"]
     FA["Generated manager facade"]
@@ -270,9 +270,11 @@ Two rules keep this from becoming a performance disaster:
   proxy, and the shared value types (§4.6), so a contract change is a compile error on both sides
   rather than a runtime surprise.
 
-`IFrameStoreAccess`, `IProjectStoreAccess`, `IImageCodecAccess` and `IComputeDeviceAccess` have
-**two** implementations each — a TypeScript one for the browser, and a native one used by the
-Bench client — behind the identical C++ contract.
+`IFrameStoreAccess`, `IProjectStoreAccess` and `IComputeDeviceAccess` have **two** implementations
+each — a TypeScript one for the browser, and a native one used by the Bench client — behind the
+identical C++ contract. `IImageCodecAccess` has one, inside the core and the same in every build,
+since the browser has no encoder that answers within the call; its header is not mirrored into
+TypeScript for that reason (ADR 0087).
 
 ### One coordinate frame, converted at the edge
 

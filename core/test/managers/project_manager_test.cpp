@@ -134,7 +134,6 @@ class Projects : public ::testing::Test {
   ExportSpec Spec(const std::string& filename = "kitchen.jpg") {
     ExportSpec spec;
     spec.filename = filename;
-    spec.encode.attachGPanoXmp = true;
     return spec;
   }
 };
@@ -541,7 +540,11 @@ TEST_F(Projects, ReadingASelectionFromAnUnknownProjectIsRefused) {
 TEST_F(Projects, ExportingWritesThePanoramaAsATaggedJpegUnderTheNameAsked) {
   auto created = manager->Create("kitchen");
   ASSERT_TRUE(created.ok());
-  const Status status = manager->Export(created.value, Panorama(), Spec());
+  ExportSpec spec = Spec();
+  spec.encode.quality = 77;
+  spec.encode.fullPanoWidth = 64;
+  spec.encode.fullPanoHeight = 32;
+  const Status status = manager->Export(created.value, Panorama(), spec);
   ASSERT_TRUE(status.ok()) << status.detail;
   ASSERT_EQ(exporter.artifacts().size(), 1u);
   const FakeExportAccess::Artifact& saved = exporter.artifacts().front();
@@ -551,8 +554,15 @@ TEST_F(Projects, ExportingWritesThePanoramaAsATaggedJpegUnderTheNameAsked) {
   // The codec's bytes, of the panorama's preview: the fake writes a tag and then the pixels.
   ASSERT_EQ(saved.bytes.size(), 4u + 64u * 32u * 4u);
   EXPECT_EQ(std::string(saved.bytes.begin(), saved.bytes.begin() + 4), "SPH0");
-  EXPECT_TRUE(codec.LastEncodeCarriedGPano());
-  EXPECT_EQ(codec.LastFormat(), EncodeFormat::Jpeg);
+  // Tagged though the spec did not ask: an equirectangular file without the tag opens as a wide
+  // photograph, which is the one thing an export of a sphere must not do.
+  ASSERT_FALSE(spec.encode.attachGPanoXmp) << "the premise: the spec did not ask";
+  EXPECT_TRUE(codec.LastSpec().attachGPanoXmp);
+  // And otherwise the spec as asked.
+  EXPECT_EQ(codec.LastSpec().format, EncodeFormat::Jpeg);
+  EXPECT_EQ(codec.LastSpec().quality, 77);
+  EXPECT_EQ(codec.LastSpec().fullPanoWidth, 64);
+  EXPECT_EQ(codec.LastSpec().fullPanoHeight, 32);
 }
 
 // Shared where the spec asks and the device can, saved otherwise: a share sheet that is not there
@@ -598,6 +608,7 @@ TEST_F(Projects, ARefusedExportLeavesNothingBehind) {
   PanoramaRef none = Panorama();
   none.preview = FrameRef{};
   EXPECT_EQ(manager->Export(created.value, none, Spec()).code, StatusCode::InvalidArgument);
+  EXPECT_EQ(codec.EncodeCalls(), 0) << "the manager's refusals come before the codec is asked";
   codec.RefuseEncodes(StatusCode::CodecFailure);
   EXPECT_EQ(manager->Export(created.value, Panorama(), Spec()).code, StatusCode::CodecFailure);
   codec.RefuseEncodes(StatusCode::Ok);
@@ -606,6 +617,13 @@ TEST_F(Projects, ARefusedExportLeavesNothingBehind) {
   exporter.RefuseExports(StatusCode::StorageQuotaExceeded);
   EXPECT_EQ(manager->Export(created.value, Panorama(), Spec()).code,
             StatusCode::StorageQuotaExceeded);
+  EXPECT_TRUE(exporter.artifacts().empty());
+  // Nor where it cannot say whether it shares: neither shared nor saved behind the question.
+  exporter.RefuseExports(StatusCode::Ok);
+  exporter.RefuseCanShare(StatusCode::Internal);
+  ExportSpec shared = Spec();
+  shared.share = true;
+  EXPECT_EQ(manager->Export(created.value, Panorama(), shared).code, StatusCode::Internal);
   EXPECT_TRUE(exporter.artifacts().empty());
 }
 

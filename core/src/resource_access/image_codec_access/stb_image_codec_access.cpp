@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -17,6 +18,10 @@ namespace {
 
 constexpr const char* kComponent = "StbImageCodecAccess";
 constexpr int64_t kChannels = 4;
+// A JPEG writes each side in sixteen bits, and stb writes them without asking.
+constexpr int32_t kLongestSide = 65535;
+// stb indexes a frame's bytes with an `int`, so the frame has to fit one.
+constexpr int64_t kMostBytes = std::numeric_limits<int>::max();
 
 void Append(void* context, void* data, int size) {
   auto* out = static_cast<std::vector<uint8_t>*>(context);
@@ -35,9 +40,11 @@ std::optional<GPanoArea> AreaOf(const FrameRef& frame, const EncodeSpec& spec) {
     area.fullHeight = frame.height;
     return area;
   }
+  // A band goes all the way round, so a frame narrower than the sphere is not one: placing it
+  // would mean choosing an azimuth nobody gave.
+  if (spec.fullPanoWidth != frame.width) return std::nullopt;
   area.fullWidth = spec.fullPanoWidth;
   area.fullHeight = spec.fullPanoHeight;
-  area.croppedLeft = static_cast<int32_t>((int64_t{spec.fullPanoWidth} - frame.width) / 2);
   area.croppedTop = static_cast<int32_t>((int64_t{spec.fullPanoHeight} - frame.height) / 2);
   return area;
 }
@@ -98,6 +105,13 @@ Result<std::vector<uint8_t>> StbImageCodecAccess::Encode(const FrameRef& frame,
   if (frame.format != PixelFormat::RGBA8 || frame.width <= 0 || frame.height <= 0) {
     return Err<std::vector<uint8_t>>(StatusCode::InvalidArgument, kComponent,
                                      "only an RGBA8 frame with pixels is written");
+  }
+  // Past either, the writer would answer a smaller picture, or index past its own int, under the
+  // name of this one. By division, since the product is the thing that overflows.
+  if (frame.width > kLongestSide || frame.height > kLongestSide
+      || frame.height > kMostBytes / kChannels / frame.width) {
+    return Err<std::vector<uint8_t>>(StatusCode::InvalidArgument, kComponent,
+                                     "this frame is larger than a JPEG can be written at");
   }
   // Asked before a byte is read, so a refused tag costs no encode.
   std::optional<std::string> packet;

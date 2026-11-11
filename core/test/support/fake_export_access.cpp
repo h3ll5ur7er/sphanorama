@@ -14,7 +14,12 @@ Status FakeExportAccess::Save(std::string_view filename, std::string_view mimeTy
   return Status::Ok();
 }
 
-Result<bool> FakeExportAccess::CanShare() { return Ok(can_share_); }
+Result<bool> FakeExportAccess::CanShare() {
+  if (can_share_refusal_ != StatusCode::Ok) {
+    return Err<bool>(can_share_refusal_, kComponent, "this device cannot say whether it shares");
+  }
+  return Ok(can_share_);
+}
 
 Status FakeExportAccess::Share(std::string_view filename, std::string_view mimeType,
                                std::span<const uint8_t> bytes) {

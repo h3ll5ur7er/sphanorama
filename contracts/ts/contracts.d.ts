@@ -488,13 +488,15 @@ export interface EncodeSpec {
   quality: number;
   attachGPanoXmp: boolean;
   /**
-   * The sphere the frame is part of, for the GPano block: zero for the frame as the whole of one,
-   * otherwise one the frame is a band of, centred on its horizon (ADR 0087).
+   * The sphere the frame is part of, for the GPano block: both zero for the frame as the whole of
+   * one, otherwise one as wide as the frame, which is a band of it centred on its horizon. A frame
+   * narrower than the sphere has no azimuth to be placed at, and is refused (ADR 0087).
    */
   fullPanoWidth: number;
   /**
-   * The sphere the frame is part of, for the GPano block: zero for the frame as the whole of one,
-   * otherwise one the frame is a band of, centred on its horizon (ADR 0087).
+   * The sphere the frame is part of, for the GPano block: both zero for the frame as the whole of
+   * one, otherwise one as wide as the frame, which is a band of it centred on its horizon. A frame
+   * narrower than the sphere has no azimuth to be placed at, and is refused (ADR 0087).
    */
   fullPanoHeight: number;
 }
@@ -1489,7 +1491,8 @@ export interface ProjectManager {
   getSelection(project: ProjectId, node: NodeId): Promise<Result<CandidateId>>;
   /**
    * Writes a build's panorama to a file and hands it to the device (ADR 0087): encoded by
-   * `IImageCodecAccess`, tagged as a photo sphere where the spec asks, then shared where the spec
+   * `IImageCodecAccess` and always tagged as a photo sphere, whatever `attachGPanoXmp` says, since
+   * an equirectangular file without the tag opens as a wide photograph; then shared where the spec
    * asks and the device can, and saved otherwise. The panorama is what
    * `IPanoramaBuildManager::Panorama` answers, which the client hands across: the managers never
    * call each other. Its preview is what is written, since a build has nothing else yet.
@@ -1578,15 +1581,6 @@ export interface ProjectStoreAccess {
   readDocument(project: ProjectId, key: string): Promise<Result<string>>;
   writeDocument(project: ProjectId, key: string, value: string): Promise<Result<void>>;
   deleteProject(project: ProjectId): Promise<Result<void>>;
-}
-
-/**
- * V13 — how images are decoded, encoded and tagged. Owns the XMP GPano block, which is what
- * makes an exported file open as a sphere rather than a wide photo.
- */
-export interface ImageCodecAccess {
-  decode(bytes: Uint8Array): Promise<Result<FrameRef>>;
-  encode(frame: FrameRef, spec: EncodeSpec): Promise<Result<Uint8Array>>;
 }
 
 /** V15 — how a result leaves the device. */

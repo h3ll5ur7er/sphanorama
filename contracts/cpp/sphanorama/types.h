@@ -512,8 +512,9 @@ struct EncodeSpec {
   EncodeFormat format = EncodeFormat::Jpeg;
   int32_t quality = 92;
   bool attachGPanoXmp = false;
-  // The sphere the frame is part of, for the GPano block: zero for the frame as the whole of one,
-  // otherwise one the frame is a band of, centred on its horizon (ADR 0087).
+  // The sphere the frame is part of, for the GPano block: both zero for the frame as the whole of
+  // one, otherwise one as wide as the frame, which is a band of it centred on its horizon. A frame
+  // narrower than the sphere has no azimuth to be placed at, and is refused (ADR 0087).
   int32_t fullPanoWidth = 0, fullPanoHeight = 0;
 };
 

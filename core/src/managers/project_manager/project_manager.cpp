@@ -180,7 +180,11 @@ Status ProjectManager::Export(ProjectId project, const PanoramaRef& panorama,
   if (!panorama.preview.id.valid()) {
     return Fail(StatusCode::InvalidArgument, kComponent, "this panorama has no preview to write");
   }
-  SPH_TRY(const std::vector<uint8_t> bytes, codec_.Encode(panorama.preview, spec.encode));
+  // Tagged whatever the spec says: an equirectangular file without the tag opens as a very wide
+  // photograph, which is the one thing an export of a sphere must not do.
+  EncodeSpec encode = spec.encode;
+  encode.attachGPanoXmp = true;
+  SPH_TRY(const std::vector<uint8_t> bytes, codec_.Encode(panorama.preview, encode));
   const std::string_view mime = MimeTypeOf(spec.encode.format);
   if (spec.share) {
     SPH_TRY(const bool canShare, exporter_.CanShare());

@@ -68,7 +68,8 @@ class IProjectManager {
   virtual Result<CandidateId> GetSelection(ProjectId project, NodeId node) = 0;
 
   // Writes a build's panorama to a file and hands it to the device (ADR 0087): encoded by
-  // `IImageCodecAccess`, tagged as a photo sphere where the spec asks, then shared where the spec
+  // `IImageCodecAccess` and always tagged as a photo sphere, whatever `attachGPanoXmp` says, since
+  // an equirectangular file without the tag opens as a wide photograph; then shared where the spec
   // asks and the device can, and saved otherwise. The panorama is what
   // `IPanoramaBuildManager::Panorama` answers, which the client hands across: the managers never
   // call each other. Its preview is what is written, since a build has nothing else yet.

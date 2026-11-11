@@ -26,11 +26,9 @@ std::string Attribute(const char* name, const std::string& value) {
 }  // namespace
 
 std::optional<std::string> GPanoPacket(const GPanoArea& area) {
-  // Twice as wide as it is tall is what an equirectangular sphere is: 360 degrees by 180.
-  if (area.fullHeight <= 0
-      || static_cast<int64_t>(area.fullWidth) != 2 * int64_t{area.fullHeight}) {
-    return std::nullopt;
-  }
+  // Twice as wide as it is tall is what an equirectangular sphere is: 360 degrees by 180. One with
+  // no height cannot be cropped from, so the bounds below refuse it.
+  if (int64_t{area.fullWidth} != 2 * int64_t{area.fullHeight}) return std::nullopt;
   if (!Within(area.croppedLeft, area.croppedWidth, area.fullWidth)
       || !Within(area.croppedTop, area.croppedHeight, area.fullHeight)) {
     return std::nullopt;

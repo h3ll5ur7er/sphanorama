@@ -15,6 +15,7 @@ FakeImageCodecAccess::FakeImageCodecAccess(std::shared_ptr<IFrameStoreAccess> st
 
 Result<std::vector<uint8_t>> FakeImageCodecAccess::Encode(const FrameRef& frame,
                                                           const EncodeSpec& spec) {
+  ++encode_calls_;
   if (refusal_ != StatusCode::Ok) {
     return Err<std::vector<uint8_t>>(refusal_, kComponent, "this codec refuses every encode");
   }
@@ -25,8 +26,7 @@ Result<std::vector<uint8_t>> FakeImageCodecAccess::Encode(const FrameRef& frame,
   out.insert(out.end(), pinned.value.begin(), pinned.value.end());
   if (auto released = store_->Release(frame); !released.ok()) return released;
 
-  last_encode_carried_gpano_ = spec.attachGPanoXmp;
-  last_format_ = spec.format;
+  last_spec_ = spec;
   return Ok(std::move(out));
 }
 

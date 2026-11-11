@@ -33,20 +33,29 @@ Three things stood in the way.
 - **The core writes the JPEG**, with stb's `stb_image_write.h`, in a resource access of its own,
   `StbImageCodecAccess`, which is the same in every build. It reads the frame through the frame
   store, which the contract's `FrameRef` names and which the layer rules already let a port reach
-  (ADR 0021), checks the handle against what the store holds, and leaves the frame unpinned in the
-  tier it found it in. It writes JPEG only: AVIF and PNG answer `Unsupported`, and so does `Decode`,
-  which nothing calls.
+  (ADR 0021), checks the bytes the handle claims against the bytes the store holds, and leaves the
+  frame unpinned in the tier it found it in. The store says nothing of a frame's format, so a handle
+  naming the wrong one over as many bytes is written as what it names. A side past 65535, which a
+  JPEG's sixteen-bit header cannot say and stb writes without asking, and a frame past what stb's
+  `int` index reaches are refused before the writer is called. It writes JPEG only: AVIF and PNG
+  answer `Unsupported`, and so does `Decode`, which nothing calls. The browser never implements it,
+  so its header is not mirrored into TypeScript.
 - **stb is fetched at a pinned commit and checked by content.** `cmake/stb.cmake` clones
-  `nothings/stb` at `fede005` — a commit from September 2025, the last to touch the writer — and
-  refuses to configure unless both headers it uses hash to the SHA-256 it records. `stb_image.h`
-  decodes in the tests only, so they check the file rather than the call. Public domain or MIT, at
-  the user's choice of the two.
+  `nothings/stb` at `fede005`, a master commit from September 2025, and refuses to configure unless
+  both headers it uses hash to the SHA-256 it records. The writer there is v1.16, from July 2021 and
+  unchanged on master since; the `dev` branch's writer changes of November 2026 are not taken.
+  `stb_image.h` decodes in the tests only, so they check the file rather than the call. Public
+  domain or MIT, at the user's choice of the two.
 - **The GPano block is a utility**, `utilities/gpano_xmp`: the packet for an area of an
   equirectangular sphere, and the JPEG with it spliced in after the start of image and the JFIF
   segment. An area that cannot be part of a sphere — not twice as wide as it is tall, or cropped
   past its edges — has no packet, and a packet past what one segment holds is refused. The codec
-  places a frame as the whole sphere, or, where the spec names a larger one, as a band centred on
-  its horizon, which is what a capture without caps is.
+  places a frame as the whole sphere, or, where the spec names a taller one as wide as the frame, as
+  a band centred on its horizon, which is what a capture without caps is. A frame narrower than the
+  sphere is refused: placing it would mean choosing an azimuth nobody gave.
+- **An export is always tagged.** `Export` asks the codec for the GPano block whatever the spec's
+  `attachGPanoXmp` says: an equirectangular file without it opens as a very wide photograph, which
+  is the one thing an export of a sphere must not do.
 - **Shared where asked and possible, saved otherwise.** `ProjectManager` hands the bytes to
   `IExportAccess`: `Share` when the spec asks and `CanShare` says yes, `Save` otherwise. The browser
   has no port yet, so its runtime holds `NullExportAccess`, which refuses: an export on the page
