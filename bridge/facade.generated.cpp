@@ -454,8 +454,8 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
     case 26: {  // ProjectManager.export
       ProjectId project{};
       project.value = in.GetId();
-      BuildId build{};
-      build.value = in.GetId();
+      PanoramaRef panorama{};
+      (void)codec::Decode(in, panorama);
       ExportSpec spec{};
       (void)codec::Decode(in, spec);
       if (!in.ok()) {
@@ -463,7 +463,7 @@ SPH_EXPORT int32_t sph_facade_call(int32_t methodId, const uint8_t* args,
                             "malformed arguments"));
         break;
       }
-      const Status status = runtime.project().Export(project, build, spec);
+      const Status status = runtime.project().Export(project, panorama, spec);
       PutStatus(out, status);
       break;
     }

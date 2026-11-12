@@ -11,8 +11,10 @@
 #include "managers/project_manager/project_manager.h"
 #include "resource_access/frame_store_access/memory_frame_store_access.h"
 #include "support/fake_export_access.h"
+#include "support/fake_image_codec_access.h"
 #include "support/fake_project_store_access.h"
 #include "support/fake_spill_sink.h"
+#include "support/recording_frame_store_access.h"
 #include "utilities/session_document.h"
 
 namespace sphanorama {
@@ -71,7 +73,7 @@ class IssuingProjectStoreAccess final : public IProjectStoreAccess {
 class Projects : public ::testing::Test {
  protected:
   void SetUp() override {
-    manager = std::make_unique<ProjectManager>(store, frames);
+    manager = std::make_unique<ProjectManager>(store, frames, codec, exporter);
   }
   // A project holding a capture whose counter stands at `next`, taken into the tier whose token is
   // `tier`. A pick names a candidate a capture issued, so every test that records one needs a
@@ -112,7 +114,29 @@ class Projects : public ::testing::Test {
   FakeSpillSink sink;
   MemoryFrameStoreAccess frames{1 << 20, &sink};
   FakeExportAccess exporter;
+  // Over the same store, which the codec reads the panorama's pixels from.
+  FakeImageCodecAccess codec{
+      std::shared_ptr<IFrameStoreAccess>(&frames, [](IFrameStoreAccess*) {})};
   std::unique_ptr<ProjectManager> manager;
+
+  // A complete build's panorama, as `IPanoramaBuildManager::Panorama` answers one: its preview, a
+  // frame the core holds, and no tiles.
+  PanoramaRef Panorama(int32_t width = 64, int32_t height = 32) {
+    auto frame = frames.Allocate(width, height, PixelFormat::RGBA8);
+    EXPECT_TRUE(frame.ok());
+    PanoramaRef panorama;
+    panorama.build = BuildId{3};
+    panorama.width = width;
+    panorama.height = height;
+    panorama.preview = frame.value;
+    return panorama;
+  }
+
+  ExportSpec Spec(const std::string& filename = "kitchen.jpg") {
+    ExportSpec spec;
+    spec.filename = filename;
+    return spec;
+  }
 };
 
 TEST_F(Projects, ANewProjectAppearsInTheListing) {
@@ -170,7 +194,7 @@ TEST_F(Projects, AListingThatCannotTellWhetherThereIsASessionSaysSo) {
   // Two codes, so an answer of the manager's own choosing cannot pass for the store's.
   for (const StatusCode code : {StatusCode::StorageQuotaExceeded, StatusCode::CodecFailure}) {
     UnreadableProjectStoreAccess unreadable(store, "session", code);
-    ProjectManager listing(unreadable, frames);
+    ProjectManager listing(unreadable, frames, codec, exporter);
     auto listed = listing.List();
     EXPECT_FALSE(listed.ok())
         << "a project whose session could not be read was listed as having none";
@@ -179,7 +203,7 @@ TEST_F(Projects, AListingThatCannotTellWhetherThereIsASessionSaysSo) {
 
   // And absence is still absence.
   UnreadableProjectStoreAccess absent(store, "session", StatusCode::NotFound);
-  ProjectManager listingAbsent(absent, frames);
+  ProjectManager listingAbsent(absent, frames, codec, exporter);
   auto none = listingAbsent.List();
   ASSERT_TRUE(none.ok()) << none.status.detail;
   EXPECT_FALSE(none.value.front().hasSession);
@@ -198,7 +222,7 @@ TEST_F(Projects, TheSessionFlagIsReadOffTheStoreEveryTime) {
 
   // And a manager that never saw it written agrees, which is the case that actually happens: the
   // page that resumes is a new process reading a store that outlived the last one.
-  ProjectManager reloaded(store, frames);
+  ProjectManager reloaded(store, frames, codec, exporter);
   EXPECT_TRUE(reloaded.List().value.front().hasSession);
 }
 
@@ -235,7 +259,7 @@ TEST_F(Projects, ASessionCapturedIntoAnotherTierIsListedAsSo) {
 // a store with no tier adopts none, so `Resume` would refuse it.
 TEST_F(Projects, ASessionWithoutATierIsInTheTierOfAStoreWithoutOneUntilItNamesAFrame) {
   MemoryFrameStoreAccess tierless{1 << 20};
-  ProjectManager listing(store, tierless);
+  ProjectManager listing(store, tierless, codec, exporter);
   ASSERT_TRUE(Captured("tierless", 100, 0).ok());
   ASSERT_TRUE(Captured("tierless with a frame", 100, 0, true).ok());
   ASSERT_TRUE(Captured("tiered", 100, 1).ok());
@@ -378,7 +402,7 @@ TEST_F(Projects, AReadThatFailedIsNotACellNobodyHasChosenFor) {
   ASSERT_TRUE(manager->SetSelection(created.value, NodeId{3}, CandidateId{7}).ok());
 
   UnreadableProjectStoreAccess broken{store, "selection/3", StatusCode::Internal};
-  ProjectManager reader{broken, frames};
+  ProjectManager reader{broken, frames, codec, exporter};
   auto chosen = reader.GetSelection(created.value, NodeId{3});
   EXPECT_FALSE(chosen.ok()) << "a store that could not answer was read as an unchosen cell";
   EXPECT_EQ(chosen.status.code, StatusCode::Internal);
@@ -493,7 +517,7 @@ TEST_F(Projects, APickInAProjectNothingWasCapturedInIsRefused) {
 TEST_F(Projects, APickAgainstACaptureThatCannotBeReadIsRefused) {
   auto created = Captured("kitchen");
   UnreadableProjectStoreAccess broken{store, kSessionDocumentKey, StatusCode::Internal};
-  ProjectManager picker{broken, frames};
+  ProjectManager picker{broken, frames, codec, exporter};
   EXPECT_EQ(picker.SetSelection(created.value, NodeId{3}, CandidateId{7}).code,
             StatusCode::Internal);
 
@@ -512,15 +536,177 @@ TEST_F(Projects, ReadingASelectionFromAnUnknownProjectIsRefused) {
   EXPECT_EQ(chosen.status.code, StatusCode::NotFound);
 }
 
-TEST_F(Projects, ExportingABuildThatDoesNotExistIsRefused) {
-  // There is no build pipeline yet, so this is the honest answer rather than a file full of
-  // nothing.
+// A build's panorama, encoded and tagged, handed to the device under the name asked for (ADR 0087).
+// The client hands the panorama across from the build manager: the managers never call each other.
+TEST_F(Projects, ExportingWritesThePanoramaAsATaggedJpegUnderTheNameAsked) {
   auto created = manager->Create("kitchen");
-  ExportSpec spec;
-  spec.filename = "sphere.jpg";
-  const Status status = manager->Export(created.value, BuildId{1}, spec);
-  EXPECT_FALSE(status.ok());
+  ASSERT_TRUE(created.ok());
+  ExportSpec spec = Spec();
+  spec.encode.quality = 77;
+  spec.encode.fullPanoWidth = 64;
+  spec.encode.fullPanoHeight = 32;
+  const Status status = manager->Export(created.value, Panorama(), spec);
+  ASSERT_TRUE(status.ok()) << status.detail;
+  ASSERT_EQ(exporter.artifacts().size(), 1u);
+  const FakeExportAccess::Artifact& saved = exporter.artifacts().front();
+  EXPECT_EQ(saved.filename, "kitchen.jpg");
+  EXPECT_EQ(saved.mimeType, "image/jpeg");
+  EXPECT_FALSE(saved.shared);
+  // The codec's bytes, of the panorama's preview: the fake writes a tag and then the pixels.
+  ASSERT_EQ(saved.bytes.size(), 4u + 64u * 32u * 4u);
+  EXPECT_EQ(std::string(saved.bytes.begin(), saved.bytes.begin() + 4), "SPH0");
+  // Tagged though the spec did not ask: an equirectangular file without the tag opens as a wide
+  // photograph, which is the one thing an export of a sphere must not do.
+  ASSERT_FALSE(spec.encode.attachGPanoXmp) << "the premise: the spec did not ask";
+  EXPECT_TRUE(codec.LastSpec().attachGPanoXmp);
+  // And otherwise the spec as asked.
+  EXPECT_EQ(codec.LastSpec().format, EncodeFormat::Jpeg);
+  EXPECT_EQ(codec.LastSpec().quality, 77);
+  EXPECT_EQ(codec.LastSpec().fullPanoWidth, 64);
+  EXPECT_EQ(codec.LastSpec().fullPanoHeight, 32);
+}
+
+// Shared where the spec asks and the device can, saved otherwise: a share sheet that is not there
+// is no reason to export nothing.
+TEST_F(Projects, ExportingSharesWhereItCanAndSavesWhereItCannot) {
+  auto created = manager->Create("kitchen");
+  ExportSpec spec = Spec();
+  spec.share = true;
+  ASSERT_TRUE(manager->Export(created.value, Panorama(), spec).ok());
+  ASSERT_EQ(exporter.artifacts().size(), 1u);
+  EXPECT_TRUE(exporter.artifacts().back().shared);
+  FakeExportAccess unshared(/*canShare=*/false);
+  ProjectManager saving(store, frames, codec, unshared);
+  ASSERT_TRUE(saving.Export(created.value, Panorama(), spec).ok());
+  ASSERT_EQ(unshared.artifacts().size(), 1u);
+  EXPECT_FALSE(unshared.artifacts().back().shared);
+}
+
+// The type a file is handed over as is the format it was written in.
+TEST_F(Projects, AnExportIsHandedOverAsTheFormatItWasWrittenIn) {
+  auto created = manager->Create("kitchen");
+  for (const auto& [format, mime] : {std::pair{EncodeFormat::Png, "image/png"},
+                                     std::pair{EncodeFormat::Avif, "image/avif"}}) {
+    const char* extension = format == EncodeFormat::Png ? "png" : "avif";
+    ExportSpec spec = Spec(std::string("kitchen.") + extension);
+    spec.encode.format = format;
+    ASSERT_TRUE(manager->Export(created.value, Panorama(), spec).ok());
+    EXPECT_EQ(exporter.artifacts().back().mimeType, mime);
+    EXPECT_EQ(codec.LastSpec().format, format) << "the codec is asked for the format named";
+  }
+}
+
+// Nothing leaves the device for an export that is refused, at whichever step refuses it.
+TEST_F(Projects, ARefusedExportLeavesNothingBehind) {
+  auto created = manager->Create("kitchen");
+  EXPECT_EQ(manager->Export(ProjectId{404}, Panorama(), Spec()).code, StatusCode::NotFound);
+  // The manager's own refusal, before anything is encoded: a device that took a nameless file would
+  // otherwise be the only check.
+  const Status nameless = manager->Export(created.value, Panorama(), Spec(""));
+  EXPECT_EQ(nameless.code, StatusCode::InvalidArgument);
+  EXPECT_EQ(nameless.component, "ProjectManager");
+  PanoramaRef cubed = Panorama();
+  cubed.projection = Projection::Cubemap;
+  EXPECT_EQ(manager->Export(created.value, cubed, Spec()).code, StatusCode::Unsupported);
+  PanoramaRef none = Panorama();
+  none.preview = FrameRef{};
+  EXPECT_EQ(manager->Export(created.value, none, Spec()).code, StatusCode::InvalidArgument);
+  EXPECT_EQ(codec.EncodeCalls(), 0) << "the manager's refusals come before the codec is asked";
+  codec.RefuseEncodes(StatusCode::CodecFailure);
+  EXPECT_EQ(manager->Export(created.value, Panorama(), Spec()).code, StatusCode::CodecFailure);
+  codec.RefuseEncodes(StatusCode::Ok);
   EXPECT_TRUE(exporter.artifacts().empty());
+  // And the device's own answer where it would not take the file.
+  exporter.RefuseExports(StatusCode::StorageQuotaExceeded);
+  EXPECT_EQ(manager->Export(created.value, Panorama(), Spec()).code,
+            StatusCode::StorageQuotaExceeded);
+  EXPECT_TRUE(exporter.artifacts().empty());
+  // Nor where it cannot say whether it shares: neither shared nor saved behind the question.
+  exporter.RefuseExports(StatusCode::Ok);
+  exporter.RefuseCanShare(StatusCode::Internal);
+  ExportSpec shared = Spec();
+  shared.share = true;
+  EXPECT_EQ(manager->Export(created.value, Panorama(), shared).code, StatusCode::Internal);
+  EXPECT_TRUE(exporter.artifacts().empty());
+}
+
+// Once saved, a file has no mime type left, only its name: a name that says another format, or
+// none, would hand over a sphere nothing opens as one. Refused before anything is encoded.
+TEST_F(Projects, ANameThatSaysAnotherFormatIsRefused) {
+  auto created = manager->Create("kitchen");
+  for (const std::string name :
+       {"sphere.png", "sphere", "sphere.jpg.txt", "sphere.", ".jpg", "jpg", "JPEG"}) {
+    const Status refused = manager->Export(created.value, Panorama(), Spec(name));
+    EXPECT_EQ(refused.code, StatusCode::InvalidArgument) << name;
+    EXPECT_EQ(refused.component, "ProjectManager") << name;
+  }
+  // A base name, as a device saves one: no directory to put it in, and nothing a C string would
+  // stop at or a terminal would act on, wherever in the name it is.
+  for (const std::string& name : {std::string("photos/.jpg"), std::string("photos\\x.jpg"),
+                                 std::string("../../x.jpg"), std::string("sphere\0.jpg", 11),
+                                 std::string("sphere\t.jpg"), std::string("sphere\x7f.jpg"),
+                                 std::string("\x1b[2Jsphere.jpg"),
+                                 std::string("sphere\x1f.jpg")}) {
+    const Status refused = manager->Export(created.value, Panorama(), Spec(name));
+    EXPECT_EQ(refused.code, StatusCode::InvalidArgument) << name.size();
+    EXPECT_EQ(refused.component, "ProjectManager") << name.size();
+  }
+  // And for every format, not only the default one.
+  for (const auto& [format, name] : {std::pair{EncodeFormat::Png, "kitchen.jpg"},
+                                     std::pair{EncodeFormat::Avif, "kitchen.png"}}) {
+    ExportSpec spec = Spec(name);
+    spec.encode.format = format;
+    EXPECT_EQ(manager->Export(created.value, Panorama(), spec).code, StatusCode::InvalidArgument)
+        << name;
+  }
+  EXPECT_EQ(codec.EncodeCalls(), 0);
+  EXPECT_TRUE(exporter.artifacts().empty());
+  // Either spelling of JPEG's extension, in either case, is JPEG's.
+  for (const std::string name :
+       {"sphere.jpg", "sphere.jpeg", "SPHERE.JPG", "the.sphere.Jpeg", "sph\xc3\xa8re.jpg",
+        "the sphere.jpg"}) {
+    EXPECT_TRUE(manager->Export(created.value, Panorama(), Spec(name)).ok()) << name;
+  }
+  EXPECT_EQ(exporter.artifacts().size(), 6u) << "a name in any script, or with a space, is a name";
+}
+
+// A new capture empties the store, so a panorama handed across before it is no longer there: built
+// again rather than read as a project that is gone, as `Panorama` would have said one call earlier.
+TEST_F(Projects, APanoramaTheStoreNoLongerHoldsIsToBeBuiltAgain) {
+  auto created = manager->Create("kitchen");
+  const PanoramaRef panorama = Panorama();
+  ASSERT_TRUE(manager->Export(created.value, panorama, Spec()).ok());
+  ASSERT_TRUE(frames.Clear().ok());
+  const int encodes = codec.EncodeCalls();
+  const Status stale = manager->Export(created.value, panorama, Spec());
+  EXPECT_EQ(stale.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(stale.component, "ProjectManager");
+  EXPECT_EQ(exporter.artifacts().size(), 1u) << "only the first export left the device";
+  // Asked after what the caller got wrong, which building again would not mend, and before the
+  // codec is.
+  EXPECT_EQ(manager->Export(ProjectId{404}, panorama, Spec()).code, StatusCode::NotFound);
+  EXPECT_EQ(manager->Export(created.value, panorama, Spec("")).code, StatusCode::InvalidArgument);
+  EXPECT_EQ(manager->Export(created.value, panorama, Spec("kitchen.png")).code,
+            StatusCode::InvalidArgument);
+  PanoramaRef cubed = panorama;
+  cubed.projection = Projection::Cubemap;
+  EXPECT_EQ(manager->Export(created.value, cubed, Spec()).code, StatusCode::Unsupported);
+  // And what only the codec refuses is not the manager's to check: the panorama is gone first.
+  ExportSpec rough = Spec();
+  rough.encode.quality = 0;
+  const Status roughStale = manager->Export(created.value, panorama, rough);
+  EXPECT_EQ(roughStale.code, StatusCode::FailedPrecondition);
+  EXPECT_EQ(roughStale.component, "ProjectManager");
+  EXPECT_EQ(codec.EncodeCalls(), encodes) << "nothing encoded for a panorama that is gone";
+  // And a store that cannot say where the frame is has not said it is gone: its own answer.
+  RecordingFrameStoreAccess unsure(frames);
+  unsure.RefuseResidency(true);
+  ProjectManager asking(store, unsure, codec, exporter);
+  const Status unknown = asking.Export(created.value, Panorama(), Spec());
+  EXPECT_EQ(unknown.code, StatusCode::Internal);
+  EXPECT_EQ(unknown.component, "RecordingFrameStoreAccess");
+  EXPECT_EQ(exporter.artifacts().size(), 1u);
+  EXPECT_EQ(codec.EncodeCalls(), encodes);
 }
 
 TEST_F(Projects, IdsDoNotCollideWithProjectsThatOutlivedTheManager) {
@@ -532,7 +718,7 @@ TEST_F(Projects, IdsDoNotCollideWithProjectsThatOutlivedTheManager) {
   ASSERT_TRUE(first.ok());
   ASSERT_TRUE(second.ok());
 
-  ProjectManager reloaded(store, frames);
+  ProjectManager reloaded(store, frames, codec, exporter);
   auto third = reloaded.Create("balcony");
   ASSERT_TRUE(third.ok());
   EXPECT_NE(third.value.value, first.value.value);
@@ -549,7 +735,7 @@ TEST_F(Projects, ANewProjectTakesTheIdTheStoreIssues) {
   // (ADR 0081). Above every id the store holds, so a manager that counted would not get here.
   ASSERT_TRUE(store.WriteDocument(ProjectId{3}, "title", "theirs").ok());
   IssuingProjectStoreAccess issuing(store, Ok(ProjectId{2}));
-  ProjectManager tab(issuing, frames);
+  ProjectManager tab(issuing, frames, codec, exporter);
 
   auto created = tab.Create("mine");
   ASSERT_TRUE(created.ok());
@@ -561,7 +747,7 @@ TEST_F(Projects, ANewProjectTakesTheIdTheStoreIssues) {
 TEST_F(Projects, AStoreThatIssuesNoIdCreatesNoProject) {
   IssuingProjectStoreAccess issuing(
       store, Err<ProjectId>(StatusCode::FailedPrecondition, "test", "no id left"));
-  ProjectManager tab(issuing, frames);
+  ProjectManager tab(issuing, frames, codec, exporter);
 
   EXPECT_EQ(tab.Create("mine").status.code, StatusCode::FailedPrecondition);
   EXPECT_EQ(store.WriteCount(), 0);

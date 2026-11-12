@@ -119,7 +119,11 @@ the real engines, the photograph ring with every pose three degrees out builds t
 a phone builds one**: the browser's runtime selects the real engines, with ORB because a preview
 cannot show what the slower detectors buy, and a button under the review strip builds the capture
 and draws the preview `PanoramaPreview` hands across (ADR 0071). The module carries the 557 KB now.
-How long a sphere takes on a phone, and its peak heap, are not measured.
+How long a sphere takes on a phone, and its peak heap, are not measured. **And the core writes it
+to a file**: `ProjectManager::Export` takes the panorama the client hands across, a codec inside the
+core writes it as a JPEG with stb's writer, since the browser's encoders answer asynchronously, and
+`utilities/gpano_xmp` always tags it as a sphere (ADR 0087). The page cannot hand it to the user yet: the
+browser's export port is the next step.
 
 **OpenCV is in the build now**, fetched at a pinned commit and trimmed to ADR 0005's six modules,
 and cross-compiled for the browser too (ADR 0069): about 556 KB of the 8 MB budget, WebAssembly's

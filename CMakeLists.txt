@@ -29,6 +29,8 @@ endif()
 if(SPHANORAMA_WITH_OPENCV)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/opencv.cmake")
 endif()
+# Unconditional: an export is a JPEG in every build, with OpenCV or without (ADR 0087).
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/stb.cmake")
 
 # The build on which two inlined copies of one sum of squares can fuse differently and land on
 # opposite sides of a threshold — which the -O0 presets cannot show, because there nothing is

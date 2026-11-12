@@ -512,7 +512,10 @@ struct EncodeSpec {
   EncodeFormat format = EncodeFormat::Jpeg;
   int32_t quality = 92;
   bool attachGPanoXmp = false;
-  int32_t fullPanoWidth = 0, fullPanoHeight = 0;   // for the GPano metadata block
+  // The sphere the frame is part of, for the GPano block: both zero for the frame as the whole of
+  // one, otherwise one as wide as the frame, which is a band of it centred on its horizon. A frame
+  // narrower than the sphere has no azimuth to be placed at, and is refused (ADR 0087).
+  int32_t fullPanoWidth = 0, fullPanoHeight = 0;
 };
 
 struct PanoramaRef {
@@ -988,6 +991,10 @@ struct ProjectSummary {
 
 struct ExportSpec {
   EncodeSpec encode;
+  // No `/` or `\`, no ASCII control character or DEL, and a stem before the extension of
+  // `encode.format`, which for JPEG is `.jpg` or `.jpeg` in either case. What else one platform
+  // reserves in a name — `:`, `*`, a C1 control, a device name — is the export port's to clean,
+  // since only it knows the platform it saves on.
   std::string filename;
   bool share = false;   // share sheet if available, otherwise download
 };

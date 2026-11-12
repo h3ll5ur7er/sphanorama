@@ -25,7 +25,10 @@ concurrency:
 jobs:
   build:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest: the build runs the e2e suite, which installs Playwright's
+    # chromium, and ubuntu-latest moved to 26.04 before the pinned Playwright had a build for it.
+    # Moving this is a Playwright bump in the same commit.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

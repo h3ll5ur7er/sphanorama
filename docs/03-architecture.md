@@ -213,9 +213,11 @@ about a project rather than a session anybody can be handed, and it is what lets
 resume instead of discovering one by attempting it (ADR 0036). `sessionInAnotherTier` says that
 session's document names a spill tier other than the one the frame store holds, which it asks
 `IFrameStoreAccess` for, or frames on a store with no tier, and `sessionUnreadable` that this build
-cannot read its document (ADR 0083). Export means asking `IImageCodecAccess` to encode and attach
-XMP `GPano` metadata, then handing bytes to `IExportAccess`. It is the only manager that touches
-`IExportAccess`.
+cannot read its document (ADR 0083). Export takes the panorama `PanoramaBuildManager::Panorama`
+answers, which the client hands across, asks `IImageCodecAccess` to encode it, always with XMP
+`GPano` metadata, then hands the bytes to `IExportAccess` to share or save. The codec is inside the
+core, over stb's JPEG writer, because the browser's encoders answer asynchronously (ADR 0087). It is
+the only manager that touches `IExportAccess`.
 
 ## 3.5 The boundary that makes this work
 
@@ -228,7 +230,7 @@ injected across the boundary at startup.
 flowchart LR
   subgraph JS["TypeScript (main thread + capture worker)"]
     UI["Capture Client"]
-    AD["ResourceAccess adapters<br/>camera · sensors · storage · codec · export"]
+    AD["ResourceAccess adapters<br/>camera · sensors · storage · export"]
   end
   subgraph W["Core worker — WASM"]
     FA["Generated manager facade"]
@@ -268,9 +270,15 @@ Two rules keep this from becoming a performance disaster:
   proxy, and the shared value types (§4.6), so a contract change is a compile error on both sides
   rather than a runtime surprise.
 
-`IFrameStoreAccess`, `IProjectStoreAccess`, `IImageCodecAccess` and `IComputeDeviceAccess` have
-**two** implementations each — a TypeScript one for the browser, and a native one used by the
-Bench client — behind the identical C++ contract.
+Not every resource access is implemented twice, and which are says where each resource lives.
+`ICameraAccess` and `IMotionSensorAccess` have a browser implementation in `bridge/`, over state the
+page established, and a null one natively. `IProjectStoreAccess` has `BrowserProjectStoreAccess`,
+C++ over a TypeScript document host, and an in-memory one natively. `IFrameStoreAccess` has one,
+`MemoryFrameStoreAccess`, in both builds: what differs is its ceiling and whether an OPFS spill sink
+is under it. `IImageCodecAccess` is the same — one, inside the core, since the browser has no
+encoder that answers within the call, and its header is not mirrored into TypeScript for that reason
+(ADR 0087). `IExportAccess` is null in both until its browser port lands, and `IComputeDeviceAccess`
+has no implementation yet.
 
 ### One coordinate frame, converted at the edge
 

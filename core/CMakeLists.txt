@@ -2,6 +2,7 @@ add_library(sphanorama_core
   src/resource_access/camera_access/null_camera_access.cpp
   src/resource_access/export_access/null_export_access.cpp
   src/resource_access/frame_store_access/memory_frame_store_access.cpp
+  src/resource_access/image_codec_access/stb_image_codec_access.cpp
   src/resource_access/motion_sensor_access/null_motion_sensor_access.cpp
   src/resource_access/project_store_access/memory_project_store_access.cpp
   src/managers/panorama_build_manager/panorama_build_manager.cpp
@@ -24,6 +25,7 @@ add_library(sphanorama_core
   src/utilities/config_store.cpp
   src/utilities/diagnostics.cpp
   src/utilities/equirect.cpp
+  src/utilities/gpano_xmp.cpp
   src/utilities/event_bus.cpp
   src/utilities/logger.cpp
   src/utilities/pixel_format.cpp
@@ -44,7 +46,7 @@ if(SPHANORAMA_WITH_OPENCV)
 endif()
 
 target_include_directories(sphanorama_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(sphanorama_core PUBLIC sphanorama_contracts)
+target_link_libraries(sphanorama_core PUBLIC sphanorama_contracts PRIVATE sphanorama_stb)
 
 # Exceptions and RTTI are off in the core: nothing may throw across the WASM boundary (ADR 0006),
 # and both cost binary size we have budgeted away. The registration engine below takes

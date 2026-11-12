@@ -28,20 +28,34 @@ class RecordingFrameStoreAccess final : public IFrameStoreAccess {
 
   const std::vector<Residency>& demotions() const { return demotions_; }
 
+  // A store that will not let a frame go, or put it back: what a caller does with each refusal is
+  // otherwise unreachable, since the real store refuses neither for a frame it holds.
+  void RefuseReleases(bool refuse) { refuse_releases_ = refuse; }
+  void RefuseDemotions(bool refuse) { refuse_demotions_ = refuse; }
+  // A store that cannot say where a frame is, which is not the same as saying it is gone.
+  void RefuseResidency(bool refuse) { refuse_residency_ = refuse; }
+
   Result<FrameStoreBudget> Budget() override { return real_.Budget(); }
   Result<FrameRef> Allocate(int32_t width, int32_t height, PixelFormat format) override {
     return real_.Allocate(width, height, format);
   }
   Result<std::span<uint8_t>> Pin(const FrameRef& frame) override { return real_.Pin(frame); }
-  Status Release(const FrameRef& frame) override { return real_.Release(frame); }
+  Status Release(const FrameRef& frame) override {
+    if (refuse_releases_) return Fail(StatusCode::Internal, "RecordingFrameStoreAccess", "no");
+    return real_.Release(frame);
+  }
 
   Result<Residency> ResidencyOf(const FrameRef& frame) override {
+    if (refuse_residency_) {
+      return Err<Residency>(StatusCode::Internal, "RecordingFrameStoreAccess", "no");
+    }
     if (claimed_.has_value()) return Ok(*claimed_);
     return real_.ResidencyOf(frame);
   }
 
   Status Demote(const FrameRef& frame, Residency target) override {
     demotions_.push_back(target);
+    if (refuse_demotions_) return Fail(StatusCode::Internal, "RecordingFrameStoreAccess", "no");
     // Forwarded rather than swallowed, so a demotion the real store would refuse still refuses
     // here — the point is what was *asked* for, and a fake that always succeeded would hide a
     // caller that depends on it succeeding.
@@ -58,6 +72,9 @@ class RecordingFrameStoreAccess final : public IFrameStoreAccess {
   IFrameStoreAccess& real_;
   std::optional<Residency> claimed_;
   std::vector<Residency> demotions_;
+  bool refuse_releases_ = false;
+  bool refuse_demotions_ = false;
+  bool refuse_residency_ = false;
 };
 
 }  // namespace sphanorama

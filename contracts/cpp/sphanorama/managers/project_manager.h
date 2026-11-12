@@ -67,7 +67,28 @@ class IProjectManager {
   // for. The sentinel only means something because every other answer is a real one.
   virtual Result<CandidateId> GetSelection(ProjectId project, NodeId node) = 0;
 
-  virtual Status Export(ProjectId project, BuildId build, const ExportSpec& spec) = 0;
+  // Writes a build's panorama to a file and hands it to the device (ADR 0087): encoded by
+  // `IImageCodecAccess` and always tagged as a photo sphere, whatever `attachGPanoXmp` says, since
+  // an equirectangular file without the tag opens as a wide photograph; then shared where the spec
+  // asks and the device can, and saved otherwise. The panorama is what
+  // `IPanoramaBuildManager::Panorama` answers, which the client hands across: the managers never
+  // call each other. Its preview is what is written, since a build has nothing else yet.
+  //
+  // `NotFound` for a project that does not exist; `InvalidArgument` for a spec with no filename, or
+  // one that holds a separator or an ASCII control character, or does not end in its format's
+  // extension after a stem (`ExportSpec::filename`), since once saved a file's name is all that
+  // says what it holds, and a panorama with no preview; `FailedPrecondition` for one whose preview
+  // the store no longer holds, since a new capture empties it, which is what
+  // `IPanoramaBuildManager::Panorama` says of the same handle. `Unsupported` for what this build
+  // cannot write or hand over: a projection other than equirectangular, a format the codec does not
+  // write, and a device with no way to take a file. Otherwise the codec's own status where it would
+  // not write the panorama, and the device's where it would not take the file. Nothing is handed
+  // over unless the whole file is.
+  //
+  // The manager's own refusals come before the store is asked, and the store before the codec, so a
+  // panorama that is gone is said to be before it is encoded; a stale one asked for a format or
+  // quality the codec refuses is said to be gone first.
+  virtual Status Export(ProjectId project, const PanoramaRef& panorama, const ExportSpec& spec) = 0;
 };
 
 }  // namespace sphanorama

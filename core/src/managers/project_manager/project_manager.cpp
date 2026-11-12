@@ -1,7 +1,9 @@
 #include "managers/project_manager/project_manager.h"
 
+#include <cctype>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "utilities/session_document.h"
 
@@ -9,10 +11,41 @@ namespace sphanorama {
 namespace {
 constexpr const char* kComponent = "ProjectManager";
 constexpr const char* kTitleKey = "title";
+
+std::string_view MimeTypeOf(EncodeFormat format) {
+  switch (format) {
+    case EncodeFormat::Jpeg: return "image/jpeg";
+    case EncodeFormat::Avif: return "image/avif";
+    case EncodeFormat::Png: return "image/png";
+  }
+  return "application/octet-stream";
+}
+
+// Whether a file's name says the format it holds: once saved, the name is all that does. No
+// separator, since a directory is the device's to decide, and no ASCII control character, which is
+// where a C string stops or what a terminal acts on; then a stem, and the format's extension. What
+// one platform reserves beyond that is the export port's (`ExportSpec::filename`).
+bool NameSays(std::string_view filename, EncodeFormat format) {
+  for (const char c : filename) {
+    const auto byte = static_cast<unsigned char>(c);
+    if (byte < 0x20 || byte == 0x7F || c == '/' || c == '\\') return false;
+  }
+  const size_t dot = filename.rfind('.');
+  if (dot == std::string_view::npos || dot == 0) return false;
+  std::string extension(filename.substr(dot + 1));
+  for (char& c : extension) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  switch (format) {
+    case EncodeFormat::Jpeg: return extension == "jpg" || extension == "jpeg";
+    case EncodeFormat::Avif: return extension == "avif";
+    case EncodeFormat::Png: return extension == "png";
+  }
+  return false;
+}
 }  // namespace
 
-ProjectManager::ProjectManager(IProjectStoreAccess& store, IFrameStoreAccess& frames)
-    : store_(store), frames_(frames) {}
+ProjectManager::ProjectManager(IProjectStoreAccess& store, IFrameStoreAccess& frames,
+                               IImageCodecAccess& codec, IExportAccess& exporter)
+    : store_(store), frames_(frames), codec_(codec), exporter_(exporter) {}
 
 bool ProjectManager::Exists(ProjectId project) {
   return store_.ReadDocument(project, kTitleKey).ok();
@@ -158,10 +191,38 @@ Result<CandidateId> ProjectManager::GetSelection(ProjectId project, NodeId node)
   return Ok(*chosen);
 }
 
-Status ProjectManager::Export(ProjectId project, BuildId, const ExportSpec&) {
+Status ProjectManager::Export(ProjectId project, const PanoramaRef& panorama,
+                             const ExportSpec& spec) {
   if (!Exists(project)) return Fail(StatusCode::NotFound, kComponent, "no such project");
-  return Fail(StatusCode::Unsupported, kComponent,
-              "nothing to export until the build pipeline lands in Phase 2");
+  if (!NameSays(spec.filename, spec.encode.format)) {
+    return Fail(StatusCode::InvalidArgument, kComponent,
+                "an export's filename names no directory and ends in its format's extension");
+  }
+  if (panorama.projection != Projection::Equirectangular) {
+    return Fail(StatusCode::Unsupported, kComponent, "only an equirectangular panorama is written");
+  }
+  if (!panorama.preview.id.valid()) {
+    return Fail(StatusCode::InvalidArgument, kComponent, "this panorama has no preview to write");
+  }
+  // A new capture empties the store, so a panorama handed across before one is gone: to be built
+  // again, as `IPanoramaBuildManager::Panorama` says of it, rather than the `NotFound` that here
+  // means the project. Only `NotFound` says so; a store that could not answer has not said it.
+  if (auto held = frames_.ResidencyOf(panorama.preview); !held.ok()) {
+    if (held.status.code != StatusCode::NotFound) return held.status;
+    return Fail(StatusCode::FailedPrecondition, kComponent,
+                "the store no longer holds this panorama; build again");
+  }
+  // Tagged whatever the spec says: an equirectangular file without the tag opens as a very wide
+  // photograph, which is the one thing an export of a sphere must not do.
+  EncodeSpec encode = spec.encode;
+  encode.attachGPanoXmp = true;
+  SPH_TRY(const std::vector<uint8_t> bytes, codec_.Encode(panorama.preview, encode));
+  const std::string_view mime = MimeTypeOf(spec.encode.format);
+  if (spec.share) {
+    SPH_TRY(const bool canShare, exporter_.CanShare());
+    if (canShare) return exporter_.Share(spec.filename, mime, bytes);
+  }
+  return exporter_.Save(spec.filename, mime, bytes);
 }
 
 }  // namespace sphanorama
